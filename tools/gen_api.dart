@@ -25,6 +25,45 @@ String dartType(dynamic value) {
   return 'dynamic';
 }
 
+String generateParameterFromField(String key, Map<String, dynamic> field) {
+  final type = dartType(field['type']);
+  final isRequired = field['required'] == true;
+  final paramName = toCamelCase(key);
+  
+  if (isRequired) {
+    return 'required $type $paramName';
+  } else {
+    return '$type? $paramName';
+  }
+}
+
+String generateParametersFromFields(Map<String, dynamic>? fields) {
+  if (fields == null || fields.isEmpty) return '';
+  
+  final params = <String>[];
+  fields.forEach((key, field) {
+    if (field is Map<String, dynamic>) {
+      params.add(generateParameterFromField(key, field));
+    }
+  });
+  
+  return params.isEmpty ? '' : ', ${params.join(', ')}';
+}
+
+String generateDataOrQueryMap(Map<String, dynamic>? fields) {
+  if (fields == null || fields.isEmpty) return '';
+  
+  final entries = <String>[];
+  fields.forEach((key, field) {
+    if (field is Map<String, dynamic>) {
+      final paramName = toCamelCase(key);
+      entries.add('"$key": $paramName');
+    }
+  });
+  
+  return entries.join(', ');
+}
+
 String generateModel(
   String name,
   Map<String, dynamic> model,
@@ -166,9 +205,16 @@ Future<void> main() async {
           final headers = api['headers'] ?? {};
           final model = api['responseModel'] as Map<String, dynamic>?;
           final extra = api['extra'] as Map<String, dynamic>? ?? {};
+          final body = api['body'] as Map<String, dynamic>?;
+          final query = api['query'] as Map<String, dynamic>?;
+
+          // Generate method parameters
+          final bodyParams = generateParametersFromFields(body);
+          final queryParams = generateParametersFromFields(query);
+          final allParams = bodyParams + queryParams;
 
           helperBuffer.writeln(
-            "  static RequestOptions $name({BaseOptions? baseOption}) {",
+            "  static RequestOptions $name({BaseOptions? baseOption$allParams}) {",
           );
           helperBuffer.writeln("    baseOption??= BaseOptions();");
 
@@ -183,7 +229,22 @@ Future<void> main() async {
           });
 
           helperBuffer.writeln("      },");
-          helperBuffer.writeln("    ).compose(baseOption, '$path');");
+          
+          // Generate the compose call with data and queryParameters if needed
+          final dataMap = generateDataOrQueryMap(body);
+          final queryMap = generateDataOrQueryMap(query);
+          
+          helperBuffer.write("    ).compose(baseOption, '$path'");
+          
+          if (dataMap.isNotEmpty) {
+            helperBuffer.write(", data: {$dataMap}");
+          }
+          
+          if (queryMap.isNotEmpty) {
+            helperBuffer.write(", queryParameters: {$queryMap}");
+          }
+          
+          helperBuffer.writeln(");");
           helperBuffer.writeln("    return options;");
           helperBuffer.writeln("  }\n");
 
