@@ -35,3 +35,4 @@ applyTo: '**'
     3. Use that model in the API call as the `create` parameter in the `decodedData` method.
     4. Return the decoded data(generated model) from the API call.
 
+
