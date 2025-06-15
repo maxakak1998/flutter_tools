@@ -1,7 +1,4 @@
-import 'package:data_entry/features/home_page/presentation/routes/home_page_route.dart';
-import 'package:data_entry/features/init/presentation/cubit/init_cubit.dart';
-import 'package:data_entry/features/init/presentation/mixins/init_mixin.dart';
-import 'package:data_entry/features/sign_in/presentation/routes/sign_in_route.dart';
+import 'package:{{project_name}}/features/init/presentation/mixins/init_mixin.dart';
 
 import '../../../../../app_export.dart';
 import '../cubit/init_cubit_state.dart' show UserAuthStateChanged;
@@ -34,11 +31,9 @@ class _InitScreenState extends State<InitScreen> with InitMixin {
         if (state is UserAuthStateChanged) {
           switch (initCubit.userAuthState) {
             case UserAuthState.loggedIn:
-              HomePageRoute().pushReplacement(context);
               break;
             case UserAuthState.loggedOut:
             case UserAuthState.unknown:
-              SignInRoute().pushReplacement(context);
               break;
           }
         }

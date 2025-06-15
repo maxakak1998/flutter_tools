@@ -1,5 +1,5 @@
-import 'package:data_entry/app_export.dart';
-import 'package:data_entry/core/services/manager_service/manger_service_export.dart';
+import 'package:{{project_name}}/app_export.dart';
+import 'package:{{project_name}}/core/services/manager_service/manger_service_export.dart';
 import 'package:flutter_easyloading/flutter_easyloading.dart';
 import 'package:flutter/cupertino.dart';
 
