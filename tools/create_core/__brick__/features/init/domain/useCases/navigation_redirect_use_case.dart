@@ -1,4 +1,4 @@
-import 'package:data_entry/features/init/presentation/mixins/init_mixin.dart';
+import 'package:{{project_name}}/features/init/presentation/mixins/init_mixin.dart';
 
 import '../../../../app_export.dart';
 

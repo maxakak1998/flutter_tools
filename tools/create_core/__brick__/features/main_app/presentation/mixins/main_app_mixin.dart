@@ -1,4 +1,4 @@
-import 'package:data_entry/features/main_app/domain/useCases/change_locale_to_use_case.dart';
+import 'package:{{project_name}}/features/main_app/domain/useCases/change_locale_to_use_case.dart';
 
 import '/..../../../app_export.dart';
 import '../../domain/repositories/main_app_repository_base.dart';

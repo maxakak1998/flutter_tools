@@ -23,7 +23,6 @@ export 'package:{{project_name}}/core/services/secure_storage/base_secure_storag
 export 'package:{{project_name}}/core/services/secure_storage/secure_storage.dart';
 export 'package:{{project_name}}/features/init/domain/useCases/navigation_redirect_use_case.dart';
 export 'package:{{project_name}}/features/main_app/presentation/mixins/main_app_mixin.dart';
-export 'package:{{project_name}}/core/services/meta_data_service.dart';
 export 'package:{{project_name}}/commons/widgets/common_loading_widget.dart';
 export 'package:url_launcher/url_launcher.dart';
 export 'package:package_info_plus/package_info_plus.dart';

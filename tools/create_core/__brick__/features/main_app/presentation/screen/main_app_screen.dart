@@ -59,7 +59,7 @@ class _MainAppScreenState extends State<MainAppScreen> with MainAppMixin {
                         DefaultCupertinoLocalizations.delegate,
                       ],
                       supportedLocales: context.supportedLocales,
-                      theme: mainAppCubit.currentTheme.themeData,
+                      // theme: mainAppCubit.currentTheme.themeData,
                       debugShowCheckedModeBanner: false,
                       locale: context.locale,
                       routerConfig: router.goRouter,

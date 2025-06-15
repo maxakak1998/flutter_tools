@@ -1,5 +1,5 @@
-import 'package:data_entry/configs/flavors_values.g.dart';
-import 'package:data_entry/core/services/manager_service/options/manager_env_options.dart';
+import 'package:{{project_name}}/configs/flavors_values.g.dart';
+import 'package:{{project_name}}/core/services/manager_service/options/manager_env_options.dart';
 
 import '../../../../app_export.dart';
 import 'init_cubit_state.dart';

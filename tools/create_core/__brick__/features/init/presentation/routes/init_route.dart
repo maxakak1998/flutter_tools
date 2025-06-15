@@ -1,6 +1,6 @@
 
-import 'package:data_entry/app_export.dart';
-import 'package:data_entry/features/init/presentation/screen/init_screen.dart';
+import 'package:{{project_name}}/app_export.dart';
+import 'package:{{project_name}}/features/init/presentation/screen/init_screen.dart';
 part 'init_route.g.dart';
 
 @TypedGoRoute<InitRoute>(path: '/')
