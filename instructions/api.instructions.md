@@ -34,5 +34,6 @@ applyTo: '**'
     2. Run `make gen_api` to generate the API routes and models.
     3. Use that model in the API call as the `create` parameter in the `decodedData` method.
     4. Return the decoded data(generated model) from the API call.
-
-
+    5. The decodedData model should get from `lib/core/api/api_routes/api_routes_generated.dart` file.
+       and it should closely work with the repos to return the exact data.
+       Do not create a new model for parsing the API response. Use the generated model.
