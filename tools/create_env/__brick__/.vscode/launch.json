@@ -1,0 +1,16 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Flutter (prod) - iPhone 15 Pro Max",
+      "request": "launch",
+      "type": "dart",
+      "program": "lib/main.dart",
+      "deviceId": "0AEE3550-4051-41D5-AA4E-24475D1B7412",
+      "args": [
+        "--dart-define-from-file=env/prod.env.json",
+        "--flavor=prod"
+      ]
+    }
+  ]
+}
