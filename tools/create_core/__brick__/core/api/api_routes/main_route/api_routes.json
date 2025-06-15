@@ -1,0 +1,707 @@
+[
+  {
+    "name": "login",
+    "method": "POST",
+    "path": "/member/mobileApplicationLogin",
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "extra": {
+      "auth": false
+    },
+    "body": {
+      "username": {
+        "type": "string",
+        "required": true
+      },
+      "password": {
+        "type": "string",
+        "required": true
+      },
+      "apiurl": {
+        "type": "string",
+        "required": false
+      }
+    },
+    "responseModel": {
+      "username": "string",
+      "password": "string",
+      "apiurl": "string"
+    }
+  },
+  {
+    "name": "getMeter",
+    "method": "POST",
+    "path": "/member/getMeter",
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "body": {
+      "page": {
+        "type": "int",
+        "required": true
+      },
+      "limit": {
+        "type": "int",
+        "required": true
+      },
+      "keyword": {
+        "type": "string",
+        "required": false
+      },
+      "meterTypeId": {
+        "type": "string",
+        "required": false
+      },
+      "serviceTypeId": {
+        "type": "string",
+        "required": false
+      },
+      "mainOrSub": {
+        "type": "string",
+        "required": false
+      }
+    },
+    "responseModel": {
+      "ID": "string",
+      "Description": "string",
+      "MeterTypeID": "string",
+      "ServiceTypeID": "string",
+      "Readings_Or_Deliveries": "string",
+      "ImageUrl": "string",
+      "Utility": "string",
+      "Object_Subtype": "string",
+      "NotePad": "string",
+      "LocationNote": "string",
+      "MP_No": "string",
+      "ImageUpload": "string",
+      "Images": [
+        "string"
+      ],
+      "QRCode": "string",
+      "MainOrSub": "string",
+      "DevEUI": "string",
+      "India_BP_Number": "string",
+      "Serial_No": "string",
+      "India_Meter_Address": "string",
+      "India_Meter_Manufacture": "string",
+      "India_Meter_Model": "string",
+      "India_Service_Type": "string",
+      "India_Measure_Unit": "string",
+      "Meter_Capacity": "string",
+      "India_Data_Collection_Frequency": "string",
+      "Data_Collection_Frequency_Period": "string",
+      "Data_Collection_Frequency_Qty": "string",
+      "India_Link_AMR": "string",
+      "AMR_Serial_No": "string",
+      "Customer_First_Name": "string",
+      "Customer_Last_Name": "string",
+      "Customer_Address": "string",
+      "Customer_Signature_Image": "string",
+      "Customer_Signature_Date": "string",
+      "Model_Type": "string",
+      "Auto_Import_Code": "string",
+      "Manual_Meter_ID": "string"
+    }
+  },
+  {
+    "name": "metaData",
+    "method": "GET",
+    "path": "/member/getMetaData",
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "responseModel": {
+      "meterType": [
+        {
+          "ID": "string",
+          "Name": "string"
+        }
+      ],
+      "serviceType": [
+        {
+          "ID": "string",
+          "Name": "string"
+        }
+      ],
+      "ARMs": [
+        {
+          "ID": "string",
+          "Name": "string"
+        }
+      ],
+      "BPNumbers": [
+        {
+          "ID": "string",
+          "Name": "string"
+        }
+      ],
+      "Addresses": [
+        {
+          "ID": "string",
+          "Name": "string"
+        }
+      ],
+      "Manufactures": [
+        {
+          "ID": "string",
+          "Name": "string"
+        }
+      ],
+      "ModelTypes": [
+        {
+          "ID": "string",
+          "Name": "string"
+        }
+      ],
+      "Units": [
+        {
+          "ID": "string",
+          "Name": "string"
+        }
+      ],
+      "Capacities": [
+        {
+          "ID": "string",
+          "Name": "string"
+        }
+      ]
+    }
+  },
+  {
+    "name": "meterReading",
+    "method": "POST",
+    "path": "/member/reading",
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "body": [
+          {
+            "Meter_ID": "int",
+            "Reading_Date": "string",
+            "Reading_Time": "string",
+            "Reading_Type": "int",
+            "Reading_Value": "string",
+            "Delivered_Or_Movement": "double",
+            "Readings_Or_Deliveries": "int",
+            "NotePad": "string",
+            "LocationNote": "string"
+          }
+        ]
+  },
+  {
+    "name": "lastMeterReading",
+    "method": "POST",
+    "path": "/member/getLastReading",
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "body": {
+      "Meter_ID": {
+        "type": "int",
+        "required": true
+      }
+    },
+    "responseModel": {
+      "Meter_ID": "num",
+      "Reading_Date": "string",
+      "Reading_Time": "string",
+      "Reading_Type": "num",
+      "Readings_Or_Deliveries": "num",
+      "Reading_Value": "num",
+      "Delivered_Or_Movement": "num",
+      "NotePad": "string",
+      "LocationNote": "string"
+    }
+  },
+  {
+    "name": "uploads",
+    "method": "POST",
+    "path": "/member/uploads",
+    "responseModel": {
+      "Success": [
+        {
+          "Image": "string"
+        }
+      ]
+    },
+    "headers": {
+      "Content-Type": "multipart/form-data"
+    }
+  },
+  {
+    "name": "upload",
+    "method": "POST",
+    "path": "/member/upload",
+    "headers": {
+      "Content-Type": "multipart/form-data"
+    }
+  },
+  {
+    "name": "uploadImages",
+    "method": "POST",
+    "path": "/member/uploadImages",
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "body": {
+      "ID": {
+        "type": "string",
+        "required": true
+      },
+      "ImageURL": {
+        "type": [
+          "string"
+        ],
+        "required": true
+      }
+    }
+  },
+  {
+    "name": "scanQRCode",
+    "method": "POST",
+    "path": "/member/scanQRCode",
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "body": {
+      "QRCode": {
+        "type": "string",
+        "required": true
+      }
+    }
+  },
+  {
+    "name": "addQRCode",
+    "method": "POST",
+    "path": "/member/addQRCode",
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "body": {
+      "ID": {
+        "type": "string",
+        "required": true
+      },
+      "QRCode": {
+        "type": "string",
+        "required": true
+      }
+    }
+  },
+  {
+    "name": "updateMeter",
+    "method": "POST",
+    "path": "/member/updateMeter",
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    
+    "body": {
+      "ID": {
+        "type": "string",
+        "required": true
+      },
+      "NotePad": {
+        "type": "string",
+        "required": false
+      },
+      "LocationNote": {
+        "type": "string",
+        "required": false
+      },
+      "Serial_No": {
+        "type": "string",
+        "required": false
+      },
+      "Meter_Capacity": {
+        "type": "string",
+        "required": false
+      },
+      "India_BP_Number": {
+        "type": "string",
+        "required": false
+      },
+      "India_Meter_Address": {
+        "type": "string",
+        "required": false
+      },
+      "India_Meter_Manufacture": {
+        "type": "string",
+        "required": false
+      },
+      "India_Meter_Model": {
+        "type": "string",
+        "required": false
+      },
+      "India_Service_Type": {
+        "type": "string",
+        "required": false
+      },
+      "India_Measure_Unit": {
+        "type": "string",
+        "required": false
+      },
+      "India_Data_Collection_Frequency": {
+        "type": "string",
+        "required": false
+      },
+      "DevEUI": {
+        "type": "string",
+        "required": false
+      },
+      "AMR_Serial_No": {
+        "type": "string",
+        "required": false
+      },
+      "Auto_Import_Code": {
+        "type": "string",
+        "required": false
+      },
+      "Data_Collection_Frequency_Period": {
+        "type": "string",
+        "required": false
+      },
+      "Data_Collection_Frequency_Qty": {
+        "type": "string",
+        "required": false
+      },
+      "Description": {
+        "type": "string",
+        "required": false
+      }
+    }
+  },
+  {
+    "name": "getCustomer",
+    "method": "POST",
+    "path": "/member/getCustomer",
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "body": {
+      "page": {
+        "type": "int",
+        "required": true
+      },
+      "limit": {
+        "type": "int",
+        "required": true
+      },
+      "keyword": {
+        "type": "string",
+        "required": false
+      },
+      "meterTypeId": {
+        "type": "string",
+        "required": false
+      },
+      "serviceTypeId": {
+        "type": "string",
+        "required": false
+      },
+      "mainOrSub": {
+        "type": "string",
+        "required": false
+      }
+    }
+  },
+  {
+    "name": "addCustomer",
+    "method": "POST",
+    "path": "/member/addCustomer",
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "body": {
+      "MeterID": {
+        "type": "int",
+        "required": true
+      },
+      "FirstName": {
+        "type": "string",
+        "required": true
+      },
+      "LastName": {
+        "type": "string",
+        "required": true
+      },
+      "Address": {
+        "type": "string",
+        "required": true
+      },
+      "SignatureImage": {
+        "type": "string",
+        "required": true
+      }
+    }
+  },
+  {
+    "name": "updateCustomer",
+    "method": "POST",
+    "path": "/member/updateCustomer",
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "body": {
+      "ID": {
+        "type": "string",
+        "required": true
+      },
+      "FirstName": {
+        "type": "string",
+        "required": false
+      },
+      "LastName": {
+        "type": "string",
+        "required": false
+      },
+      "Address": {
+        "type": "string",
+        "required": false
+      }
+    }
+  },
+  {
+    "name": "addSignature",
+    "method": "POST",
+    "path": "/member/addSignature",
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "body": {
+      "ID": {
+        "type": "string",
+        "required": true
+      },
+      "SignatureImage": {
+        "type": "string",
+        "required": true
+      }
+    }
+  },
+  {
+    "name": "updateAMR",
+    "method": "POST",
+    "path": "/member/updateAMR",
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "body": {
+      "ID": {
+        "type": "string",
+        "required": true
+      },
+      "India_Link_AMR": {
+        "type": "string",
+        "required": true
+      }
+    }
+  },
+  {
+    "name": "searchDevEUI",
+    "method": "POST",
+    "path": "/member/searchDevui",
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "body": {
+      "keyword": {
+        "type": "string",
+        "required": true
+      }
+    },
+    "responseModel": {
+      "amrs": [
+        {
+          "ID": "string",
+          "Name": "string"
+        }
+      ]
+    }
+  },
+  {
+    "name": "getAddressDetail",
+    "method": "POST",
+    "path": "/member/getAddressDetail",
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "body": {
+      "Meter_ID": {
+        "type": "string",
+        "required": true
+      }
+    },
+    "responseModel": {
+      "Meter_ID": "num",
+      "Tenant_Meter_ID": "num",
+      "Name": "string",
+      "Drs_No": "string",
+      "Flat_No": "string",
+      "Plot_No": "string",
+      "Floor_No": "string",
+      "Wing_Name": "string",
+      "Road_Name": "string",
+      "Landmark": "string",
+      "Colony": "string",
+      "Location": "string",
+      "District": "string",
+      "City": "string",
+      "Postcode": "string",
+      "Country": "string",
+      "Address": "string",
+      "Address1": "string",
+      "Address2": "string",
+      "Contact_Number": "string",
+      "Building_Name": "string",
+      "Society_Name": "string",
+      "FromDate": "string",
+      "ToDate": "string",
+      "Created_On": "string",
+      "IsUnoccupied": "bool"
+    }
+  },
+  {
+    "name": "updateAddress",
+    "method": "POST",
+    "path": "/member/updateAddress",
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "body": {
+      "Meter_ID": {
+        "type": "string",
+        "required": true
+      },
+      "Name": {
+        "type": "string",
+        "required": false
+      },
+      "Address": {
+        "type": "string",
+        "required": false
+      },
+      "Address1": {
+        "type": "string",
+        "required": false
+      },
+      "Address2": {
+        "type": "string",
+        "required": false
+      },
+      "Postcode": {
+        "type": "string",
+        "required": false
+      },
+      "Country": {
+        "type": "string",
+        "required": false
+      },
+      "Contact_Number": {
+        "type": "string",
+        "required": false
+      },
+      "FromDate": {
+        "type": "string",
+        "required": false
+      },
+      "ToDate": {
+        "type": "string",
+        "required": false
+      },
+      "Created_On": {
+        "type": "string",
+        "required": false
+      },
+      "IsUnoccupied": {
+        "type": "bool",
+        "required": false
+      },
+      "Building_Name": {
+        "type": "string",
+        "required": false
+      },
+      "Society_Name": {
+        "type": "string",
+        "required": false
+      },
+      "Flat_No": {
+        "type": "string",
+        "required": false
+      },
+      "Floor_No": {
+        "type": "string",
+        "required": false
+      },
+      "Wing_Name": {
+        "type": "string",
+        "required": false
+      },
+      "Plot_No": {
+        "type": "string",
+        "required": false
+      },
+      "Road_Name": {
+        "type": "string",
+        "required": false
+      },
+      "Landmark": {
+        "type": "string",
+        "required": false
+      },
+      "Colony": {
+        "type": "string",
+        "required": false
+      },
+      "Location": {
+        "type": "string",
+        "required": false
+      },
+      "City": {
+        "type": "string",
+        "required": false
+      },
+      "District": {
+        "type": "string",
+        "required": false
+      }
+    },
+    "responseModel": {
+      "message": "string"
+    }
+  },
+  {
+    "name": "regularLogin",
+    "method": "POST",
+    "path": "/member/login",
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "extra": {
+      "auth": false
+    },
+    "body": {
+      "username": {
+        "type": "string",
+        "required": true
+      },
+      "password": {
+        "type": "string",
+        "required": true
+      },
+      "apiurl": {
+        "type": "string",
+        "required": false
+      }
+    }
+  },
+  {
+    "name": "getReadingType",
+    "method": "GET",
+    "path": "/member/getReadingType",
+    "headers": {
+      "Content-Type": "application/json"
+    }
+  }
+]

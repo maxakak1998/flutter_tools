@@ -26,4 +26,9 @@ environment:
 #  * a list of values (enums only)
 #  * an optional separator (list only)
 vars:
+  project_name:
+    type: string
+    description: project name
+    default: template
+    prompt: "Enter the name of the project"
 
