@@ -2,7 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:xml/xml.dart' as xml;
 
-const _root = "..";
+const _root = ".";
 
 String flavorCommand = "--flavors=";
 String keyStoreCommand = "--genKeyStore=";
@@ -48,62 +48,62 @@ void main(List<String> args) {
     _genFlavorValues(createJson);
   }
 
-  if (flavors.isNotEmpty) {
-    print("Creating config files...");
-    for (final platform in platforms) {
-      for (final mode in modes) {
-        for (final flavor in flavors) {
-          var builder = xml.XmlBuilder();
-          String fileName =
-              "$platform${flavor[0].toUpperCase()}${flavor.substring(1).toLowerCase()}${mode[0].toUpperCase()}${mode.substring(1).toLowerCase()}";
-          builder.processing('xml', 'version="1.0"');
-          builder.element(
-            'component',
-            attributes: {'name': 'ProjectRunConfigurationManager'},
-            nest: () {
-              builder.element(
-                'configuration',
-                attributes: {
-                  'default': 'false',
-                  'name': fileName,
-                  'type': 'FlutterRunConfigurationType',
-                  'factoryName': 'Flutter',
-                },
-                nest: () {
-                  builder.element(
-                    'option',
-                    attributes: {
-                      'name': 'additionalArgs',
-                      'value':
-                          '--$mode '
-                          '--dart-define-from-file=dart_defines/$platform/$flavor.json',
-                    },
-                  );
-                  builder.element(
-                    'option',
-                    attributes: {'name': 'filePath', 'value': '\$PROJECT_DIR\$/lib/main.dart'},
-                  );
-                  builder.element(
-                    'option',
-                    attributes: {'name': 'buildFlavor', 'value': flavor},
-                  );
+  // if (flavors.isNotEmpty) {
+  //   print("Creating config files...");
+  //   for (final platform in platforms) {
+  //     for (final mode in modes) {
+  //       for (final flavor in flavors) {
+  //         var builder = xml.XmlBuilder();
+  //         String fileName =
+  //             "$platform${flavor[0].toUpperCase()}${flavor.substring(1).toLowerCase()}${mode[0].toUpperCase()}${mode.substring(1).toLowerCase()}";
+  //         builder.processing('xml', 'version="1.0"');
+  //         builder.element(
+  //           'component',
+  //           attributes: {'name': 'ProjectRunConfigurationManager'},
+  //           nest: () {
+  //             builder.element(
+  //               'configuration',
+  //               attributes: {
+  //                 'default': 'false',
+  //                 'name': fileName,
+  //                 'type': 'FlutterRunConfigurationType',
+  //                 'factoryName': 'Flutter',
+  //               },
+  //               nest: () {
+  //                 builder.element(
+  //                   'option',
+  //                   attributes: {
+  //                     'name': 'additionalArgs',
+  //                     'value':
+  //                         '--$mode '
+  //                         '--dart-define-from-file=dart_defines/$platform/$flavor.json',
+  //                   },
+  //                 );
+  //                 builder.element(
+  //                   'option',
+  //                   attributes: {'name': 'filePath', 'value': '\$PROJECT_DIR\$/lib/main.dart'},
+  //                 );
+  //                 builder.element(
+  //                   'option',
+  //                   attributes: {'name': 'buildFlavor', 'value': flavor},
+  //                 );
 
-                  builder.element('method', attributes: {'v': '2'});
-                },
-              );
-            },
-          );
+  //                 builder.element('method', attributes: {'v': '2'});
+  //               },
+  //             );
+  //           },
+  //         );
 
-          var xmlDoc = builder.buildDocument();
+  //         var xmlDoc = builder.buildDocument();
 
-          var filePath = '$_root/.idea/runConfigurations/$fileName.xml';
-          var xmlFile = File(filePath)..createSync(recursive: true);
-          xmlFile.writeAsStringSync(xmlDoc.toXmlString(pretty: true));
-          print("${xmlFile.path} created");
-        }
-      }
-    }
-  }
+  //         var filePath = '$_root/.idea/runConfigurations/$fileName.xml';
+  //         var xmlFile = File(filePath)..createSync(recursive: true);
+  //         xmlFile.writeAsStringSync(xmlDoc.toXmlString(pretty: true));
+  //         print("${xmlFile.path} created");
+  //       }
+  //     }
+  //   }
+  // }
 
   if (flavors.isNotEmpty && autoGenDartDefines) {
     print("creating dart defines...");
@@ -134,10 +134,71 @@ void main(List<String> args) {
       String path = '$_root/android/key_stores/${buildType.toLowerCase()}';
       Directory directory = Directory(path);
       directory.createSync(recursive: true);
-      for (String flavor in flavors) {
+      if (buildType == "Release") {
+        for (String flavor in flavors) {
+          String aliasName = '$flavor$buildType';
+          final file = File(
+            "$_root/android/key_properties/${buildType.toLowerCase()}/$flavor.properties",
+          )..createSync(recursive: true);
+          file.writeAsString('''
+keyAlias=$aliasName
+keyPassword=$password
+storeFile=../../android/key_stores/${buildType.toLowerCase()}/$flavor.jks
+storePassword=$password
+      ''');
+          print("${file.path} created");
+          Process.runSync('keytool', [
+            '-genkey',
+            '-v',
+            '-keystore',
+            '$path/$flavor.jks',
+            '-alias',
+            aliasName,
+            '-keyalg',
+            'RSA',
+            '-keysize',
+            '2048',
+            '-validity',
+            '10000',
+            '-storetype',
+            'jks',
+            '-keypass',
+            password,
+            '-storepass',
+            password,
+            '-dname',
+            'CN=, OU=, O=, L=y, S=, C=HCM',
+          ]);
+          print("$path/$flavor.jks created");
+
+          if (aliasName.contains('Release')) {
+            Process.runSync('keytool', [
+              '-importkeystore',
+              '-srckeystore',
+              '$path/$flavor.jks',
+              '-destkeystore',
+              '$path/private_key_$flavor.pepk',
+              '-deststoretype',
+              'pkcs12',
+              '-srcstoretype',
+              'jks',
+              '-srcstorepass',
+              password,
+              '-deststorepass',
+              password,
+              '-srcalias',
+              aliasName,
+              '-srckeypass',
+              password,
+            ]);
+            print("$path/$flavor.pepk created");
+          }
+        }
+      } else if (buildType == "Debug") {
+        String flavor="dev";
         String aliasName = '$flavor$buildType';
         final file = File(
-          "$_root/android/key_properties/${buildType.toLowerCase()}/$flavor.properties",
+          "$_root/android/key_properties/${buildType.toLowerCase()}/debug.properties",
         )..createSync(recursive: true);
         file.writeAsString('''
 keyAlias=$aliasName
