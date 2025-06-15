@@ -41,10 +41,10 @@ class CommonLoadingWidget {
       ..loadingStyle = EasyLoadingStyle.custom
       ..indicatorSize = 45.0
       ..radius = 10.0
-      ..progressColor = currentTheme.primaryColor
-      ..backgroundColor = Colors.white
-      ..indicatorColor = currentTheme.primaryColor
-      ..textColor = currentTheme.primaryTextColor
+      // ..progressColor = currentTheme.primaryColor
+      // ..backgroundColor = Colors.white
+      // ..indicatorColor = currentTheme.primaryColor
+      // ..textColor = currentTheme.primaryTextColor
       ..maskColor = Colors.black.withOpacity(0.5)
       ..userInteractions = false
       ..dismissOnTap = false
@@ -161,10 +161,10 @@ class CommonLoadingWidget {
   static void updateTheme() {
     final ITheme currentTheme = GetIt.I<MainAppCubit>().currentTheme;
     
-    EasyLoading.instance
-      ..progressColor = currentTheme.primaryColor
-      ..indicatorColor = currentTheme.primaryColor
-      ..textColor = currentTheme.primaryTextColor;
+    // EasyLoading.instance
+    //   ..progressColor = currentTheme.primaryColor
+    //   ..indicatorColor = currentTheme.primaryColor
+    //   ..textColor = currentTheme.primaryTextColor;
   }
 
   /// Configuration for specific loading scenarios
