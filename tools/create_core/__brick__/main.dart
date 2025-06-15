@@ -1,5 +1,5 @@
 import 'package:{{project_name}}/features/main_app/main_app_inject.dart';
-import 'package:{{project_name}}/features/main_app/main_app_inject.dart';
+import 'package:{{project_name}}/features/init/init_inject.dart';
 
 import 'app_export.dart';
 
