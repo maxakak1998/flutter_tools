@@ -1,4 +1,4 @@
-name: create_core
+name: create_env
 description: Create core folder -o .
 
 # The following defines the brick repository url.
