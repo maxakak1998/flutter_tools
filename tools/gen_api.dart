@@ -15,9 +15,10 @@ String toCamelCase(String input) {
 
 String dartType(dynamic value) {
   if (value is String && value == 'string') return 'String';
-  if (value == 'int') return 'int';
+  if (value == 'int') return 'num';  // Force int to num
   if (value == 'bool') return 'bool';
-  if (value == 'double') return 'double';
+  if (value == 'double') return 'num';  // Force double to num
+  if (value == 'num') return 'num';
   if (value is List && value.isNotEmpty) {
     final elementType = dartType(value.first);
     return 'List<$elementType>';
@@ -37,31 +38,62 @@ String generateParameterFromField(String key, Map<String, dynamic> field) {
   }
 }
 
-String generateParametersFromFields(Map<String, dynamic>? fields) {
-  if (fields == null || fields.isEmpty) return '';
+String generateParametersFromFields(dynamic fields, String apiName, StringBuffer modelBuffer, Map<String, String> generatedClasses) {
+  if (fields == null) return '';
   
   final params = <String>[];
-  fields.forEach((key, field) {
-    if (field is Map<String, dynamic>) {
-      params.add(generateParameterFromField(key, field));
-    }
-  });
+  
+  if (fields is Map<String, dynamic>) {
+    if (fields.isEmpty) return '';
+    fields.forEach((key, field) {
+      if (field is Map<String, dynamic>) {
+        params.add(generateParameterFromField(key, field));
+      }
+    });
+  } else if (fields is List && fields.isNotEmpty && fields.first is Map<String, dynamic>) {
+    // Generate model for the list-typed body with Param suffix
+    final modelName = '${toPascalCase(apiName)}Param';
+    final bodyModel = fields.first as Map<String, dynamic>;
+    
+    // Convert field types from strings to proper structure for model generation
+    final modelFields = <String, dynamic>{};
+    bodyModel.forEach((key, value) {
+      if (value is String) {
+        // Create a proper field structure for model generation
+        modelFields[key] = value; // Keep the type as string for dartType function
+      }
+    });
+    
+    // Generate the model
+    modelBuffer.writeln(generateModel(modelName, modelFields, generatedClasses));
+    modelBuffer.writeln();
+    
+    // Use the generated model as parameter
+    params.add('required List<$modelName> data');
+  }
   
   return params.isEmpty ? '' : ', ${params.join(', ')}';
 }
 
-String generateDataOrQueryMap(Map<String, dynamic>? fields) {
-  if (fields == null || fields.isEmpty) return '';
+String generateDataOrQueryMap(dynamic fields, String apiName) {
+  if (fields == null) return '';
   
-  final entries = <String>[];
-  fields.forEach((key, field) {
-    if (field is Map<String, dynamic>) {
-      final paramName = toCamelCase(key);
-      entries.add('"$key": $paramName');
-    }
-  });
+  if (fields is Map<String, dynamic>) {
+    if (fields.isEmpty) return '';
+    final entries = <String>[];
+    fields.forEach((key, field) {
+      if (field is Map<String, dynamic>) {
+        final paramName = toCamelCase(key);
+        entries.add('"$key": $paramName');
+      }
+    });
+    return entries.join(', ');
+  } else if (fields is List && fields.isNotEmpty) {
+    // For list-typed body, convert the model list to JSON
+    return 'data.map((e) => e.toJson()).toList()';
+  }
   
-  return entries.join(', ');
+  return '';
 }
 
 String generateModel(
@@ -117,12 +149,16 @@ String generateModel(
     } else if (type.startsWith('List<')) {
       // Handle List<T> parsing for primitives
       final innerType = type.substring(5, type.length - 1);
-      if (innerType == 'String' || innerType == 'int' || innerType == 'double' || innerType == 'bool' || innerType == 'dynamic') {
+      if (innerType == 'String') {
+        buffer.writeln('    $camelKey: (json[\'$key\'] as List?)?.map((e) => (e as String).trim()).toList(),');
+      } else if (innerType == 'num' || innerType == 'bool' || innerType == 'dynamic') {
         buffer.writeln('    $camelKey: (json[\'$key\'] as List?)?.map((e) => e as $innerType).toList(),');
       } else {
         buffer.writeln('    $camelKey: (json[\'$key\'] as List?)?.map((e) => $innerType.fromJson(e)).toList(),');
       }
-    } else if (type == 'String' || type == 'int' || type == 'double' || type == 'bool' || type == 'dynamic') {
+    } else if (type == 'String') {
+      buffer.writeln('    $camelKey: (json[\'$key\'] as String?)?.trim(),');
+    } else if (type == 'num' || type == 'bool' || type == 'dynamic') {
       buffer.writeln('    $camelKey: json[\'$key\'] as $type?,');
     } else {
       buffer.writeln('    $camelKey: json[\'$key\'] == null ? null : $type.fromJson(json[\'$key\'] as Map<String, dynamic>),');
@@ -161,6 +197,22 @@ String generateModel(
   });
   buffer.writeln('    );');
   buffer.writeln('  }\n');
+
+  // toJson method
+  buffer.writeln('  Map<String, dynamic> toJson() => {');
+  model.forEach((key, value) {
+    final camelKey = toCamelCase(key);
+    if (value is Map<String, dynamic>) {
+      buffer.writeln('        \'$key\': $camelKey?.toJson(),');
+    } else if (value is List &&
+        value.isNotEmpty &&
+        value.first is Map<String, dynamic>) {
+      buffer.writeln('        \'$key\': $camelKey?.map((e) => e.toJson()).toList(),');
+    } else {
+      buffer.writeln('        \'$key\': $camelKey,');
+    }
+  });
+  buffer.writeln('      };\n');
 
   buffer.writeln('}');
 
@@ -205,12 +257,12 @@ Future<void> main() async {
           final headers = api['headers'] ?? {};
           final model = api['responseModel'] as Map<String, dynamic>?;
           final extra = api['extra'] as Map<String, dynamic>? ?? {};
-          final body = api['body'] as Map<String, dynamic>?;
+          final body = api['body']; // Remove type casting to support both Map and List
           final query = api['query'] as Map<String, dynamic>?;
 
           // Generate method parameters
-          final bodyParams = generateParametersFromFields(body);
-          final queryParams = generateParametersFromFields(query);
+          final bodyParams = generateParametersFromFields(body, name, modelBuffer, generatedClasses);
+          final queryParams = generateParametersFromFields(query, name, modelBuffer, generatedClasses);
           final allParams = bodyParams + queryParams;
 
           helperBuffer.writeln(
@@ -231,13 +283,19 @@ Future<void> main() async {
           helperBuffer.writeln("      },");
           
           // Generate the compose call with data and queryParameters if needed
-          final dataMap = generateDataOrQueryMap(body);
-          final queryMap = generateDataOrQueryMap(query);
+          final dataMap = generateDataOrQueryMap(body, name);
+          final queryMap = generateDataOrQueryMap(query, name);
           
           helperBuffer.write("    ).compose(baseOption, '$path'");
           
           if (dataMap.isNotEmpty) {
-            helperBuffer.write(", data: {$dataMap}");
+            if (dataMap.contains('data.map((e) => e.toJson()).toList()')) {
+              // For list-typed body, convert to JSON
+              helperBuffer.write(", data: $dataMap");
+            } else {
+              // For map-typed body, create the map
+              helperBuffer.write(", data: {$dataMap}");
+            }
           }
           
           if (queryMap.isNotEmpty) {
