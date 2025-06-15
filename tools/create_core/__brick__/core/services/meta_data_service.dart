@@ -1,8 +1,8 @@
-import 'package:data_entry/core/api/api_response/restful/api_response.dart';
-import 'package:data_entry/core/api/api_routes/main_route/api_routes_generated.dart';
-import 'package:data_entry/core/api/api_clients/api_client.dart';
-import 'package:data_entry/core/services/manager_service/manager_env_service.dart';
-import 'package:data_entry/features/detail_meter/domain/models/dropdown_item.dart';
+import 'package:{{project_name}}/core/api/api_response/restful/api_response.dart';
+import 'package:{{project_name}}/core/api/api_routes/main_route/api_routes_generated.dart';
+import 'package:{{project_name}}/core/api/api_clients/api_client.dart';
+import 'package:{{project_name}}/core/services/manager_service/manager_env_service.dart';
+import 'package:{{project_name}}/features/detail_meter/domain/models/dropdown_item.dart';
 import 'package:get_it/get_it.dart';
 
 class MetaDataService {

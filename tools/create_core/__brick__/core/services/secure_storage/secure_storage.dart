@@ -2,8 +2,8 @@ import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
-import 'package:data_entry/core/services/secure_storage/base_secure_storage.dart';
-import 'package:data_entry/core/services/secure_storage/models/local_user.dart';
+import 'package:{{project_name}}/core/services/secure_storage/base_secure_storage.dart';
+import 'package:{{project_name}}/core/services/secure_storage/models/local_user.dart';
 
 class SecureStorageService implements ISecureStorageService {
   static String get userInfoKey => 'user_info';

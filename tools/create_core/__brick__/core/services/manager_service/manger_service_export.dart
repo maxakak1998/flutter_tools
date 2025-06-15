@@ -9,11 +9,11 @@ export 'dart:convert';
 export 'package:cloud_firestore/cloud_firestore.dart';
 export 'package:firebase_auth/firebase_auth.dart';
 export 'package:flutter/foundation.dart' hide kIsWasm;
-export 'package:data_entry/core/services/manager_service/flavor_env_service.dart';
+export 'package:{{project_name}}/core/services/manager_service/flavor_env_service.dart';
 
 export 'options/firebase_env_options.dart';
 export 'options/override_env_service.dart';
-export 'package:data_entry/core/api/api_clients/api_client.dart';
+export 'package:{{project_name}}/core/api/api_clients/api_client.dart';
 
 export 'dart:io';
 

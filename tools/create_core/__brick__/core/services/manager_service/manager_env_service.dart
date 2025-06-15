@@ -1,5 +1,5 @@
-import 'package:data_entry/configs/flavors_values.g.dart';
-import 'package:data_entry/core/api/api_interceptors/log_interceptor.dart';
+import 'package:{{project_name}}/configs/flavors_values.g.dart';
+import 'package:{{project_name}}/core/api/api_interceptors/log_interceptor.dart';
 import 'package:dio/dio.dart';
 
 import 'manger_service_export.dart';

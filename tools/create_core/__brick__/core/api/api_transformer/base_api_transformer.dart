@@ -1,4 +1,4 @@
-import 'package:data_entry/core/api/decodable.dart';
+import 'package:{{project_name}}/core/api/decodable.dart';
 
 typedef RootKeyExtractor = List<String> Function(Map<String, dynamic>? data);
 

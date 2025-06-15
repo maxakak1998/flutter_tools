@@ -1,4 +1,4 @@
-import 'package:data_entry/core/services/secure_storage/models/local_user.dart';
+import 'package:{{project_name}}/core/services/secure_storage/models/local_user.dart';
 
 abstract class ISecureStorageService {
   Future<LocalUser?> getLocalUser();

@@ -1,7 +1,7 @@
 // GENERATED CODE - DO NOT MODIFY BY HAND
 
 import 'package:dio/dio.dart';
-import 'package:data_entry/core/api/decodable.dart';
+import 'package:{{project_name}}/core/api/decodable.dart';
 
 // === RequestOptions Generator ===
 class MainRouteApiRoutesGenerated {

@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:{{project_name}}/core/api/api_export.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 
