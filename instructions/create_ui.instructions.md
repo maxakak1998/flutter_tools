@@ -57,13 +57,18 @@ applyTo: '**'
     * If an image or asset is present, use `ImageExtension` with a **fake placeholder path**.
       *Do not guess or generate asset content.*
 
-11. **When Figma Code is Provided**
-
-    * ❌ Do **not** reuse Figma layout code directly.
-    * ✅ Use Figma code **only for style values** (e.g., color, padding, font size).
-    * ❗ Avoid `Stack`, `Positioned`, `Align` unless necessary for overlays.
-    * ❌ Do not hardcode width/height unless design demands it.
-    * 📀 All styles must comply with `styling.instructions.md`.
 
 ---
 
+**Rules**
+ 1. Avoid `Stack`, `Positioned`, `Align` unless necessary for overlays
+ 2. All styles must comply with `styling.instructions.md`
+ 3. Do not use inline styles or assets, create/update asssets path in `lib/commons/constants/app_assets.dart`
+ ```dart
+ class AppAssets {
+    static const String placeholder = 'assets/images/placeholder.png';
+    static const String logo = 'assets/images/logo.png';
+ }
+ ```
+ 4. Always use `ImageExtension` for Image Assets
+ 5. Remember to update the `pubspec.yaml` with new assets if needed
