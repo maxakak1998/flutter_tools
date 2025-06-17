@@ -43,6 +43,13 @@ Using fvm to run flutter pub get:
 fvm flutter pub get
 
 
+### Flutter Analyze
+Using fvm flutter analyze --no-fatal-infos --no-fatal-warnings to get only errors and critical warnings:
+```bash
+fvm flutter analyze --no-fatal-infos --no-fatal-warnings
+```
+
+
 Rules:
  1. Alaways ask about the feature name before generating a new feature if it is not provided.
  2. If the feature name is not provided, ask the user to provide it.
