@@ -234,7 +234,13 @@ String generateModel(
   return buffer.toString();
 }
 
-Future<void> main() async {
+Future<void> main(List<String> args) async {
+  if (args.isEmpty) {
+    print('Usage: fvm dart gen_api.dart <package_name>');
+    return;
+  }
+
+  packageName = args[0] ;
   final routeDir = Directory(root);
   final exportBuffer = StringBuffer();
 
