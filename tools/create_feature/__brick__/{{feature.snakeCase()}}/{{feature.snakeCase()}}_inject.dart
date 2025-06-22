@@ -14,9 +14,4 @@ void inject{{feature.pascalCase()}}Module() {
   // Repositories
   sl.registerLazySingleton<I{{feature.pascalCase()}}Repository>(() => {{feature.pascalCase()}}Repository());
 
-  // UseCases
-  sl.registerLazySingleton<IGet{{feature.pascalCase()}}UseCase>(() => Get{{feature.pascalCase()}}UseCase());
-
-  // Cubit
-  sl.registerFactory(() => {{feature.pascalCase()}}Cubit());
 }

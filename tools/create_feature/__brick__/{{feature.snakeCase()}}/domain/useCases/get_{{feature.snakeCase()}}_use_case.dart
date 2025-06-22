@@ -6,7 +6,7 @@ abstract class IGet{{feature.pascalCase()}}UseCase {
 
 }
 
-class Get{{feature.pascalCase()}}UseCase extends IGet{{feature.pascalCase()}}UseCase with {{feature.pascalCase()}}Mixin {
+class Get{{feature.pascalCase()}}UseCase extends IGet{{feature.pascalCase()}}UseCase {
 
 
 }

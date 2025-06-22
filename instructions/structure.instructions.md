@@ -1,73 +1,126 @@
----
-applyTo: '**'
----
-# 🧠 Project Instructions for Copilot Agency
+# Architecture Documentation
 
-## 🧱 Architecture Overview
 
-This project uses **Clean Architecture** with a **Feature-First** structure.
-
-Each feature is self-contained with its own layers:
+## Project Structure
 
 ```
 lib/
-├── commons/               # Shared base utilities (e.g., base_cubit)
-├── constants/             # Static constants and keys
-├── core/                  # App-wide logic
-│   ├── api/               # Network configuration, clients
-│   ├── font/              # Font assets
-│   ├── localization/      # Localization setup
-│   ├── routers/           # Global route setup
-│   ├── services/          # Shared services like SecureStorageService
-│   └── theme/             # App-wide theme management
-├── features/              # All business logic is grouped per feature
-│   └── <feature_name>/    # e.g., home_page/
-│       ├── data/          # Data sources, models, repository impls
-│       ├── domain/        # Business logic (use cases, interfaces)
-│       ├── presentation/  # UI layer (Cubit/Bloc, Pages, Widgets)
-│       └── <feature>_inject.dart  # DI setup for the feature
+├── main.dart                 # App entry point
+├── core/                     # Shared infrastructure
+│   ├── api/                 # Network layer
+│   ├── services/            # Database, storage, connectivity
+│   ├── routers/             # Navigation
+│   └── theme/               # UI theming
+├── features/                 # Business features
+│   ├── meter_reading/       # Meter data collection
+│   ├── add_customer/        # Customer management
+│   ├── search_meter/        # Meter search
+│   └── main_setup/          # Meter configuration
+└── commons/                  # Shared utilities
 ```
 
----
-
-## 🧭 Feature Structure Example
-
-Example: `lib/features/home_page/`
+### Feature Structure
+Each feature follows this pattern:
 
 ```
-home_page/
+features/meter_reading/
 ├── data/
-│   └── repositories/
-│       └── home_page_repository.dart
+│   └── repositories/        # Data access layer
+│       ├── meter_reading_repository.dart         # Factory
+│       ├── meter_reading_online_repository.dart  # API calls
+│       └── meter_reading_offline_repository.dart # Local DB
 ├── domain/
-│   ├── models/
-│   ├── repositories/
-│   ├── services/
-│   └── useCases/
-│       └── get_home_page_use_case.dart
+│   ├── useCases/            # Business logic
+│   └── repositories/        # Interfaces
 ├── presentation/
-│   ├── cubit/
-│   ├── mixins/
-│   ├── routes/
-│   └── screen/
-├── home_page_inject.dart
+│   ├── cubit/               # State management
+│   └── pages/               # UI screens
+└── meter_reading_inject.dart # Dependency injection
 ```
 
+## Key Architecture Patterns
 
+### 1. Repository Factory Pattern
+Automatically switches between online and offline data sources:
 
-## 🧪 Cubit/Bloc Usage
-- Use Cubit or Bloc for state management in the presentation layer.
-- Each feature should have its own Cubit/Bloc for managing state.
-- All cubits should extend from a base class in `lib/commons/base_cubit.dart` for consistency.
-- Use `getIt` for dependency injection in your Cubit/Bloc.
-- Ensure that your Cubit/Bloc is easily testable by injecting dependencies.
+```dart
+class MeterReadingRepository implements IMeterReadingRepository {
+  final IMeterReadingRepository onlineRepository;
+  final IMeterReadingRepository offlineRepository;
+  
+  @override
+  Future<MeterData?> getMeterData(String id) async {
+    if (connectivityService.isOnline) {
+      return await onlineRepository.getMeterData(id);  // API + Cache
+    }
+    return await offlineRepository.getMeterData(id);   // Local DB only
+  }
+}
+```
 
-## 🤖 Copilot Agency Rules
+### 2. Use Case Pattern  
+Business logic separated from UI:
 
-- Always use **feature-based clean architecture**.
-- Respect naming conventions and layer responsibilities.
-- Do **not** put logic from `domain` inside `presentation` or `data` folders.
-- When unsure, default to separation of concerns:  
-  `data ↔ domain ↔ presentation`.
-- Use `getIt` for dependency injection, ensuring features can be lazy-loaded if needed.
-- When add new files, carefully follow the structure and naming conventions.
+```dart
+class GetMeterReadingUseCase {
+  final IMeterReadingRepository repository;
+  
+  Future<MeterReading?> call(String meterId) async {
+    final data = await repository.getMeterData(meterId);
+    return _validateAndProcess(data);  // Business rules here
+  }
+}
+```
+
+### 3. State Management with Cubit
+Reactive UI updates:
+
+```dart
+class MeterReadingCubit extends Cubit<MeterReadingState> {
+  final GetMeterReadingUseCase getMeterReadingUseCase;
+  
+  Future<void> loadMeterReading(String meterId) async {
+    emit(MeterReadingLoading());
+    final result = await getMeterReadingUseCase.call(meterId);
+    emit(MeterReadingLoaded(result));
+  }
+}
+```
+
+## Dependency Injection Setup
+
+Uses **GetIt** service locator for dependency management:
+
+```dart
+// main.dart
+void main() async {
+  // 1. Register core services
+  injectMainAppModule();
+  
+  // 2. Register all features
+  injectMeterReadingModule();
+  injectAddCustomerModule();
+  // ... other features
+  
+  runApp(MyApp());
+}
+
+// Feature injection example
+void injectMeterReadingModule() {
+  final sl = GetIt.instance;
+  
+  // Repository (Factory pattern)
+  sl.registerLazySingleton<IMeterReadingRepository>(
+    () => MeterReadingRepository(
+      onlineRepository: MeterReadingOnlineRepository(),
+      offlineRepository: MeterReadingOfflineRepository(),
+    ),
+  );
+  
+  // Use cases
+  sl.registerFactory(() => GetMeterReadingUseCase(sl()));
+  
+  // Cubit
+  sl.registerFactory(() => MeterReadingCubit(sl()));
+}
+```
