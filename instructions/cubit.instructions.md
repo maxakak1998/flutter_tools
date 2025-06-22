@@ -95,6 +95,55 @@ applyTo: '**'
   }```
   ```
 
+5. **Timing Issues: When to Call Cubit Methods**
+
+   **CRITICAL**: Never call cubit methods immediately in `initState()` as this can cause state listeners to miss loading states.
+
+   **❌ Wrong - Will miss loading states:**
+   ```dart
+   @override
+   void initState() {
+     super.initState();
+     _cubit = MyCubit();
+     _cubit.fetchData(); // BAD: Called before listeners are ready
+   }
+   ```
+
+   **✅ Correct - Use SchedulerBinding.instance.addPostFrameCallback:**
+   ```dart
+   @override
+   void initState() {
+     super.initState();
+     _cubit = MyCubit();
+     
+     SchedulerBinding.instance.addPostFrameCallback((_) {
+       _cubit.fetchData(); // GOOD: Called after widget tree is built
+     });
+   }
+   ```
+
+   **✅ Alternative - Use didChangeDependencies with flag:**
+   ```dart
+   bool _hasInitialized = false;
+   
+   @override
+   void didChangeDependencies() {
+     super.didChangeDependencies();
+     
+     if (!_hasInitialized) {
+       _hasInitialized = true;
+       SchedulerBinding.instance.addPostFrameCallback((_) {
+         _cubit.fetchData();
+       });
+     }
+   }
+   ```
+
+   **Why this matters:**
+   - `CustomCubit` needs to be fully rendered before it can listen to state changes
+   - Loading states emitted before listeners are ready will be missed
+   - `SchedulerBinding.instance.addPostFrameCallback` ensures the frame is complete before execution
+
 
 ** Remember:**
 - Always use `BaseCubitState` for all states.
@@ -102,9 +151,14 @@ applyTo: '**'
 - Always use `DateTime.now().microsecondsSinceEpoch.toString()` for the `id` field in the state.
 - The `id` field is used to identify the state and should be the same for each lifecycle of the state
 - Pattern: emit(loading) -> Show loading → await useCase → emit(success/error) -> Hide loading
+- **CRITICAL**: Always use `SchedulerBinding.instance.addPostFrameCallback` when calling cubit methods from `initState()` or `didChangeDependencies()` to prevent missing loading states
+- Import `package:flutter/scheduler.dart` when using `SchedulerBinding`
+
 ** Do not:**
 - Do not check loading without specific state.
-- Alaways give the `id` field in the state
+- Always give the `id` field in the state
+- **NEVER** call cubit methods directly in `initState()` without `SchedulerBinding.instance.addPostFrameCallback`
+- Do not use `Future.delayed(Duration.zero, ...)` - use `SchedulerBinding.instance.addPostFrameCallback` instead
 
  
  Very important, you have to follow this pattern for all states in the app.:
