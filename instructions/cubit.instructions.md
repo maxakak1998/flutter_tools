@@ -20,6 +20,7 @@ applyTo: '**'
      - `isRefresh`: If this state is in the list view, it indicates if the data is being refreshed.
 
 2. **CustomCubit Widget** This a helpful cubit should use in whole app, only working with `BaseCubitState`
+    - Do not use onListener, should use `onSucceed`, `onError`, `onLoading` and `builder`.
  Example:
  ```dart CustomCubit(
                               bloc: _signUpCubit,
