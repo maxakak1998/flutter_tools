@@ -17,4 +17,4 @@ applyTo: '**'
     ),
   );
  ```
- 
+ 2. Never inject UsecCase or Cubit via GetIt. The only cubit that can be injected is `MainAppCubit`.

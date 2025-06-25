@@ -146,6 +146,7 @@ applyTo: '**'
 
 
 ** Remember:**
+- Always initlialize Cubit in the presentation layer, not via and only exception is  `MainAppCubit`.
 - Always use `BaseCubitState` for all states.
 - Always use `CustomCubit` in the Presentation layer.
 - Always use `DateTime.now().microsecondsSinceEpoch.toString()` for the `id` field in the state.
