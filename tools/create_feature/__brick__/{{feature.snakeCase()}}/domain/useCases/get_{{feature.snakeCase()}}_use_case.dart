@@ -1,5 +1,4 @@
 import '../../../../app_export.dart';
-import '../../presentation/mixins/{{feature.snakeCase()}}_mixin.dart';
 
 abstract class IGet{{feature.pascalCase()}}UseCase {
 
