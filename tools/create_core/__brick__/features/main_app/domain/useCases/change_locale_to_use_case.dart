@@ -5,7 +5,7 @@ abstract class IChangeLocaleToUseCase {
 
 }
 
-class ChangeLocaleToUseCase extends IChangeLocaleToUseCase with MainAppMixin {
+class ChangeLocaleToUseCase extends IChangeLocaleToUseCase  {
   @override
   Future<Locale> changeLocale(Locale newLocale) async {
     await Future.delayed(const Duration(milliseconds: 500));

@@ -14,6 +14,7 @@ class _MainAppScreenState extends State<MainAppScreen>  {
   @override
   void initState() {
     super.initState();
+
     
   }
 
@@ -55,7 +56,7 @@ class _MainAppScreenState extends State<MainAppScreen>  {
                       FocusScope.of(context).unfocus();
                     },
                     child: MaterialApp.router(
-                      theme: mainAppCubit.currentTheme.themeData,
+                      theme: GetIt.I<MainAppCubit>().currentTheme.themeData,
                       localizationsDelegates: [
                         ...context.localizationDelegates,
                         DefaultCupertinoLocalizations.delegate,
@@ -64,7 +65,7 @@ class _MainAppScreenState extends State<MainAppScreen>  {
                       // theme: mainAppCubit.currentTheme.themeData,
                       debugShowCheckedModeBanner: false,
                       locale: context.locale,
-                      routerConfig: router.goRouter,
+                      routerConfig: GetIt.I<AppRouter>().goRouter,
                       builder: EasyLoading.init(),
                     ),
                   );

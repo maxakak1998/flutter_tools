@@ -1,7 +1,12 @@
 import '../../../../app_export.dart';
 import 'main_app_cubit_state.dart';
 
-class MainAppCubit extends Cubit<BaseCubitState> with MainAppMixin {
+class MainAppCubit extends Cubit<BaseCubitState> {
+  final IChangeThemeUseCase changeThemeUserCase;
+  final IChangeLocaleToUseCase changeLocaleToUseCase;
+  final LocaleService localeService;
+  late Locale currentLocale;
+
   ITheme currentTheme = NormalTheme();
   late Locale currentLocale;
 
