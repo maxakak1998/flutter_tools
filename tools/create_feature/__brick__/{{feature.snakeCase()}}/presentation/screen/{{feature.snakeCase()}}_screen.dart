@@ -1,5 +1,5 @@
 import '../../../../../app_export.dart';
-
+import '../cubit/{{feature.snakeCase()}}_cubit.dart';
 
 class {{feature.pascalCase()}}Screen extends StatefulWidget {
   const {{feature.pascalCase()}}Screen({super.key});
