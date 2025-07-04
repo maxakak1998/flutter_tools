@@ -19,4 +19,4 @@ Future<void> fetchMoreData() async {
 }
 
 1. Usually it will be placed in `cubit`
-2. It wikk work with `APIListResponse` to manage the Pagination
+2. It will work with `APIListResponse` to manage the Pagination
