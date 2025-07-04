@@ -11,7 +11,7 @@ final controller = PaginationLoadMoreController.fresh();
 Future<void> fetchMoreData() async {
   final response = await controller.onLoadMore(
     onLoadMore: (page, limit) async {
-      // Perform your API call here, returning an APIListResponseV2
+      // Perform your API call here, returning an APIListResponse
       // e.g. return MyApiService.fetchItems(page, limit);
       return null; // Replace with actual service call
     },
@@ -19,3 +19,4 @@ Future<void> fetchMoreData() async {
 }
 
 1. Usually it will be placed in `cubit`
+2. It wikk work with `APIListResponse` to manage the Pagination
