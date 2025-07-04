@@ -15,12 +15,12 @@ void injectInitModule() {
   // Repositories
   sl.registerLazySingleton<IInitRepository>(() => InitRepository());
 
+
   // UseCases
-  sl.registerFactory<IGetInitUseCase>(() => GetInitUseCase());
   sl.registerFactory<INavigationRedirectUseCase>(
-    () => NavigationRedirectUseCase(GetIt.I<ISecureStorageService>()),
+    () => NavigationRedirectUseCase(sl<ISecureStorageService>()),
   );
 
   // Cubit
-  sl.registerSingletonIfAbsent(() => InitCubit());
+  sl.registerFactory(() => InitCubit(sl<INavigationRedirectUseCase>()));
 }

@@ -10,15 +10,24 @@ class InitScreen extends StatefulWidget {
   State<InitScreen> createState() => _InitScreenState();
 }
 
-class _InitScreenState extends State<InitScreen> with InitMixin {
+class _InitScreenState extends State<InitScreen>  {
+    late final InitCubit initCubit;
+
   @override
   void initState() {
     super.initState();
-    initCubit.initPreData();
-  }
+
+       // Initialize the cubit as per compliance requirements (not injected via GetIt)
+    initCubit = GetIt.I<InitCubit>();
+  // Use SchedulerBinding to ensure CustomCubit is fully rendered before calling cubit methods
+    // This prevents missing loading states as per cubit.instructions.md
+    SchedulerBinding.instance.addPostFrameCallback((_) {
+      initCubit.initPreData();
+    });  }
 
   @override
   void dispose() {
+    initCubit.close();
     super.dispose();
   }
 
@@ -27,7 +36,7 @@ class _InitScreenState extends State<InitScreen> with InitMixin {
     return CustomCubit(
       bloc: initCubit,
       onSucceed: (state) {},
-      listener: (context, state) {
+      onSucceed: (state) {
         if (state is UserAuthStateChanged) {
           switch (initCubit.userAuthState) {
             case UserAuthState.loggedIn:

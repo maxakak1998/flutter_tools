@@ -10,6 +10,19 @@ class {{feature.pascalCase()}}Screen extends StatefulWidget {
 }
 
 class _{{feature.pascalCase()}}ScreenState extends State<{{feature.pascalCase()}}Screen> {
+  late final {{feature.pascalCase()}}Cubit {{feature.camelCase()}}Cubit;
+
+  @override
+  void initState() {
+    super.initState();
+    {{feature.camelCase()}}Cubit = GetIt.I<{{feature.pascalCase()}}Cubit>();
+  }
+
+  dispose() {
+    {{feature.camelCase()}}Cubit.close();
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
     return const Scaffold(

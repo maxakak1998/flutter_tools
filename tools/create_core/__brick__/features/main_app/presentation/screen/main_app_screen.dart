@@ -10,10 +10,11 @@ class MainAppScreen extends StatefulWidget {
   State<MainAppScreen> createState() => _MainAppScreenState();
 }
 
-class _MainAppScreenState extends State<MainAppScreen> with MainAppMixin {
+class _MainAppScreenState extends State<MainAppScreen>  {
   @override
   void initState() {
     super.initState();
+    
   }
 
   @override
@@ -31,15 +32,15 @@ class _MainAppScreenState extends State<MainAppScreen> with MainAppMixin {
   @override
   Widget build(BuildContext context) {
     return BlocBuilder(
-      bloc: mainAppCubit,
+      bloc: GetIt.I<MainAppCubit>(),
       builder: (context, state) {
         return DevicePreview(
-          enabled: kDebugMode,
+          enabled: false,
           builder: (context) {
             return EasyLocalization(
               supportedLocales:
                   SupportedLocales.values.map((e) => e.locale).toList(),
-              path: localeService.assetLanguage,
+              path: GetIt.I<LocaleService>().assetLanguage,
               fallbackLocale: SupportedLocales.vi.locale,
               saveLocale: true,
               useFallbackTranslations: true,
@@ -54,6 +55,7 @@ class _MainAppScreenState extends State<MainAppScreen> with MainAppMixin {
                       FocusScope.of(context).unfocus();
                     },
                     child: MaterialApp.router(
+                      theme: mainAppCubit.currentTheme.themeData,
                       localizationsDelegates: [
                         ...context.localizationDelegates,
                         DefaultCupertinoLocalizations.delegate,

@@ -5,9 +5,11 @@ import '../../../../app_export.dart';
 import 'init_cubit_state.dart';
 
 class InitCubit extends Cubit<BaseCubitState> {
+    final INavigationRedirectUseCase navigationRedirectUseCase;
+
   UserAuthState userAuthState = UserAuthState.unknown;
 
-  InitCubit() : super(InitInitState());
+  InitCubit(this.navigationRedirectUseCase) : super(InitInitState());
 
   Future<void> initPreData() async {
     final id = DateTime.now().millisecondsSinceEpoch.toString();
@@ -16,7 +18,7 @@ class InitCubit extends Cubit<BaseCubitState> {
       flavor: FlavorValues.flavor,
     ));
     userAuthState =
-        await GetIt.I<INavigationRedirectUseCase>().getUserAuthState();
+        await navigationRedirectUseCase.getUserAuthState();
     switch (userAuthState) {
       case UserAuthState.loggedIn:
         break;
