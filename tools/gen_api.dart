@@ -142,7 +142,11 @@ String generateModel(
   model.forEach((key, value) {
     String type = dartType(value);
     final camelKey = toCamelCase(key);
-    if (value is List && value.isNotEmpty && value.first is Map<String, dynamic>) {
+    if (value is Map<String, dynamic>) {
+      // Handle nested objects
+      final nestedClass = toPascalCase(name) + toPascalCase(key);
+      buffer.writeln('    $camelKey: json[\'$key\'] == null ? null : $nestedClass.fromJson(json[\'$key\'] as Map<String, dynamic>),');
+    } else if (value is List && value.isNotEmpty && value.first is Map<String, dynamic>) {
       // Use the same nested class name logic as in the field declaration
       final nestedClass = toPascalCase(name) + toPascalCase(key);
       buffer.writeln('    $camelKey: (json[\'$key\'] as List?)?.map((e) => $nestedClass.fromJson(e)).toList(),');
