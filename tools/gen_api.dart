@@ -96,6 +96,33 @@ String generateDataOrQueryMap(dynamic fields, String apiName) {
   return '';
 }
 
+String generateRemoveNullFunction() {
+  return '''
+  // Helper function to remove null values from maps
+  static Map<String, dynamic> _removeNullValues(Map<String, dynamic> map) {
+    final result = <String, dynamic>{};
+    map.forEach((key, value) {
+      if (value != null && value != '') {
+        if (value is Map<String, dynamic>) {
+          final cleanedMap = _removeNullValues(value);
+          if (cleanedMap.isNotEmpty) {
+            result[key] = cleanedMap;
+          }
+        } else if (value is List) {
+          final cleanedList = value.where((item) => item != null && item != '').toList();
+          if (cleanedList.isNotEmpty) {
+            result[key] = cleanedList;
+          }
+        } else {
+          result[key] = value;
+        }
+      }
+    });
+    return result;
+  }
+''';
+}
+
 String generateModel(
   String name,
   Map<String, dynamic> model,
@@ -258,6 +285,10 @@ Future<void> main(List<String> args) async {
         final helperBuffer = StringBuffer(
           'class ${toPascalCase(entity.uri.pathSegments[entity.uri.pathSegments.length - 2])}ApiRoutesGenerated {\n',
         );
+        
+        // Add the helper function to remove null values
+        helperBuffer.writeln(generateRemoveNullFunction());
+        
         final modelBuffer = StringBuffer();
 
         for (final api in jsonContent) {
@@ -298,18 +329,33 @@ Future<void> main(List<String> args) async {
           
           helperBuffer.write("    ).compose(baseOption, '$path'");
           
+          // Check if allowValueNull is true in extra field
+          final allowValueNull = extra['allowValueNull'] == true;
+          
           if (dataMap.isNotEmpty) {
             if (dataMap.contains('data.map((e) => e.toJson()).toList()')) {
               // For list-typed body, convert to JSON
-              helperBuffer.write(", data: $dataMap");
+              if (allowValueNull) {
+                helperBuffer.write(", data: $dataMap");
+              } else {
+                helperBuffer.write(", data: $dataMap"); // List data filtering would need to be handled differently
+              }
             } else {
-              // For map-typed body, create the map
-              helperBuffer.write(", data: {$dataMap}");
+              // For map-typed body, create the map and optionally filter nulls
+              if (allowValueNull) {
+                helperBuffer.write(", data: {$dataMap}");
+              } else {
+                helperBuffer.write(", data: _removeNullValues({$dataMap})");
+              }
             }
           }
           
           if (queryMap.isNotEmpty) {
-            helperBuffer.write(", queryParameters: {$queryMap}");
+            if (allowValueNull) {
+              helperBuffer.write(", queryParameters: {$queryMap}");
+            } else {
+              helperBuffer.write(", queryParameters: _removeNullValues({$queryMap})");
+            }
           }
           
           helperBuffer.writeln(");");
