@@ -19,6 +19,7 @@ String dartType(dynamic value) {
   if (value == 'bool') return 'bool';
   if (value == 'double') return 'num';  // Force double to num
   if (value == 'num') return 'num';
+  if (value == 'map') return 'Map<String, dynamic>';
   if (value is List && value.isNotEmpty) {
     final elementType = dartType(value.first);
     return 'List<$elementType>';
@@ -26,19 +27,35 @@ String dartType(dynamic value) {
   return 'dynamic';
 }
 
-String generateParameterFromField(String key, Map<String, dynamic> field) {
-  final type = dartType(field['type']);
+String generateParameterFromField(String key, Map<String, dynamic> field, String apiName, StringBuffer modelBuffer, Map<String, String> generatedClasses) {
+  final type = field['type'];
   final isRequired = field['required'] == true;
   final paramName = toCamelCase(key);
   
-  if (isRequired) {
-    return 'required $type $paramName';
+  String dartTypeResult;
+  
+  // Handle Map type with value definition
+  if (type == 'map' && field['value'] is Map<String, dynamic>) {
+    final className = '${toPascalCase(key)}Params';
+    final valueMap = field['value'] as Map<String, dynamic>;
+    
+    // Generate the class for the Map value
+    modelBuffer.writeln(generateModel(className, valueMap, generatedClasses, isParent: false));
+    modelBuffer.writeln();
+    
+    dartTypeResult = className;
   } else {
-    return '$type? $paramName';
+    dartTypeResult = dartType(type);
+  }
+  
+  if (isRequired) {
+    return 'required $dartTypeResult $paramName';
+  } else {
+    return '$dartTypeResult? $paramName';
   }
 }
 
-String generateParametersFromFields(dynamic fields, String apiName, StringBuffer modelBuffer, Map<String, String> generatedClasses) {
+String generateParametersFromFields(dynamic fields, String apiName, StringBuffer modelBuffer, Map<String, String> generatedClasses, {bool allowMapTypes = false}) {
   if (fields == null) return '';
   
   final params = <String>[];
@@ -47,7 +64,14 @@ String generateParametersFromFields(dynamic fields, String apiName, StringBuffer
     if (fields.isEmpty) return '';
     fields.forEach((key, field) {
       if (field is Map<String, dynamic>) {
-        params.add(generateParameterFromField(key, field));
+        final type = field['type'];
+        
+        // Only allow Map types for body fields (when allowMapTypes is true)
+        if (type == 'map' && !allowMapTypes) {
+          throw Exception('Map types are only allowed in body fields, not in query/params. Found Map type in field: $key');
+        }
+        
+        params.add(generateParameterFromField(key, field, apiName, modelBuffer, generatedClasses));
       }
     });
   } else if (fields is List && fields.isNotEmpty && fields.first is Map<String, dynamic>) {
@@ -84,7 +108,14 @@ String generateDataOrQueryMap(dynamic fields, String apiName) {
     fields.forEach((key, field) {
       if (field is Map<String, dynamic>) {
         final paramName = toCamelCase(key);
-        entries.add('"$key": $paramName');
+        final type = field['type'];
+        
+        // Handle Map type with value definition  
+        if (type == 'map' && field['value'] is Map<String, dynamic>) {
+          entries.add('"$key": $paramName?.toJson()');
+        } else {
+          entries.add('"$key": $paramName');
+        }
       }
     });
     return entries.join(', ');
@@ -300,11 +331,13 @@ Future<void> main(List<String> args) async {
           final extra = api['extra'] as Map<String, dynamic>? ?? {};
           final body = api['body']; // Remove type casting to support both Map and List
           final query = api['query'] as Map<String, dynamic>?;
+          final params = api['params'] as Map<String, dynamic>?; // Add support for params
 
           // Generate method parameters
-          final bodyParams = generateParametersFromFields(body, name, modelBuffer, generatedClasses);
-          final queryParams = generateParametersFromFields(query, name, modelBuffer, generatedClasses);
-          final allParams = bodyParams + queryParams;
+          final bodyParams = generateParametersFromFields(body, name, modelBuffer, generatedClasses, allowMapTypes: true);
+          final queryParams = generateParametersFromFields(query, name, modelBuffer, generatedClasses, allowMapTypes: false);
+          final paramsParams = generateParametersFromFields(params, name, modelBuffer, generatedClasses, allowMapTypes: false);
+          final allParams = bodyParams + queryParams + paramsParams;
 
           helperBuffer.writeln(
             "  static RequestOptions $name({BaseOptions? baseOption$allParams}) {",
@@ -326,6 +359,7 @@ Future<void> main(List<String> args) async {
           // Generate the compose call with data and queryParameters if needed
           final dataMap = generateDataOrQueryMap(body, name);
           final queryMap = generateDataOrQueryMap(query, name);
+          final paramsMap = generateDataOrQueryMap(params, name);
           
           helperBuffer.write("    ).compose(baseOption, '$path'");
           
@@ -350,11 +384,14 @@ Future<void> main(List<String> args) async {
             }
           }
           
-          if (queryMap.isNotEmpty) {
+          // Handle both query and params for queryParameters
+          final allQueryMaps = [queryMap, paramsMap].where((m) => m.isNotEmpty).toList();
+          if (allQueryMaps.isNotEmpty) {
+            final combinedQueryMap = allQueryMaps.join(', ');
             if (allowValueNull) {
-              helperBuffer.write(", queryParameters: {$queryMap}");
+              helperBuffer.write(", queryParameters: {$combinedQueryMap}");
             } else {
-              helperBuffer.write(", queryParameters: _removeNullValues({$queryMap})");
+              helperBuffer.write(", queryParameters: _removeNullValues({$combinedQueryMap})");
             }
           }
           
