@@ -5,10 +5,11 @@ String root = "lib/core/api/api_routes";
 String packageName = "data_entry"; // <-- Add this variable
 
 String toPascalCase(String input) =>
-    input.split('_').map((e) => e[0].toUpperCase() + e.substring(1)).join();
+    input.split('_').where((e) => e.isNotEmpty).map((e) => e[0].toUpperCase() + e.substring(1)).join();
 
 String toCamelCase(String input) {
-  final parts = input.split('_');
+  final parts = input.split('_').where((e) => e.isNotEmpty).toList();
+  if (parts.isEmpty) return '';
   return parts.first +
       parts.skip(1).map((e) => e[0].toUpperCase() + e.substring(1)).join();
 }
@@ -39,8 +40,11 @@ String generateParameterFromField(String key, Map<String, dynamic> field, String
     final className = '${toPascalCase(key)}Params';
     final valueMap = field['value'] as Map<String, dynamic>;
     
+    // Process the map value recursively (for body parameters, not responseModel)
+    final processedFields = processFieldDefinitions(valueMap, className, isResponseModel: false);
+    
     // Generate the class for the Map value
-    modelBuffer.writeln(generateModel(className, valueMap, generatedClasses, isParent: false));
+    modelBuffer.writeln(generateModel(className, processedFields, generatedClasses, isParent: false));
     modelBuffer.writeln();
     
     dartTypeResult = className;
@@ -55,6 +59,92 @@ String generateParameterFromField(String key, Map<String, dynamic> field, String
   }
 }
 
+// Recursive function to process field definitions and convert them to model-ready format
+Map<String, dynamic> processFieldDefinitions(Map<String, dynamic> fields, String contextName, {bool isResponseModel = false}) {
+  final processedFields = <String, dynamic>{};
+  
+  fields.forEach((key, value) {
+    if (value is Map<String, dynamic>) {
+      if (value.containsKey('type')) {
+        // This is a field definition
+        final fieldType = value['type'];
+        // For responseModel, ignore required property; for body/query, use it
+        final isRequired = isResponseModel ? false : (value['required'] != false);
+        
+        if (fieldType == 'map' && value.containsKey('value')) {
+          // Nested map - create a nested class
+          final nestedClassName = '${toPascalCase(contextName)}${toPascalCase(key)}';
+          final nestedFields = processFieldDefinitions(value['value'], nestedClassName, isResponseModel: isResponseModel);
+          
+          processedFields[key] = {
+            '_classType': nestedClassName,
+            '_optional': !isRequired,
+            '_nestedFields': nestedFields
+          };
+        } else {
+          // Regular field with type and required
+          processedFields[key] = {
+            '_fieldType': fieldType,
+            '_optional': !isRequired
+          };
+        }
+      } else {
+        // This might be a nested structure without explicit type
+        processedFields[key] = value;
+      }
+    } else if (value is List && value.isNotEmpty) {
+      // Handle arrays
+      processedFields[key] = processArrayField(value, key, contextName, isResponseModel: isResponseModel);
+    } else {
+      // Primitive value or unknown structure
+      processedFields[key] = value;
+    }
+  });
+  
+  return processedFields;
+}
+
+// Process array field definitions
+dynamic processArrayField(List<dynamic> arrayValue, String key, String contextName, {bool isResponseModel = false}) {
+  if (arrayValue.isEmpty) return arrayValue;
+  
+  final firstItem = arrayValue.first;
+  
+  if (firstItem is Map<String, dynamic>) {
+    // Check if this is a simple schema definition like [{"type": "string", "required": true}]
+    final keys = firstItem.keys.toSet();
+    final hasTypeKey = keys.contains('type');
+    final typeValue = firstItem['type'];
+    
+    // Schema definition must have 'type' as a STRING value, not a Map
+    final isSchemaDefinition = hasTypeKey && 
+                               typeValue is String && // Type must be a string, not a Map
+                               keys.length <= 2 && 
+                               (keys.length == 1 || keys.contains('required')) &&
+                               !firstItem.containsKey('value'); // Not a nested map
+    
+    if (isSchemaDefinition) {
+      // Simple schema definition - return as array type metadata
+      return {
+        '_arraySchemaType': firstItem['type'],
+        '_arrayRequired': firstItem['required'] != false
+      };
+    } else {
+      // Complex object structure in array - process recursively
+      final itemClassName = '${toPascalCase(contextName)}${toPascalCase(key)}Item';
+      final processedItem = processFieldDefinitions(firstItem, itemClassName, isResponseModel: isResponseModel);
+      
+      return {
+        '_arrayItemClass': itemClassName,
+        '_arrayItemFields': processedItem
+      };
+    }
+  } else {
+    // Array of primitives
+    return arrayValue;
+  }
+}
+
 String generateParametersFromFields(dynamic fields, String apiName, StringBuffer modelBuffer, Map<String, String> generatedClasses, {bool allowMapTypes = false}) {
   if (fields == null) return '';
   
@@ -63,54 +153,44 @@ String generateParametersFromFields(dynamic fields, String apiName, StringBuffer
   if (fields is Map<String, dynamic>) {
     if (fields.isEmpty) return '';
     
-    fields.forEach((key, field) {
+    // Process all fields recursively (for body/query/params, not responseModel)
+    final processedFields = processFieldDefinitions(fields, apiName, isResponseModel: false);
+    
+    // Generate all nested classes first
+    generateNestedClasses(processedFields, modelBuffer, generatedClasses, apiName);
+    
+    // Generate parameters
+    processedFields.forEach((key, field) {
       if (field is Map<String, dynamic>) {
-        final type = field['type'];
-        
-        // Only allow Map types for body fields (when allowMapTypes is true)
-        if (type == 'map' && !allowMapTypes) {
-          throw Exception('Map types are only allowed in body fields, not in query/params. Found Map type in field: $key');
-        }
-        
-        params.add(generateParameterFromField(key, field, apiName, modelBuffer, generatedClasses));
-      } else if (field is List && field.isNotEmpty && field.first is Map<String, dynamic>) {
-        // Handle array fields like "requests": [{ ... }]
-        final itemModel = field.first as Map<String, dynamic>;
-        
-        // Generate model for the array item
-        final modelName = '${toPascalCase(apiName)}${toPascalCase(key)}Item';
-        
-        // Convert the itemModel structure to proper format for model generation
-        final modelFields = <String, dynamic>{};
-        itemModel.forEach((itemKey, itemValue) {
-          if (itemValue is Map<String, dynamic>) {
-            final itemType = itemValue['type'];
-            final itemRequired = itemValue['required'] == true;
-            
-            if (itemType == 'map' && itemValue['value'] is Map<String, dynamic>) {
-              // Handle nested map types within array items
-              final nestedClassName = '${toPascalCase(itemKey)}Data';
-              final nestedMap = itemValue['value'] as Map<String, dynamic>;
-              
-              // Generate the nested class for the map value
-              modelBuffer.writeln(generateModel(nestedClassName, nestedMap, generatedClasses, isParent: false));
-              modelBuffer.writeln();
-              
-              // Store the class name instead of the raw type
-              modelFields[itemKey] = {'_classType': nestedClassName, '_optional': !itemRequired};
-            } else {
-              modelFields[itemKey] = itemType;
-            }
+        if (field.containsKey('_fieldType')) {
+          final fieldType = dartType(field['_fieldType']);
+          final isOptional = field['_optional'] ?? true;
+          final paramName = toCamelCase(key);
+          
+          if (isOptional) {
+            params.add('$fieldType? $paramName');
+          } else {
+            params.add('required $fieldType $paramName');
           }
-        });
-        
-        // Generate the item model
-        modelBuffer.writeln(generateModel(modelName, modelFields, generatedClasses, isParent: false));
-        modelBuffer.writeln();
-        
-        // Add parameter for the array
-        final paramName = toCamelCase(key);
-        params.add('required List<$modelName> $paramName');
+        } else if (field.containsKey('_classType')) {
+          final className = field['_classType'];
+          final isOptional = field['_optional'] ?? true;
+          final paramName = toCamelCase(key);
+          
+          if (isOptional) {
+            params.add('$className? $paramName');
+          } else {
+            params.add('required $className $paramName');
+          }
+        } else if (field.containsKey('_arraySchemaType')) {
+          final itemType = dartType(field['_arraySchemaType']);
+          final paramName = toCamelCase(key);
+          params.add('required List<$itemType> $paramName');
+        } else if (field.containsKey('_arrayItemClass')) {
+          final itemClass = field['_arrayItemClass'];
+          final paramName = toCamelCase(key);
+          params.add('required List<$itemClass> $paramName');
+        }
       }
     });
   } else if (fields is List && fields.isNotEmpty && fields.first is Map<String, dynamic>) {
@@ -118,17 +198,14 @@ String generateParametersFromFields(dynamic fields, String apiName, StringBuffer
     final modelName = '${toPascalCase(apiName)}Param';
     final bodyModel = fields.first as Map<String, dynamic>;
     
-    // Convert field types from strings to proper structure for model generation
-    final modelFields = <String, dynamic>{};
-    bodyModel.forEach((key, value) {
-      if (value is String) {
-        // Create a proper field structure for model generation
-        modelFields[key] = value; // Keep the type as string for dartType function
-      }
-    });
+    // Process recursively (for body parameters, not responseModel)
+    final processedFields = processFieldDefinitions(bodyModel, modelName, isResponseModel: false);
     
-    // Generate the model
-    modelBuffer.writeln(generateModel(modelName, modelFields, generatedClasses));
+    // Generate nested classes
+    generateNestedClasses(processedFields, modelBuffer, generatedClasses, modelName);
+    
+    // Generate the main model
+    modelBuffer.writeln(generateModel(modelName, processedFields, generatedClasses));
     modelBuffer.writeln();
     
     // Use the generated model as parameter
@@ -136,6 +213,42 @@ String generateParametersFromFields(dynamic fields, String apiName, StringBuffer
   }
   
   return params.isEmpty ? '' : ', ${params.join(', ')}';
+}
+
+// Generate all nested classes recursively
+void generateNestedClasses(Map<String, dynamic> processedFields, StringBuffer modelBuffer, Map<String, String> generatedClasses, String contextName) {
+  processedFields.forEach((key, field) {
+    // Skip metadata fields that start with underscore
+    if (key.startsWith('_')) {
+      return;
+    }
+    
+    if (field is Map<String, dynamic>) {
+      if (field.containsKey('_nestedFields')) {
+        final className = field['_classType'];
+        final nestedFields = field['_nestedFields'];
+        
+        // Generate nested classes first (depth-first)
+        generateNestedClasses(nestedFields, modelBuffer, generatedClasses, className);
+        
+        // Then generate this class
+        modelBuffer.writeln(generateModel(className, nestedFields, generatedClasses, isParent: false));
+        modelBuffer.writeln();
+      } else if (field.containsKey('_arrayItemFields')) {
+        final itemClass = field['_arrayItemClass'];
+        final itemFields = field['_arrayItemFields'];
+        
+        // Generate nested classes for array item first
+        generateNestedClasses(itemFields, modelBuffer, generatedClasses, itemClass);
+        
+        // Then generate array item class
+        modelBuffer.writeln(generateModel(itemClass, itemFields, generatedClasses, isParent: false));
+        modelBuffer.writeln();
+      }
+      // Skip fields that only contain array metadata like _arraySchemaType
+      // These should not generate classes
+    }
+  });
 }
 
 String generateDataOrQueryMap(dynamic fields, String apiName) {
@@ -218,19 +331,67 @@ String generateModel(
   // Fields
   model.forEach((key, value) {
     if (value is Map<String, dynamic> && value.containsKey('_classType')) {
-      // Handle custom class types (like UsedBoostData)
+      // Handle custom class types (like nested maps)
       final className = value['_classType'];
       final isOptional = value['_optional'] ?? true;
       final fieldType = isOptional ? '$className?' : className;
       buffer.writeln('   $fieldType ${toCamelCase(key)};');
+    } else if (value is Map<String, dynamic> && value.containsKey('_fieldType')) {
+      // Handle field types with required information
+      final fieldType = dartType(value['_fieldType']);
+      final isOptional = value['_optional'] ?? true;
+      final finalType = isOptional ? '$fieldType?' : fieldType;
+      buffer.writeln('   $finalType ${toCamelCase(key)};');
+    } else if (value is Map<String, dynamic> && value.containsKey('_arraySchemaType')) {
+      // Handle array with schema definition like [{"type": "string", "required": true}]
+      final itemType = dartType(value['_arraySchemaType']);
+      buffer.writeln('   List<$itemType>? ${toCamelCase(key)};');
+    } else if (value is Map<String, dynamic> && value.containsKey('_arrayItemClass')) {
+      // Handle array with complex item class
+      final itemClass = value['_arrayItemClass'];
+      buffer.writeln('   List<$itemClass>? ${toCamelCase(key)};');
     } else if (value is Map<String, dynamic>) {
-      final nestedClass = toPascalCase(name) + toPascalCase(key);
-      buffer.writeln('   $nestedClass? ${toCamelCase(key)};');
+      // Check if this is a field definition (backward compatibility)
+      final keys = value.keys.toSet();
+      final isFieldDefinition = keys.contains('type') && 
+                               keys.length <= 2 && 
+                               (keys.length == 1 || keys.contains('required'));
+      
+      if (isFieldDefinition) {
+        // This is a field definition like {"type": "string", "required": true}
+        final fieldType = value['type'] as String;
+        final isRequired = value['required'] != false;  // Default to true if not specified
+        final dartFieldType = dartType(fieldType);
+        final finalType = isRequired ? dartFieldType : '$dartFieldType?';
+        buffer.writeln('   $finalType ${toCamelCase(key)};');
+      } else {
+        // This is a nested object, create nested class
+        final nestedClass = toPascalCase(name) + toPascalCase(key);
+        buffer.writeln('   $nestedClass? ${toCamelCase(key)};');
+      }
     } else if (value is List &&
         value.isNotEmpty &&
         value.first is Map<String, dynamic>) {
-      final nestedClass = toPascalCase(name) + toPascalCase(key);
-      buffer.writeln('   List<$nestedClass>? ${toCamelCase(key)};');
+      // Check if this is a schema definition (has 'type' and 'required' keys only)
+      final firstItem = value.first as Map<String, dynamic>;
+      final keys = firstItem.keys.toSet();
+      final isSchemaDefinition = keys.contains('type') && 
+                                keys.length <= 2 && 
+                                (keys.length == 1 || keys.contains('required'));
+      
+      if (isSchemaDefinition) {
+        // This is a schema definition like [{"type": "string", "required": true}]
+        // Convert to the appropriate List type
+        final itemType = firstItem['type'] as String;
+        final isRequired = firstItem['required'] != false;  // Default to true if not specified
+        final dartItemType = dartType(itemType);
+        final listType = isRequired ? 'List<$dartItemType>' : 'List<$dartItemType>?';
+        buffer.writeln('   $listType? ${toCamelCase(key)};');
+      } else {
+        // This is actual data structure, create nested class
+        final nestedClass = toPascalCase(name) + toPascalCase(key);
+        buffer.writeln('   List<$nestedClass>? ${toCamelCase(key)};');
+      }
     } else {
       buffer.writeln('   ${dartType(value)}? ${toCamelCase(key)};');
     }
@@ -239,44 +400,164 @@ String generateModel(
   buffer.writeln();
   // Constructor
   buffer.writeln('  $className({');
-  model.forEach((key, _) {
-    buffer.writeln('     this.${toCamelCase(key)},');
+  model.forEach((key, value) {
+    final camelKey = toCamelCase(key);
+    bool isRequired = false;
+    
+    if (value is Map<String, dynamic> && value.containsKey('_fieldType')) {
+      isRequired = !(value['_optional'] ?? true);
+    } else if (value is Map<String, dynamic> && value.containsKey('_classType')) {
+      isRequired = !(value['_optional'] ?? true);
+    } else if (value is Map<String, dynamic>) {
+      // Check if this is a field definition
+      final keys = value.keys.toSet();
+      final isFieldDefinition = keys.contains('type') && 
+                               keys.length <= 2 && 
+                               (keys.length == 1 || keys.contains('required'));
+      if (isFieldDefinition) {
+        isRequired = value['required'] != false;  // Default to true if not specified
+      }
+    }
+    
+    if (isRequired) {
+      buffer.writeln('     required this.$camelKey,');
+    } else {
+      buffer.writeln('     this.$camelKey,');
+    }
   });
   buffer.writeln('  });\n');
 
   // fromJson
   buffer.writeln('  factory $className.fromJson(Map<String, dynamic> json) => $className(');
   model.forEach((key, value) {
-    String type = dartType(value);
     final camelKey = toCamelCase(key);
     if (value is Map<String, dynamic> && value.containsKey('_classType')) {
-      // Handle custom class types (like UsedBoostData)
+      // Handle custom class types (like nested objects)
       final className = value['_classType'];
-      buffer.writeln('    $camelKey: json[\'$key\'] == null ? null : $className.fromJson(json[\'$key\'] as Map<String, dynamic>),');
-    } else if (value is Map<String, dynamic>) {
-      // Handle nested objects
-      final nestedClass = toPascalCase(name) + toPascalCase(key);
-      buffer.writeln('    $camelKey: json[\'$key\'] == null ? null : $nestedClass.fromJson(json[\'$key\'] as Map<String, dynamic>),');
-    } else if (value is List && value.isNotEmpty && value.first is Map<String, dynamic>) {
-      // Use the same nested class name logic as in the field declaration
-      final nestedClass = toPascalCase(name) + toPascalCase(key);
-      buffer.writeln('    $camelKey: (json[\'$key\'] as List?)?.map((e) => $nestedClass.fromJson(e)).toList(),');
-    } else if (type.startsWith('List<')) {
-      // Handle List<T> parsing for primitives
-      final innerType = type.substring(5, type.length - 1);
-      if (innerType == 'String') {
-        buffer.writeln('    $camelKey: (json[\'$key\'] as List?)?.map((e) => (e as String).trim()).toList(),');
-      } else if (innerType == 'num' || innerType == 'bool' || innerType == 'dynamic') {
-        buffer.writeln('    $camelKey: (json[\'$key\'] as List?)?.map((e) => e as $innerType).toList(),');
+      final isOptional = value['_optional'] ?? true;
+      
+      if (isOptional) {
+        buffer.writeln('    $camelKey: json[\'$key\'] == null ? null : $className.fromJson(json[\'$key\'] as Map<String, dynamic>),');
       } else {
-        buffer.writeln('    $camelKey: (json[\'$key\'] as List?)?.map((e) => $innerType.fromJson(e)).toList(),');
+        buffer.writeln('    $camelKey: $className.fromJson(json[\'$key\'] as Map<String, dynamic>),');
       }
-    } else if (type == 'String') {
-      buffer.writeln('    $camelKey: (json[\'$key\'] as String?)?.trim(),');
-    } else if (type == 'num' || type == 'bool' || type == 'dynamic') {
-      buffer.writeln('    $camelKey: json[\'$key\'] as $type?,');
+    } else if (value is Map<String, dynamic> && value.containsKey('_fieldType')) {
+      // Handle field types with required information
+      final fieldType = value['_fieldType'];
+      final isOptional = value['_optional'] ?? true;
+      final type = dartType(fieldType);
+      
+      if (isOptional) {
+        if (type == 'String') {
+          buffer.writeln('    $camelKey: (json[\'$key\'] as String?)?.trim(),');
+        } else if (type == 'num' || type == 'bool' || type == 'dynamic') {
+          buffer.writeln('    $camelKey: json[\'$key\'] as $type?,');
+        } else {
+          buffer.writeln('    $camelKey: json[\'$key\'] == null ? null : $type.fromJson(json[\'$key\'] as Map<String, dynamic>),');
+        }
+      } else {
+        // Required field - no null check
+        if (type == 'String') {
+          buffer.writeln('    $camelKey: (json[\'$key\'] as String).trim(),');
+        } else if (type == 'num' || type == 'bool' || type == 'dynamic') {
+          buffer.writeln('    $camelKey: json[\'$key\'] as $type,');
+        } else {
+          buffer.writeln('    $camelKey: $type.fromJson(json[\'$key\'] as Map<String, dynamic>),');
+        }
+      }
+    } else if (value is Map<String, dynamic> && value.containsKey('_arraySchemaType')) {
+      // Handle array with schema definition like [{"type": "string", "required": true}]
+      final itemType = dartType(value['_arraySchemaType']);
+      if (itemType == 'String') {
+        buffer.writeln('    $camelKey: (json[\'$key\'] as List?)?.map((e) => (e as String).trim()).toList(),');
+      } else if (itemType == 'num' || itemType == 'bool' || itemType == 'dynamic') {
+        buffer.writeln('    $camelKey: (json[\'$key\'] as List?)?.map((e) => e as $itemType).toList(),');
+      } else {
+        buffer.writeln('    $camelKey: (json[\'$key\'] as List?)?.cast<$itemType>(),');
+      }
+    } else if (value is Map<String, dynamic> && value.containsKey('_arrayItemClass')) {
+      // Handle array with complex item class
+      final itemClass = value['_arrayItemClass'];
+      buffer.writeln('    $camelKey: (json[\'$key\'] as List?)?.map((e) => $itemClass.fromJson(e)).toList(),');
+    } else if (value is Map<String, dynamic>) {
+      // Check if this is a field definition (has 'type' and 'required' keys only)
+      final keys = value.keys.toSet();
+      final isFieldDefinition = keys.contains('type') && 
+                               keys.length <= 2 && 
+                               (keys.length == 1 || keys.contains('required'));
+      
+      if (isFieldDefinition) {
+        // This is a field definition like {"type": "string", "required": true}
+        final fieldType = value['type'] as String;
+        final isRequired = value['required'] != false;
+        final dartFieldType = dartType(fieldType);
+        
+        if (isRequired) {
+          if (dartFieldType == 'String') {
+            buffer.writeln('    $camelKey: (json[\'$key\'] as String).trim(),');
+          } else if (dartFieldType == 'num' || dartFieldType == 'bool' || dartFieldType == 'dynamic') {
+            buffer.writeln('    $camelKey: json[\'$key\'] as $dartFieldType,');
+          } else {
+            buffer.writeln('    $camelKey: $dartFieldType.fromJson(json[\'$key\'] as Map<String, dynamic>),');
+          }
+        } else {
+          if (dartFieldType == 'String') {
+            buffer.writeln('    $camelKey: (json[\'$key\'] as String?)?.trim(),');
+          } else if (dartFieldType == 'num' || dartFieldType == 'bool' || dartFieldType == 'dynamic') {
+            buffer.writeln('    $camelKey: json[\'$key\'] as $dartFieldType?,');
+          } else {
+            buffer.writeln('    $camelKey: json[\'$key\'] == null ? null : $dartFieldType.fromJson(json[\'$key\'] as Map<String, dynamic>),');
+          }
+        }
+      } else {
+        // Handle nested objects
+        final nestedClass = toPascalCase(name) + toPascalCase(key);
+        buffer.writeln('    $camelKey: json[\'$key\'] == null ? null : $nestedClass.fromJson(json[\'$key\'] as Map<String, dynamic>),');
+      }
+    } else if (value is List && value.isNotEmpty && value.first is Map<String, dynamic>) {
+      // Check if this is a schema definition (has 'type' and 'required' keys only)
+      final firstItem = value.first as Map<String, dynamic>;
+      final keys = firstItem.keys.toSet();
+      final isSchemaDefinition = keys.contains('type') && 
+                                keys.length <= 2 && 
+                                (keys.length == 1 || keys.contains('required'));
+      
+      if (isSchemaDefinition) {
+        // This is a schema definition like [{"type": "string", "required": true}]
+        // Parse as primitive list
+        final itemType = firstItem['type'] as String;
+        final dartItemType = dartType(itemType);
+        if (dartItemType == 'String') {
+          buffer.writeln('    $camelKey: (json[\'$key\'] as List?)?.map((e) => (e as String).trim()).toList(),');
+        } else if (dartItemType == 'num' || dartItemType == 'bool' || dartItemType == 'dynamic') {
+          buffer.writeln('    $camelKey: (json[\'$key\'] as List?)?.map((e) => e as $dartItemType).toList(),');
+        } else {
+          buffer.writeln('    $camelKey: (json[\'$key\'] as List?)?.cast<$dartItemType>(),');
+        }
+      } else {
+        // This is actual data structure, create nested class
+        final nestedClass = toPascalCase(name) + toPascalCase(key);
+        buffer.writeln('    $camelKey: (json[\'$key\'] as List?)?.map((e) => $nestedClass.fromJson(e)).toList(),');
+      }
     } else {
-      buffer.writeln('    $camelKey: json[\'$key\'] == null ? null : $type.fromJson(json[\'$key\'] as Map<String, dynamic>),');
+      String type = dartType(value);
+      if (type.startsWith('List<')) {
+        // Handle List<T> parsing for primitives
+        final innerType = type.substring(5, type.length - 1);
+        if (innerType == 'String') {
+          buffer.writeln('    $camelKey: (json[\'$key\'] as List?)?.map((e) => (e as String).trim()).toList(),');
+        } else if (innerType == 'num' || innerType == 'bool' || innerType == 'dynamic') {
+          buffer.writeln('    $camelKey: (json[\'$key\'] as List?)?.map((e) => e as $innerType).toList(),');
+        } else {
+          buffer.writeln('    $camelKey: (json[\'$key\'] as List?)?.map((e) => $innerType.fromJson(e)).toList(),');
+        }
+      } else if (type == 'String') {
+        buffer.writeln('    $camelKey: (json[\'$key\'] as String?)?.trim(),');
+      } else if (type == 'num' || type == 'bool' || type == 'dynamic') {
+        buffer.writeln('    $camelKey: json[\'$key\'] as $type?,');
+      } else {
+        buffer.writeln('    $camelKey: json[\'$key\'] == null ? null : $type.fromJson(json[\'$key\'] as Map<String, dynamic>),');
+      }
     }
   });
   buffer.writeln('  );\n');
@@ -296,12 +577,50 @@ String generateModel(
     if (value is Map<String, dynamic> && value.containsKey('_classType')) {
       // Handle custom class types (like UsedBoostData)
       type = value['_classType'];
+    } else if (value is Map<String, dynamic> && value.containsKey('_fieldType')) {
+      // Handle field types with required information
+      type = dartType(value['_fieldType']);
+    } else if (value is Map<String, dynamic> && value.containsKey('_arraySchemaType')) {
+      // Handle array with schema definition like [{"type": "string", "required": true}]
+      final itemType = dartType(value['_arraySchemaType']);
+      type = 'List<$itemType>';
+    } else if (value is Map<String, dynamic> && value.containsKey('_arrayItemClass')) {
+      // Handle array with complex item class
+      final itemClass = value['_arrayItemClass'];
+      type = 'List<$itemClass>';
     } else if (value is Map<String, dynamic>) {
-      type = toPascalCase(name) + toPascalCase(key);
+      // Check if this is a field definition (has 'type' and 'required' keys only)
+      final keys = value.keys.toSet();
+      final isFieldDefinition = keys.contains('type') && 
+                               keys.length <= 2 && 
+                               (keys.length == 1 || keys.contains('required'));
+      
+      if (isFieldDefinition) {
+        // This is a field definition like {"type": "string", "required": true}
+        type = dartType(value['type']);
+      } else {
+        // This is a nested object, create nested class
+        type = toPascalCase(name) + toPascalCase(key);
+      }
     } else if (value is List &&
         value.isNotEmpty &&
         value.first is Map<String, dynamic>) {
-      type = 'List<' + toPascalCase(name) + toPascalCase(key) + '>';
+      // Check if this is a schema definition (has 'type' and 'required' keys only)
+      final firstItem = value.first as Map<String, dynamic>;
+      final keys = firstItem.keys.toSet();
+      final isSchemaDefinition = keys.contains('type') && 
+                                keys.length <= 2 && 
+                                (keys.length == 1 || keys.contains('required'));
+      
+      if (isSchemaDefinition) {
+        // This is a schema definition like [{"type": "string", "required": true}]
+        final itemType = firstItem['type'] as String;
+        final dartItemType = dartType(itemType);
+        type = 'List<$dartItemType>';
+      } else {
+        // This is actual data structure, create nested class
+        type = 'List<' + toPascalCase(name) + toPascalCase(key) + '>';
+      }
     } else {
       type = dartType(value);
     }
@@ -323,12 +642,48 @@ String generateModel(
     if (value is Map<String, dynamic> && value.containsKey('_classType')) {
       // Handle custom class types (like UsedBoostData)
       buffer.writeln('        \'$key\': $camelKey?.toJson(),');
+    } else if (value is Map<String, dynamic> && value.containsKey('_fieldType')) {
+      // Handle field types with required information (primitive types)
+      buffer.writeln('        \'$key\': $camelKey,');
+    } else if (value is Map<String, dynamic> && value.containsKey('_arraySchemaType')) {
+      // Handle array with schema definition like [{"type": "string", "required": true}]
+      buffer.writeln('        \'$key\': $camelKey,');
+    } else if (value is Map<String, dynamic> && value.containsKey('_arrayItemClass')) {
+      // Handle array with complex item class
+      buffer.writeln('        \'$key\': $camelKey?.map((e) => e.toJson()).toList(),');
     } else if (value is Map<String, dynamic>) {
-      buffer.writeln('        \'$key\': $camelKey?.toJson(),');
+      // Check if this is a field definition (has 'type' and 'required' keys only)
+      final keys = value.keys.toSet();
+      final isFieldDefinition = keys.contains('type') && 
+                               keys.length <= 2 && 
+                               (keys.length == 1 || keys.contains('required'));
+      
+      if (isFieldDefinition) {
+        // This is a field definition like {"type": "string", "required": true}
+        // Serialize as primitive value
+        buffer.writeln('        \'$key\': $camelKey,');
+      } else {
+        // This is a nested object, serialize with toJson
+        buffer.writeln('        \'$key\': $camelKey?.toJson(),');
+      }
     } else if (value is List &&
         value.isNotEmpty &&
         value.first is Map<String, dynamic>) {
-      buffer.writeln('        \'$key\': $camelKey?.map((e) => e.toJson()).toList(),');
+      // Check if this is a schema definition (has 'type' and 'required' keys only)
+      final firstItem = value.first as Map<String, dynamic>;
+      final keys = firstItem.keys.toSet();
+      final isSchemaDefinition = keys.contains('type') && 
+                                keys.length <= 2 && 
+                                (keys.length == 1 || keys.contains('required'));
+      
+      if (isSchemaDefinition) {
+        // This is a schema definition like [{"type": "string", "required": true}]
+        // Serialize as primitive list
+        buffer.writeln('        \'$key\': $camelKey,');
+      } else {
+        // This is actual data structure, serialize with toJson
+        buffer.writeln('        \'$key\': $camelKey?.map((e) => e.toJson()).toList(),');
+      }
     } else {
       buffer.writeln('        \'$key\': $camelKey,');
     }
@@ -338,30 +693,21 @@ String generateModel(
   buffer.writeln('}');
 
   // Nested classes (isParent = false)
-  model.forEach((key, value) {
-    if (value is Map<String, dynamic>) {
-      buffer.writeln(
-        generateModel(name + toPascalCase(key), value, generatedClasses, isParent: false),
-      );
-    } else if (value is List &&
-        value.isNotEmpty &&
-        value.first is Map<String, dynamic>) {
-      buffer.writeln(
-        generateModel(name + toPascalCase(key), value.first, generatedClasses, isParent: false),
-      );
-    }
-  });
-
   return buffer.toString();
 }
 
 Future<void> main(List<String> args) async {
   if (args.isEmpty) {
-    print('Usage: fvm dart gen_api.dart <package_name>');
+    print('Usage: fvm dart gen_api.dart <package_name> [custom_root]');
     return;
   }
 
-  packageName = args[0] ;
+  packageName = args[0];
+  
+  // If a custom root is provided as second argument, use it
+  if (args.length > 1) {
+    root = args[1];
+  }
   final routeDir = Directory(root);
   final exportBuffer = StringBuffer();
 
@@ -459,7 +805,11 @@ Future<void> main(List<String> args) async {
           helperBuffer.writeln("  }\n");
 
           if (model != null) {
-            modelBuffer.writeln(generateModel(name, model, generatedClasses));
+            // Process the model fields recursively before generating
+            final processedModel = processFieldDefinitions(model, name, isResponseModel: true);
+            modelBuffer.writeln(generateModel(name, processedModel, generatedClasses));
+            // Generate nested classes for the processed model
+            generateNestedClasses(processedModel, modelBuffer, generatedClasses, name);
             modelBuffer.writeln();
           }
         }

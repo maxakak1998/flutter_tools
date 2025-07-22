@@ -1,0 +1,142 @@
+[
+    {
+        "name": "create_user",
+        "path": "/api/users",
+        "method": "POST",
+        "headers": {
+            "Content-Type": "application/json"
+        },
+        "extra": {
+            "requiresAuth": true
+        },
+        "query": {
+            "isResulted": {
+                "type": "bool",
+                "required": true
+            },
+            "onlyCount": {
+                "type": "bool",
+                "required": true
+            }
+        },
+        "body": {
+            "full_name": {
+                "type": "map",
+                "required": true,
+                "value": {
+                    "surname": {
+                        "type": "string",
+                        "required": false
+                    }
+                }
+            },
+            "contacts": [
+                {
+                    "type": {
+                        "type": "string",
+                        "required": true
+                    }
+                }
+            ],
+            "emails": [
+                {
+                    "type": "string",
+                    "required": true
+                }
+            ],
+            "factorys": {
+                "type": "map",
+                "value": {
+                    "source_name": {
+                        "type": "string",
+                        "required": true
+                    }
+                }
+            }
+        },
+        "responseModel": {
+            "full_name": {
+                "type": "string",
+                "required": true
+            },
+            "phone_numbers": [
+                {
+                    "phone_type": {
+                        "type": "string",
+                        "required": true
+                    },
+                    "country_code": {
+                        "type": "string",
+                        "required": false
+                    },
+                    "number": {
+                        "type": "string",
+                        "required": true
+                    },
+                    "is_primary": {
+                        "type": "bool",
+                        "required": true
+                    }
+                }
+            ],
+            "contact_info": {
+                "type": "map",
+                "required": true,
+                "value": {
+                    "additional_emails": [
+                        {
+                            "type": "string",
+                            "required": true
+                        }
+                    ],
+                    "social_accounts": [
+                        {
+                            "platform": {
+                                "type": "string",
+                                "required": true
+                            },
+                            "username": {
+                                "type": "string",
+                                "required": true
+                            },
+                            "profile_data": {
+                                "type": "map",
+                                "value": {
+                                    "display_name": {
+                                        "type": "string",
+                                        "required": true
+                                    },
+                                    "bio": {
+                                        "type": "string",
+                                        "required": false
+                                    },
+                                    "follower_count": {
+                                        "type": "int",
+                                        "required": false
+                                    }
+                                },
+                                "required": true
+                            }
+                        }
+                    ],
+                    "primary_email": {
+                        "type": "string",
+                        "required": true
+                    },
+                    "backup_email": {
+                        "type": "string",
+                        "required": false
+                    }
+                }
+            },
+            "age": {
+                "type": "int",
+                "required": false
+            },
+            "is_active": {
+                "type": "bool",
+                "required": false
+            }
+        }
+    }
+]
