@@ -13,6 +13,7 @@ applyTo: '**'
 ```curl
 curl -o /Users/mac/Documents/AC_Project/upcoz-mobile/assets/images/common/phone_icon_figma.svg "http://localhost:3845/assets/d5ea2026a3aba03fd061345a5168ed69d23a7166.svg"
 ```
+You must to download all the assets in batch using a single command
 2. Here is the steps you should call MCP
  1. Calling `get_code` tool with language is in plain HTML + CSS , it will generate the codes for that UI and help you have a better understanding of the UI structure and components.
  2. Calling `get_variable_defs` to get the variables and styles used in the UI
