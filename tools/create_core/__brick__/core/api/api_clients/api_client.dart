@@ -63,8 +63,12 @@ class APIClient
 
     final apiWrapper = create(response);
     if (apiWrapper is Exception) throw apiWrapper;
-    if(apiWrapper is BaseAPIResponseWrapper) return (apiWrapper ).decode() as T;
+   if (apiWrapper is BaseAPIResponseWrapper){
+      final concretedWrapper = (apiWrapper).decode() ;
+      if(concretedWrapper is Exception) throw concretedWrapper;
+      return concretedWrapper as T;
 
+    }
      return apiWrapper ;
   }
 }

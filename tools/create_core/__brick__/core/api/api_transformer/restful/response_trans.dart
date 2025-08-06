@@ -10,22 +10,26 @@ class APIResponseDataTransformer<T>
     Response response,
     T? genericObject,
   ) {
-    dynamic data = getData(response.data) ?? response.data;
+    if (isSucceed(response)) {
+      dynamic data = getData(response.data) ?? response.data;
 
-    T? object;
-    if (genericObject is Decoder) {
-      object = genericObject.decode(data);
+      T? object;
+      if (genericObject is Decoder) {
+        object = genericObject.decode(data);
+      } else {
+        object = data;
+      }
+
+      return APIResponse<T>(
+        decodedData: object,
+        dataTransformer: this,
+        originalResponse: response,
+      );
     } else {
-      object = data;
+      return ErrorResponse<T>(
+        message: response.data["error"]["message"] ?? "Unknown error",
+        code: response.data["code"].toString(),
+      );
     }
-
-    return APIResponse<T>(
-      decodedData: object,
-      dataTransformer: this,
-      originalResponse: response,
-    );
   }
-
-  @override
-  bool isSucceed(Response response) => true;
 }

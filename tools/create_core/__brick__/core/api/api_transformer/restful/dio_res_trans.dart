@@ -6,4 +6,11 @@ abstract class DioResponseDataTransformer<T,OUTPUT>
 
   @override
   OUTPUT transform(Response response, T? genericObject);
+
+    @override
+  bool isSucceed(Response response) =>
+      response.statusCode != null &&
+      response.statusCode! >= 200 &&
+      response.statusCode! < 300;
+
 }
