@@ -1,7 +1,7 @@
 // GENERATED CODE - DO NOT MODIFY BY HAND
 
 import 'package:dio/dio.dart';
-import 'package:data_entry/core/api/decodable.dart';
+import 'package:upcoz_flutter/core/api/decodable.dart';
 
 // === RequestOptions Generator ===
 class TestRouteApiRoutesGenerated {
@@ -36,7 +36,27 @@ class TestRouteApiRoutesGenerated {
       extra: {
         "requiresAuth": true,
       },
-    ).compose(baseOption, '/api/users', data: _removeNullValues({"full_name": fullName?.toJson(), "contacts": contacts.map((e) => e.toJson()).toList(), "emails": emails.map((e) => e.toJson()).toList(), "factorys": factorys?.toJson()}), queryParameters: _removeNullValues({"isResulted": isResulted, "onlyCount": onlyCount}));
+    ).compose(baseOption, '/api/users', data: _removeNullValues({"full_name": fullName?.toJson(), "contacts": contacts?.map((e) => e.toJson()).toList(), "emails": emails, "factorys": factorys?.toJson()}), queryParameters: _removeNullValues({"isResulted": isResulted, "onlyCount": onlyCount}));
+    return options;
+  }
+
+  static RequestOptions list_in_list({BaseOptions? baseOption, required String mode, required List<num> selectionsPerPosition, required List<ListInListListMapItem> listMap}) {
+    baseOption??= BaseOptions();
+    final options = Options(
+      method: 'POST',
+      extra: {
+      },
+    ).compose(baseOption, '/api/list_in_list', data: _removeNullValues({"mode": mode, "selectionsPerPosition": selectionsPerPosition, "listMap": listMap?.map((e) => e.toJson()).toList()}));
+    return options;
+  }
+
+  static RequestOptions nested_list_examples({BaseOptions? baseOption, required List<num> simpleIntList, required List<List<num>> nestedIntList, required List<List<NestedObjectListItem>> nestedObjectList}) {
+    baseOption??= BaseOptions();
+    final options = Options(
+      method: 'POST',
+      extra: {
+      },
+    ).compose(baseOption, '/api/nested_list_examples', data: _removeNullValues({"simpleIntList": simpleIntList, "nestedIntList": nestedIntList?.map((e) => (e as List).map((inner) => inner).toList()).toList(), "nestedObjectList": nestedObjectList?.map((e) => (e as List).map((inner) => inner.toJson()).toList()).toList()}));
     return options;
   }
 
@@ -123,24 +143,24 @@ class CreateUserFactorys {
 
 
 class CreateUser extends Decoder<CreateUser> {
-   String fullName;
+   String? fullName;
    List<CreateUserPhoneNumbersItem>? phoneNumbers;
-   CreateUserContactInfo contactInfo;
+   CreateUserContactInfo? contactInfo;
    num? age;
    bool? isActive;
 
   CreateUser({
-     required this.fullName,
+     this.fullName,
      this.phoneNumbers,
-     required this.contactInfo,
+     this.contactInfo,
      this.age,
      this.isActive,
   });
 
   factory CreateUser.fromJson(Map<String, dynamic> json) => CreateUser(
-    fullName: (json['full_name'] as String).trim(),
+    fullName: (json['full_name'] as String?)?.trim(),
     phoneNumbers: (json['phone_numbers'] as List?)?.map((e) => CreateUserPhoneNumbersItem.fromJson(e)).toList(),
-    contactInfo: CreateUserContactInfo.fromJson(json['contact_info'] as Map<String, dynamic>),
+    contactInfo: json['contact_info'] == null ? null : CreateUserContactInfo.fromJson(json['contact_info'] as Map<String, dynamic>),
     age: json['age'] as num?,
     isActive: json['is_active'] as bool?,
   );
@@ -175,23 +195,23 @@ class CreateUser extends Decoder<CreateUser> {
 }
 
 class CreateUserPhoneNumbersItem {
-   String phoneType;
+   String? phoneType;
    String? countryCode;
-   String number;
-   bool isPrimary;
+   String? number;
+   bool? isPrimary;
 
   CreateUserPhoneNumbersItem({
-     required this.phoneType,
+     this.phoneType,
      this.countryCode,
-     required this.number,
-     required this.isPrimary,
+     this.number,
+     this.isPrimary,
   });
 
   factory CreateUserPhoneNumbersItem.fromJson(Map<String, dynamic> json) => CreateUserPhoneNumbersItem(
-    phoneType: (json['phone_type'] as String).trim(),
+    phoneType: (json['phone_type'] as String?)?.trim(),
     countryCode: (json['country_code'] as String?)?.trim(),
-    number: (json['number'] as String).trim(),
-    isPrimary: json['is_primary'] as bool,
+    number: (json['number'] as String?)?.trim(),
+    isPrimary: json['is_primary'] as bool?,
   );
 
   CreateUserPhoneNumbersItem copyWith({
@@ -219,18 +239,18 @@ class CreateUserPhoneNumbersItem {
 
 
 class CreateUserContactInfoSocialAccountsItemProfileData {
-   String displayName;
+   String? displayName;
    String? bio;
    num? followerCount;
 
   CreateUserContactInfoSocialAccountsItemProfileData({
-     required this.displayName,
+     this.displayName,
      this.bio,
      this.followerCount,
   });
 
   factory CreateUserContactInfoSocialAccountsItemProfileData.fromJson(Map<String, dynamic> json) => CreateUserContactInfoSocialAccountsItemProfileData(
-    displayName: (json['display_name'] as String).trim(),
+    displayName: (json['display_name'] as String?)?.trim(),
     bio: (json['bio'] as String?)?.trim(),
     followerCount: json['follower_count'] as num?,
   );
@@ -257,20 +277,20 @@ class CreateUserContactInfoSocialAccountsItemProfileData {
 
 
 class CreateUserContactInfoSocialAccountsItem {
-   String platform;
-   String username;
-   CreateUserContactInfoSocialAccountsItemProfileData profileData;
+   String? platform;
+   String? username;
+   CreateUserContactInfoSocialAccountsItemProfileData? profileData;
 
   CreateUserContactInfoSocialAccountsItem({
-     required this.platform,
-     required this.username,
-     required this.profileData,
+     this.platform,
+     this.username,
+     this.profileData,
   });
 
   factory CreateUserContactInfoSocialAccountsItem.fromJson(Map<String, dynamic> json) => CreateUserContactInfoSocialAccountsItem(
-    platform: (json['platform'] as String).trim(),
-    username: (json['username'] as String).trim(),
-    profileData: CreateUserContactInfoSocialAccountsItemProfileData.fromJson(json['profile_data'] as Map<String, dynamic>),
+    platform: (json['platform'] as String?)?.trim(),
+    username: (json['username'] as String?)?.trim(),
+    profileData: json['profile_data'] == null ? null : CreateUserContactInfoSocialAccountsItemProfileData.fromJson(json['profile_data'] as Map<String, dynamic>),
   );
 
   CreateUserContactInfoSocialAccountsItem copyWith({
@@ -297,20 +317,20 @@ class CreateUserContactInfoSocialAccountsItem {
 class CreateUserContactInfo {
    List<String>? additionalEmails;
    List<CreateUserContactInfoSocialAccountsItem>? socialAccounts;
-   String primaryEmail;
+   String? primaryEmail;
    String? backupEmail;
 
   CreateUserContactInfo({
      this.additionalEmails,
      this.socialAccounts,
-     required this.primaryEmail,
+     this.primaryEmail,
      this.backupEmail,
   });
 
   factory CreateUserContactInfo.fromJson(Map<String, dynamic> json) => CreateUserContactInfo(
     additionalEmails: (json['additional_emails'] as List?)?.map((e) => (e as String).trim()).toList(),
     socialAccounts: (json['social_accounts'] as List?)?.map((e) => CreateUserContactInfoSocialAccountsItem.fromJson(e)).toList(),
-    primaryEmail: (json['primary_email'] as String).trim(),
+    primaryEmail: (json['primary_email'] as String?)?.trim(),
     backupEmail: (json['backup_email'] as String?)?.trim(),
   );
 
@@ -337,6 +357,108 @@ class CreateUserContactInfo {
 
 }
 
+
+
+class ListInListListMapItem {
+   num id;
+   String name;
+   List<String>? tags;
+
+  ListInListListMapItem({
+     required this.id,
+     required this.name,
+     this.tags,
+  });
+
+  factory ListInListListMapItem.fromJson(Map<String, dynamic> json) => ListInListListMapItem(
+    id: json['id'] as num,
+    name: (json['name'] as String).trim(),
+    tags: (json['tags'] as List?)?.map((e) => (e as String).trim()).toList(),
+  );
+
+  ListInListListMapItem copyWith({
+    num? id,
+    String? name,
+    List<String>? tags,
+  }) {
+    return ListInListListMapItem(
+      id: id ?? this.id,
+      name: name ?? this.name,
+      tags: tags ?? this.tags,
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'name': name,
+        'tags': tags,
+      };
+
+}
+
+
+class NestedListExamplesNestedObjectListItem {
+   num id;
+   String name;
+
+  NestedListExamplesNestedObjectListItem({
+     required this.id,
+     required this.name,
+  });
+
+  factory NestedListExamplesNestedObjectListItem.fromJson(Map<String, dynamic> json) => NestedListExamplesNestedObjectListItem(
+    id: json['id'] as num,
+    name: (json['name'] as String).trim(),
+  );
+
+  NestedListExamplesNestedObjectListItem copyWith({
+    num? id,
+    String? name,
+  }) {
+    return NestedListExamplesNestedObjectListItem(
+      id: id ?? this.id,
+      name: name ?? this.name,
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'name': name,
+      };
+
+}
+
+
+class NestedObjectListItem {
+   num id;
+   String name;
+
+  NestedObjectListItem({
+     required this.id,
+     required this.name,
+  });
+
+  factory NestedObjectListItem.fromJson(Map<String, dynamic> json) => NestedObjectListItem(
+    id: json['id'] as num,
+    name: (json['name'] as String).trim(),
+  );
+
+  NestedObjectListItem copyWith({
+    num? id,
+    String? name,
+  }) {
+    return NestedObjectListItem(
+      id: id ?? this.id,
+      name: name ?? this.name,
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'name': name,
+      };
+
+}
 
 
 

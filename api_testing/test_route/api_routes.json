@@ -138,5 +138,75 @@
                 "required": false
             }
         }
+    },
+    {
+        "name": "list_in_list",
+        "path": "/api/list_in_list",
+        "method": "POST",
+        "body": {
+            "mode": {
+                "type": "string",
+                "required": true
+            },
+            "selectionsPerPosition": {
+                "type": "list",
+                "value": {
+                    "type": "int"
+                }
+            },
+            "listMap": [
+                {
+                    "id": {
+                        "type": "int",
+                        "required": true
+                    },
+                    "name": {
+                        "type": "string",
+                        "required": true
+                    },
+                    "tags": [
+                        {
+                            "type": "string"
+                        }
+                    ]
+                }
+            ]
+        }
+    },
+    {
+        "name": "nested_list_examples",
+        "path": "/api/nested_list_examples", 
+        "method": "POST",
+        "body": {
+            "simpleIntList": {
+                "type": "list",
+                "value": {
+                    "type": "int"
+                }
+            },
+            "nestedIntList": {
+                "type": "list",
+                "value": {
+                    "type": "list",
+                    "value": {
+                        "type": "int"
+                    }
+                }
+            },
+            "nestedObjectList": {
+                "type": "list",
+                "value": {
+                    "type": "list",
+                    "value": {
+                        "id": {
+                            "type": "int"
+                        },
+                        "name": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        }
     }
 ]
