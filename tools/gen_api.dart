@@ -34,26 +34,36 @@ String dartType(dynamic value) {
 }
 
 // Recursively process list value types to determine the final Dart type
-String processListValueType(dynamic valueDefinition, String contextName, StringBuffer modelBuffer, Map<String, String> generatedClasses) {
+String processListValueType(
+  dynamic valueDefinition,
+  String contextName,
+  StringBuffer modelBuffer,
+  Map<String, String> generatedClasses,
+) {
   if (valueDefinition is Map<String, dynamic>) {
     final valueType = valueDefinition['type'];
-    
+
     if (valueType == 'list' && valueDefinition.containsKey('value')) {
       // Nested list case: List<List<...>>
-      final innerType = processListValueType(valueDefinition['value'], contextName, modelBuffer, generatedClasses);
+      final innerType = processListValueType(
+        valueDefinition['value'],
+        contextName,
+        modelBuffer,
+        generatedClasses,
+      );
       return 'List<$innerType>';
     } else if (valueType == 'map' && valueDefinition.containsKey('value')) {
       // List of maps with defined structure
       final className = '${toPascalCase(contextName)}Item';
       final mapValue = valueDefinition['value'] as Map<String, dynamic>;
-      
+
       // Process the map value recursively
       final processedFields = processFieldDefinitions(
         mapValue,
         className,
         isResponseModel: false,
       );
-      
+
       // Generate the class for the map value
       modelBuffer.writeln(
         generateModel(
@@ -64,22 +74,24 @@ String processListValueType(dynamic valueDefinition, String contextName, StringB
         ),
       );
       modelBuffer.writeln();
-      
+
       return className;
     } else if (valueType is String) {
       // Simple primitive type in list
       return dartType(valueType);
-    } else if (valueDefinition.keys.any((key) => !['type', 'required'].contains(key))) {
+    } else if (valueDefinition.keys.any(
+      (key) => !['type', 'required'].contains(key),
+    )) {
       // Object structure without explicit type - create a class
       final className = '${toPascalCase(contextName)}Item';
-      
+
       // Process the object fields recursively
       final processedFields = processFieldDefinitions(
         valueDefinition,
         className,
         isResponseModel: false,
       );
-      
+
       // Generate the class
       modelBuffer.writeln(
         generateModel(
@@ -90,24 +102,35 @@ String processListValueType(dynamic valueDefinition, String contextName, StringB
         ),
       );
       modelBuffer.writeln();
-      
+
       return className;
     }
   }
-  
+
   return 'dynamic';
 }
 
 // Generate parsing expression for list values in fromJson
-String generateListValueParseExpression(dynamic valueDefinition, String itemVar, {String contextName = ''}) {
+String generateListValueParseExpression(
+  dynamic valueDefinition,
+  String itemVar, {
+  String contextName = '',
+}) {
   if (valueDefinition is Map<String, dynamic>) {
     final valueType = valueDefinition['type'];
-    
+
     if (valueType == 'list' && valueDefinition.containsKey('value')) {
       // Nested list case: parse inner list
-      final innerParseExpression = generateListValueParseExpression(valueDefinition['value'], 'inner', contextName: contextName);
+      final innerParseExpression = generateListValueParseExpression(
+        valueDefinition['value'],
+        'inner',
+        contextName: contextName,
+      );
       return '($itemVar as List).map((inner) => $innerParseExpression).toList()';
-    } else if (valueType == 'map' || valueDefinition.keys.any((key) => !['type', 'required'].contains(key))) {
+    } else if (valueType == 'map' ||
+        valueDefinition.keys.any(
+          (key) => !['type', 'required'].contains(key),
+        )) {
       // Object type - needs fromJson
       final className = '${toPascalCase(contextName)}Item';
       return '$className.fromJson($itemVar as Map<String, dynamic>)';
@@ -121,20 +144,29 @@ String generateListValueParseExpression(dynamic valueDefinition, String itemVar,
       }
     }
   }
-  
+
   return itemVar;
 }
 
 // Generate serialization expression for list values in toJson
-String generateListValueSerializeExpression(dynamic valueDefinition, String itemVar) {
+String generateListValueSerializeExpression(
+  dynamic valueDefinition,
+  String itemVar,
+) {
   if (valueDefinition is Map<String, dynamic>) {
     final valueType = valueDefinition['type'];
-    
+
     if (valueType == 'list' && valueDefinition.containsKey('value')) {
       // Nested list case: serialize inner list
-      final innerSerializeExpression = generateListValueSerializeExpression(valueDefinition['value'], 'inner');
+      final innerSerializeExpression = generateListValueSerializeExpression(
+        valueDefinition['value'],
+        'inner',
+      );
       return '($itemVar as List).map((inner) => $innerSerializeExpression).toList()';
-    } else if (valueType == 'map' || valueDefinition.keys.any((key) => !['type', 'required'].contains(key))) {
+    } else if (valueType == 'map' ||
+        valueDefinition.keys.any(
+          (key) => !['type', 'required'].contains(key),
+        )) {
       // Object type - needs toJson
       return '$itemVar.toJson()';
     } else if (valueType is String) {
@@ -142,7 +174,7 @@ String generateListValueSerializeExpression(dynamic valueDefinition, String item
       return itemVar;
     }
   }
-  
+
   return itemVar;
 }
 
@@ -203,6 +235,59 @@ Map<String, dynamic> processFieldDefinitions(
   final processedFields = <String, dynamic>{};
 
   fields.forEach((key, value) {
+    // Check if this is an underscore-prefixed field (actual field name, not special key)
+    if (key.startsWith('_')) {
+      final actualFieldName = key.substring(1); // Remove underscore prefix
+      // Treat as regular field with the value as its type/structure
+      if (value is String) {
+        // Simple string value - treat as field with that type
+        processedFields[actualFieldName] = {
+          '_fieldType': value,
+          '_optional': isResponseModel ? true : false,
+        };
+      } else if (value is Map<String, dynamic> &&
+          value.containsKey('type') &&
+          value.keys.length <= 2) {
+        // This is a field definition like {"type": "string", "required": false}
+        final fieldType = value['type'];
+        final isRequired =
+            isResponseModel ? false : (value['required'] != false);
+        processedFields[actualFieldName] = {
+          '_fieldType': fieldType,
+          '_optional': !isRequired,
+        };
+      } else if (value is Map<String, dynamic>) {
+        // Complex object - create nested class
+        final nestedClassName =
+            '${toPascalCase(contextName)}${toPascalCase(actualFieldName)}';
+        final nestedFields = processFieldDefinitions(
+          value,
+          nestedClassName,
+          isResponseModel: isResponseModel,
+        );
+        processedFields[actualFieldName] = {
+          '_classType': nestedClassName,
+          '_optional': isResponseModel ? true : false,
+          '_nestedFields': nestedFields,
+        };
+      } else if (value is List) {
+        // Array field
+        processedFields[actualFieldName] = processArrayField(
+          value,
+          actualFieldName,
+          contextName,
+          isResponseModel: isResponseModel,
+        );
+      } else {
+        // Other primitive types
+        processedFields[actualFieldName] = {
+          '_fieldType': 'dynamic',
+          '_optional': isResponseModel ? true : false,
+        };
+      }
+      return; // Skip the rest of the processing for underscore-prefixed fields
+    }
+
     if (value is Map<String, dynamic>) {
       if (value.containsKey('type')) {
         // This is a field definition
@@ -240,8 +325,31 @@ Map<String, dynamic> processFieldDefinitions(
           };
         }
       } else {
-        // This might be a nested structure without explicit type
-        processedFields[key] = value;
+        // Check if this is a nested object with underscore-prefixed fields or regular fields
+        final hasUnderscoreFields = value.keys.any((k) => k.startsWith('_'));
+        final hasTypeDefinition = value.keys.any(
+          (k) => k == 'type' && value['type'] is String,
+        );
+
+        if (hasUnderscoreFields || (!hasTypeDefinition && value.isNotEmpty)) {
+          // This is a nested object that needs its own class
+          final nestedClassName =
+              '${toPascalCase(contextName)}${toPascalCase(key)}';
+          final nestedFields = processFieldDefinitions(
+            value,
+            nestedClassName,
+            isResponseModel: isResponseModel,
+          );
+
+          processedFields[key] = {
+            '_classType': nestedClassName,
+            '_optional': isResponseModel ? true : false,
+            '_nestedFields': nestedFields,
+          };
+        } else {
+          // This might be a field definition without explicit structure
+          processedFields[key] = value;
+        }
       }
     } else if (value is List && value.isNotEmpty) {
       // Handle arrays
@@ -272,6 +380,25 @@ dynamic processArrayField(
   final firstItem = arrayValue.first;
 
   if (firstItem is Map<String, dynamic>) {
+    // Check if this has underscore-prefixed keys (actual field names)
+    final hasUnderscoreFields = firstItem.keys.any((k) => k.startsWith('_'));
+
+    if (hasUnderscoreFields) {
+      // This contains actual field names with underscore prefixes
+      final itemClassName =
+          '${toPascalCase(contextName)}${toPascalCase(key)}Item';
+      final processedItem = processFieldDefinitions(
+        firstItem,
+        itemClassName,
+        isResponseModel: isResponseModel,
+      );
+
+      return {
+        '_arrayItemClass': itemClassName,
+        '_arrayItemFields': processedItem,
+      };
+    }
+
     // Check if this is a simple schema definition like [{"type": "string", "required": true}]
     final keys = firstItem.keys.toSet();
     final hasTypeKey = keys.contains('type');
@@ -376,9 +503,14 @@ String generateParametersFromFields(
           final listValueType = field['_listValueType'];
           final isOptional = field['_optional'] ?? true;
           final paramName = toCamelCase(key);
-          final dartListType = processListValueType(listValueType, key, modelBuffer, generatedClasses);
+          final dartListType = processListValueType(
+            listValueType,
+            key,
+            modelBuffer,
+            generatedClasses,
+          );
           final finalType = 'List<$dartListType>';
-          
+
           if (isOptional) {
             params.add('$finalType? $paramName');
           } else {
@@ -483,7 +615,12 @@ void generateNestedClasses(
       } else if (field.containsKey('_listValueType')) {
         // Handle list with value type - may need to generate nested classes
         final listValueType = field['_listValueType'];
-        processListValueType(listValueType, '${contextName}${toPascalCase(key)}', modelBuffer, generatedClasses);
+        processListValueType(
+          listValueType,
+          '${contextName}${toPascalCase(key)}',
+          modelBuffer,
+          generatedClasses,
+        );
       }
       // Skip fields that only contain array metadata like _arraySchemaType
       // These should not generate classes
@@ -496,32 +633,37 @@ String generateDataOrQueryMap(dynamic fields, String apiName) {
 
   if (fields is Map<String, dynamic>) {
     if (fields.isEmpty) return '';
-    
+
     // Process fields to get the structured format
     final processedFields = processFieldDefinitions(
       fields,
       apiName,
       isResponseModel: false,
     );
-    
+
     final entries = <String>[];
     processedFields.forEach((key, field) {
       if (field is Map<String, dynamic>) {
         final paramName = toCamelCase(key);
-        
+
         if (field.containsKey('_classType')) {
           // Handle custom class types (like nested objects)
           entries.add('"$key": $paramName?.toJson()');
         } else if (field.containsKey('_listValueType')) {
           // Handle list with value definition - need to serialize appropriately
           final listValueType = field['_listValueType'];
-          final serializeExpression = generateListValueSerializeExpression(listValueType, 'e');
+          final serializeExpression = generateListValueSerializeExpression(
+            listValueType,
+            'e',
+          );
           if (serializeExpression == 'e') {
             // Simple primitive type - no transformation needed
             entries.add('"$key": $paramName');
           } else {
             // Complex type - needs transformation
-            entries.add('"$key": $paramName?.map((e) => $serializeExpression).toList()');
+            entries.add(
+              '"$key": $paramName?.map((e) => $serializeExpression).toList()',
+            );
           }
         } else if (field.containsKey('_arrayItemClass')) {
           // Handle array with complex item class
@@ -619,8 +761,14 @@ String generateModel(
       // Handle list with value definition (nested lists or objects)
       final listValueType = value['_listValueType'];
       final isOptional = value['_optional'] ?? true;
-      final dartListType = processListValueType(listValueType, '${name}${toPascalCase(key)}', StringBuffer(), <String, String>{});
-      final fieldType = isOptional ? 'List<$dartListType>?' : 'List<$dartListType>';
+      final dartListType = processListValueType(
+        listValueType,
+        '${name}${toPascalCase(key)}',
+        StringBuffer(),
+        <String, String>{},
+      );
+      final fieldType =
+          isOptional ? 'List<$dartListType>?' : 'List<$dartListType>';
       buffer.writeln('   $fieldType ${toCamelCase(key)};');
     } else if (value is Map<String, dynamic>) {
       // Check if this is a field definition (backward compatibility)
@@ -786,7 +934,11 @@ String generateModel(
         value.containsKey('_listValueType')) {
       // Handle list with value definition (nested lists or objects)
       final listValueType = value['_listValueType'];
-      final parseExpression = generateListValueParseExpression(listValueType, 'e', contextName: '${name}${toPascalCase(key)}');
+      final parseExpression = generateListValueParseExpression(
+        listValueType,
+        'e',
+        contextName: '${name}${toPascalCase(key)}',
+      );
       buffer.writeln(
         '    $camelKey: (json[\'$key\'] as List?)?.map((e) => $parseExpression).toList(),',
       );
@@ -942,7 +1094,12 @@ String generateModel(
         value.containsKey('_listValueType')) {
       // Handle list with value definition (nested lists or objects)
       final listValueType = value['_listValueType'];
-      final dartListType = processListValueType(listValueType, '${name}${toPascalCase(key)}', StringBuffer(), <String, String>{});
+      final dartListType = processListValueType(
+        listValueType,
+        '${name}${toPascalCase(key)}',
+        StringBuffer(),
+        <String, String>{},
+      );
       type = 'List<$dartListType>';
     } else if (value is Map<String, dynamic>) {
       // Check if this is a field definition (has 'type' and 'required' keys only)
@@ -1018,7 +1175,10 @@ String generateModel(
         value.containsKey('_listValueType')) {
       // Handle list with value definition (nested lists or objects)
       final listValueType = value['_listValueType'];
-      final serializeExpression = generateListValueSerializeExpression(listValueType, 'e');
+      final serializeExpression = generateListValueSerializeExpression(
+        listValueType,
+        'e',
+      );
       buffer.writeln(
         '        \'$key\': $camelKey?.map((e) => $serializeExpression).toList(),',
       );
@@ -1072,12 +1232,17 @@ String generateModel(
 }
 
 // Process API routes from a JSON file
-Future<void> processApiRoutes(File jsonFile, Directory targetDir, StringBuffer exportBuffer) async {
+Future<void> processApiRoutes(
+  File jsonFile,
+  Directory targetDir,
+  StringBuffer exportBuffer,
+) async {
   final jsonContent = jsonDecode(await jsonFile.readAsString()) as List;
   final generatedClasses = <String, String>{};
-  
+
   // Get the directory name for the class name
-  final dirName = targetDir.uri.pathSegments[targetDir.uri.pathSegments.length - 2];
+  final dirName =
+      targetDir.uri.pathSegments[targetDir.uri.pathSegments.length - 2];
   final helperBuffer = StringBuffer(
     'class ${toPascalCase(dirName)}ApiRoutesGenerated {\n',
   );
@@ -1186,7 +1351,7 @@ Future<void> processApiRoutes(File jsonFile, Directory targetDir, StringBuffer e
     helperBuffer.writeln(");");
     helperBuffer.writeln("    return options;");
     helperBuffer.writeln("  }\n");
-    
+
     if (model != null) {
       // Process the model fields recursively before generating
       final processedModel = processFieldDefinitions(
