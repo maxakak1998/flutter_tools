@@ -38,8 +38,9 @@ String processListValueType(
   dynamic valueDefinition,
   String contextName,
   StringBuffer modelBuffer,
-  Map<String, String> generatedClasses,
-) {
+  Map<String, String> generatedClasses, {
+  bool isResponseModel = false,
+}) {
   if (valueDefinition is Map<String, dynamic>) {
     final valueType = valueDefinition['type'];
 
@@ -50,6 +51,7 @@ String processListValueType(
         contextName,
         modelBuffer,
         generatedClasses,
+        isResponseModel: isResponseModel,
       );
       return 'List<$innerType>';
     } else if (valueType == 'map' && valueDefinition.containsKey('value')) {
@@ -61,7 +63,7 @@ String processListValueType(
       final processedFields = processFieldDefinitions(
         mapValue,
         className,
-        isResponseModel: false,
+        isResponseModel: isResponseModel,
       );
 
       // Generate the class for the map value
@@ -89,7 +91,7 @@ String processListValueType(
       final processedFields = processFieldDefinitions(
         valueDefinition,
         className,
-        isResponseModel: false,
+        isResponseModel: isResponseModel,
       );
 
       // Generate the class
@@ -475,6 +477,7 @@ String generateParametersFromFields(
       modelBuffer,
       generatedClasses,
       apiName,
+      isResponseModel: false,
     );
 
     // Generate parameters
@@ -517,6 +520,7 @@ String generateParametersFromFields(
             key,
             modelBuffer,
             generatedClasses,
+            isResponseModel: false,
           );
           final finalType = 'List<$dartListType>';
 
@@ -548,6 +552,7 @@ String generateParametersFromFields(
       modelBuffer,
       generatedClasses,
       modelName,
+      isResponseModel: false,
     );
 
     // Generate the main model
@@ -568,8 +573,9 @@ void generateNestedClasses(
   Map<String, dynamic> processedFields,
   StringBuffer modelBuffer,
   Map<String, String> generatedClasses,
-  String contextName,
-) {
+  String contextName, {
+  bool isResponseModel = false,
+}) {
   processedFields.forEach((key, field) {
     // Skip metadata fields that start with underscore
     if (key.startsWith('_')) {
@@ -587,6 +593,7 @@ void generateNestedClasses(
           modelBuffer,
           generatedClasses,
           className,
+          isResponseModel: isResponseModel,
         );
 
         // Then generate this class
@@ -609,6 +616,7 @@ void generateNestedClasses(
           modelBuffer,
           generatedClasses,
           itemClass,
+          isResponseModel: isResponseModel,
         );
 
         // Then generate array item class
@@ -629,6 +637,7 @@ void generateNestedClasses(
           '${contextName}${toPascalCase(key)}',
           modelBuffer,
           generatedClasses,
+          isResponseModel: isResponseModel,
         );
       }
       // Skip fields that only contain array metadata like _arraySchemaType
@@ -777,6 +786,7 @@ String generateModel(
         '${name}${toPascalCase(key)}',
         StringBuffer(),
         <String, String>{},
+        isResponseModel: false,
       );
       final fieldType =
           isOptional ? 'List<$dartListType>?' : 'List<$dartListType>';
@@ -1150,6 +1160,7 @@ String generateModel(
         '${name}${toPascalCase(key)}',
         StringBuffer(),
         <String, String>{},
+        isResponseModel: false,
       );
       type = 'List<$dartListType>';
     } else if (value is Map<String, dynamic>) {
@@ -1432,6 +1443,7 @@ Future<void> processApiRoutes(
         modelBuffer,
         generatedClasses,
         name,
+        isResponseModel: true,
       );
       modelBuffer.writeln();
     }
