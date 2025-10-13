@@ -414,9 +414,18 @@ dynamic processArrayField(
 
     if (isSchemaDefinition) {
       // Simple schema definition - return as array type metadata
+      // For response models, default to optional (false)
+      // For request parameters, default to required based on explicit flag
+      final isRequired =
+          isResponseModel
+              ? (firstItem['required'] ==
+                  true) // Response: explicit true required
+              : (firstItem['required'] !=
+                  false); // Request: true unless explicit false
+
       return {
         '_arraySchemaType': firstItem['type'],
-        '_arrayRequired': firstItem['required'] != false,
+        '_arrayRequired': isRequired,
       };
     } else {
       // Complex object structure in array - process recursively
@@ -750,7 +759,9 @@ String generateModel(
         value.containsKey('_arraySchemaType')) {
       // Handle array with schema definition like [{"type": "string", "required": true}]
       final itemType = dartType(value['_arraySchemaType']);
-      buffer.writeln('   List<$itemType>? ${toCamelCase(key)};');
+      final isRequired = value['_arrayRequired'] == true;
+      final fieldType = isRequired ? 'List<$itemType>' : 'List<$itemType>?';
+      buffer.writeln('   $fieldType ${toCamelCase(key)};');
     } else if (value is Map<String, dynamic> &&
         value.containsKey('_arrayItemClass')) {
       // Handle array with complex item class
@@ -834,6 +845,14 @@ String generateModel(
     } else if (value is Map<String, dynamic> &&
         value.containsKey('_classType')) {
       isRequired = !(value['_optional'] ?? true);
+    } else if (value is Map<String, dynamic> &&
+        value.containsKey('_arraySchemaType')) {
+      // Handle array with schema definition
+      isRequired = value['_arrayRequired'] == true;
+    } else if (value is Map<String, dynamic> &&
+        value.containsKey('_listValueType')) {
+      // Handle list with value definition
+      isRequired = !(value['_optional'] ?? true);
     } else if (value is Map<String, dynamic>) {
       // Check if this is a field definition
       final keys = value.keys.toSet();
@@ -908,20 +927,42 @@ String generateModel(
         value.containsKey('_arraySchemaType')) {
       // Handle array with schema definition like [{"type": "string", "required": true}]
       final itemType = dartType(value['_arraySchemaType']);
-      if (itemType == 'String') {
-        buffer.writeln(
-          '    $camelKey: (json[\'$key\'] as List?)?.map((e) => (e as String).trim()).toList(),',
-        );
-      } else if (itemType == 'num' ||
-          itemType == 'bool' ||
-          itemType == 'dynamic') {
-        buffer.writeln(
-          '    $camelKey: (json[\'$key\'] as List?)?.map((e) => e as $itemType).toList(),',
-        );
+      final isRequired = value['_arrayRequired'] == true;
+
+      if (isRequired) {
+        // Required field - use non-nullable parsing
+        if (itemType == 'String') {
+          buffer.writeln(
+            '    $camelKey: (json[\'$key\'] as List).map((e) => (e as String).trim()).toList(),',
+          );
+        } else if (itemType == 'num' ||
+            itemType == 'bool' ||
+            itemType == 'dynamic') {
+          buffer.writeln(
+            '    $camelKey: (json[\'$key\'] as List).map((e) => e as $itemType).toList(),',
+          );
+        } else {
+          buffer.writeln(
+            '    $camelKey: (json[\'$key\'] as List).cast<$itemType>(),',
+          );
+        }
       } else {
-        buffer.writeln(
-          '    $camelKey: (json[\'$key\'] as List?)?.cast<$itemType>(),',
-        );
+        // Optional field - use nullable parsing
+        if (itemType == 'String') {
+          buffer.writeln(
+            '    $camelKey: (json[\'$key\'] as List?)?.map((e) => (e as String).trim()).toList(),',
+          );
+        } else if (itemType == 'num' ||
+            itemType == 'bool' ||
+            itemType == 'dynamic') {
+          buffer.writeln(
+            '    $camelKey: (json[\'$key\'] as List?)?.map((e) => e as $itemType).toList(),',
+          );
+        } else {
+          buffer.writeln(
+            '    $camelKey: (json[\'$key\'] as List?)?.cast<$itemType>(),',
+          );
+        }
       }
     } else if (value is Map<String, dynamic> &&
         value.containsKey('_arrayItemClass')) {
@@ -934,14 +975,24 @@ String generateModel(
         value.containsKey('_listValueType')) {
       // Handle list with value definition (nested lists or objects)
       final listValueType = value['_listValueType'];
+      final isOptional = value['_optional'] ?? true;
       final parseExpression = generateListValueParseExpression(
         listValueType,
         'e',
         contextName: '${name}${toPascalCase(key)}',
       );
-      buffer.writeln(
-        '    $camelKey: (json[\'$key\'] as List?)?.map((e) => $parseExpression).toList(),',
-      );
+
+      if (isOptional) {
+        // Optional field - use nullable parsing
+        buffer.writeln(
+          '    $camelKey: (json[\'$key\'] as List?)?.map((e) => $parseExpression).toList(),',
+        );
+      } else {
+        // Required field - use non-nullable parsing
+        buffer.writeln(
+          '    $camelKey: (json[\'$key\'] as List).map((e) => $parseExpression).toList(),',
+        );
+      }
     } else if (value is Map<String, dynamic>) {
       // Check if this is a field definition (has 'type' and 'required' keys only)
       final keys = value.keys.toSet();
@@ -1164,7 +1215,12 @@ String generateModel(
     } else if (value is Map<String, dynamic> &&
         value.containsKey('_arraySchemaType')) {
       // Handle array with schema definition like [{"type": "string", "required": true}]
-      buffer.writeln('        \'$key\': $camelKey,');
+      final isRequired = value['_arrayRequired'] == true;
+      if (isRequired) {
+        buffer.writeln('        \'$key\': $camelKey,');
+      } else {
+        buffer.writeln('        \'$key\': $camelKey,');
+      }
     } else if (value is Map<String, dynamic> &&
         value.containsKey('_arrayItemClass')) {
       // Handle array with complex item class
@@ -1175,13 +1231,21 @@ String generateModel(
         value.containsKey('_listValueType')) {
       // Handle list with value definition (nested lists or objects)
       final listValueType = value['_listValueType'];
+      final isOptional = value['_optional'] ?? true;
       final serializeExpression = generateListValueSerializeExpression(
         listValueType,
         'e',
       );
-      buffer.writeln(
-        '        \'$key\': $camelKey?.map((e) => $serializeExpression).toList(),',
-      );
+
+      if (isOptional) {
+        buffer.writeln(
+          '        \'$key\': $camelKey?.map((e) => $serializeExpression).toList(),',
+        );
+      } else {
+        buffer.writeln(
+          '        \'$key\': $camelKey.map((e) => $serializeExpression).toList(),',
+        );
+      }
     } else if (value is Map<String, dynamic>) {
       // Check if this is a field definition (has 'type' and 'required' keys only)
       final keys = value.keys.toSet();
