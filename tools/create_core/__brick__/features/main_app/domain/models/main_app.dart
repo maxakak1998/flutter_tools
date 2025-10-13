@@ -1,3 +1,1 @@
-class MainAppModel{
-
-}
+class MainAppModel {}

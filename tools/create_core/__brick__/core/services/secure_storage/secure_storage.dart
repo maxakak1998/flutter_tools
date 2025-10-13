@@ -35,7 +35,7 @@ class SecureStorageService implements ISecureStorageService {
 
   @override
   Future<bool> getIsIndianUI() async {
-    if(kDebugMode) return true; // For testing purposes, always return true
+    if (kDebugMode) return true; // For testing purposes, always return true
     final value = await storage.read(key: 'is_indian_ui');
     return value == 'true';
   }
@@ -56,7 +56,10 @@ class SecureStorageService implements ISecureStorageService {
   }
 
   @override
-  Future<void> saveRememberedCredentials(String username, String password) async {
+  Future<void> saveRememberedCredentials(
+    String username,
+    String password,
+  ) async {
     await storage.write(key: 'remember_username', value: username);
     await storage.write(key: 'remember_password', value: password);
   }

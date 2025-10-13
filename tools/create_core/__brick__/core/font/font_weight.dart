@@ -1,4 +1,3 @@
-
 import 'package:flutter/cupertino.dart';
 
 enum AppFontWeight {
@@ -14,5 +13,4 @@ enum AppFontWeight {
 
   const AppFontWeight(this.weight);
   final FontWeight weight;
-
 }

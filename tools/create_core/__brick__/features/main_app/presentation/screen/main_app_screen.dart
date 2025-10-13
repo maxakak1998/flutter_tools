@@ -10,12 +10,10 @@ class MainAppScreen extends StatefulWidget {
   State<MainAppScreen> createState() => _MainAppScreenState();
 }
 
-class _MainAppScreenState extends State<MainAppScreen>  {
+class _MainAppScreenState extends State<MainAppScreen> {
   @override
   void initState() {
     super.initState();
-
-    
   }
 
   @override

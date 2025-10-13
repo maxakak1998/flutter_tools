@@ -65,7 +65,6 @@ class ConnectivityService extends AbstractConnectivityService {
     if (_isOnline != isOnline) {
       _isOnline = isOnline;
 
-
       _connectivityController.add(isOnline);
       if (kDebugMode) {
         print('Connectivity changed: ${isOnline ? 'Online' : 'Offline'}');

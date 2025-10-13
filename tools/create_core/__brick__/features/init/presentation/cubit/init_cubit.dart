@@ -5,7 +5,7 @@ import '../../../../app_export.dart';
 import 'init_cubit_state.dart';
 
 class InitCubit extends Cubit<BaseCubitState> {
-    final INavigationRedirectUseCase navigationRedirectUseCase;
+  final INavigationRedirectUseCase navigationRedirectUseCase;
 
   UserAuthState userAuthState = UserAuthState.unknown;
 
@@ -14,11 +14,8 @@ class InitCubit extends Cubit<BaseCubitState> {
   Future<void> initPreData() async {
     final id = DateTime.now().millisecondsSinceEpoch.toString();
     final ManagerEnvService envService = GetIt.I<ManagerEnvService>();
-    envService.init(ManagerEnvOptions(
-      flavor: FlavorValues.flavor,
-    ));
-    userAuthState =
-        await navigationRedirectUseCase.getUserAuthState();
+    envService.init(ManagerEnvOptions(flavor: FlavorValues.flavor));
+    userAuthState = await navigationRedirectUseCase.getUserAuthState();
     switch (userAuthState) {
       case UserAuthState.loggedIn:
         break;

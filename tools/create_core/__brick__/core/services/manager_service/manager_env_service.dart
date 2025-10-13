@@ -9,16 +9,11 @@ class ManagerEnvService extends BaseEnvService {
 
   late APIClient apiClient;
 
-
-
   @override
   Future<void> init(ManagerEnvOptions options) async {
-
     apiClient = APIClient(baseUrl: FlavorValues.baseUrl);
     apiClient.initInterceptors([APILogInterceptor()]);
   }
-
-
 
   @override
   void dispose() {

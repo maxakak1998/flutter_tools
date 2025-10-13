@@ -10,20 +10,21 @@ class InitScreen extends StatefulWidget {
   State<InitScreen> createState() => _InitScreenState();
 }
 
-class _InitScreenState extends State<InitScreen>  {
-    late final InitCubit initCubit;
+class _InitScreenState extends State<InitScreen> {
+  late final InitCubit initCubit;
 
   @override
   void initState() {
     super.initState();
 
-       // Initialize the cubit as per compliance requirements (not injected via GetIt)
+    // Initialize the cubit as per compliance requirements (not injected via GetIt)
     initCubit = GetIt.I<InitCubit>();
-  // Use SchedulerBinding to ensure CustomCubit is fully rendered before calling cubit methods
+    // Use SchedulerBinding to ensure CustomCubit is fully rendered before calling cubit methods
     // This prevents missing loading states as per cubit.instructions.md
     SchedulerBinding.instance.addPostFrameCallback((_) {
       initCubit.initPreData();
-    });  }
+    });
+  }
 
   @override
   void dispose() {

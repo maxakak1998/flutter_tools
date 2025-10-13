@@ -26,7 +26,7 @@ class APIClient
   }
 
   @override
-  Future<T> request<T >({
+  Future<T> request<T>({
     required RequestOptions option,
     required GenericObject<Response, T> create,
     Map<String, dynamic> pathVariable = const {},
@@ -35,9 +35,10 @@ class APIClient
     option.path = mapVariableQuery(option.path, pathVariable);
 
     if (formData != null) {
-      final bodyData = option.data is Map<String, dynamic>
-          ? option.data as Map<String, dynamic>
-          : <String, dynamic>{};
+      final bodyData =
+          option.data is Map<String, dynamic>
+              ? option.data as Map<String, dynamic>
+              : <String, dynamic>{};
       for (final field in formData.fields) {
         bodyData[field.key] = field.value;
       }
@@ -45,30 +46,24 @@ class APIClient
         bodyData[file.key] = file.value;
       }
       option.data = FormData.fromMap(bodyData);
-
-    
-    } 
-    if(option.baseUrl.isEmpty) {
-      option = option.copyWith(
-        baseUrl: instance.options.baseUrl,
-      );
     }
-    
-    if(option.extra["auth"] != false) {
-      option.baseUrl=_authBaseUrl;
+    if (option.baseUrl.isEmpty) {
+      option = option.copyWith(baseUrl: instance.options.baseUrl);
     }
 
-  
+    if (option.extra["auth"] != false) {
+      option.baseUrl = _authBaseUrl;
+    }
+
     Response response = await instance.fetch(option);
 
     final apiWrapper = create(response);
     if (apiWrapper is Exception) throw apiWrapper;
-   if (apiWrapper is BaseAPIResponseWrapper){
-      final concretedWrapper = (apiWrapper).decode() ;
-      if(concretedWrapper is Exception) throw concretedWrapper;
+    if (apiWrapper is BaseAPIResponseWrapper) {
+      final concretedWrapper = (apiWrapper).decode();
+      if (concretedWrapper is Exception) throw concretedWrapper;
       return concretedWrapper as T;
-
     }
-     return apiWrapper ;
+    return apiWrapper;
   }
 }

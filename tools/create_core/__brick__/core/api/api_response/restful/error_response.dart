@@ -9,7 +9,6 @@ class ErrorResponse extends BaseAPIResponseWrapper<Response, dynamic>
     error = getErrorType(code);
   }
 
-
   ErrorResponse.fromSystem(this.error, String message) {
     hasError = true;
   }

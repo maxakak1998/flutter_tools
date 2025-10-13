@@ -22,7 +22,7 @@ extension ImageExtension on String {
   }) {
     final imageType = _detectImageType();
     final isSvg = endsWith('.svg');
-    
+
     if (isSvg) {
       switch (imageType) {
         case ImageType.network:
@@ -32,10 +32,13 @@ extension ImageExtension on String {
             height: height,
             fit: fit,
             color: color,
-            placeholderBuilder: (context) =>
-                loadingWidget ?? const Center(child: CircularProgressIndicator()),
-            errorBuilder: (context, error, stackTrace) =>
-                errorWidget ?? const Icon(Icons.broken_image),
+            placeholderBuilder:
+                (context) =>
+                    loadingWidget ??
+                    const Center(child: CircularProgressIndicator()),
+            errorBuilder:
+                (context, error, stackTrace) =>
+                    errorWidget ?? const Icon(Icons.broken_image),
           );
         case ImageType.file:
           return SvgPicture.file(
@@ -44,8 +47,10 @@ extension ImageExtension on String {
             height: height,
             fit: fit,
             color: color,
-            placeholderBuilder: (context) =>
-                loadingWidget ?? const Center(child: CircularProgressIndicator()),
+            placeholderBuilder:
+                (context) =>
+                    loadingWidget ??
+                    const Center(child: CircularProgressIndicator()),
           );
         case ImageType.asset:
           return SvgPicture.asset(
@@ -54,8 +59,10 @@ extension ImageExtension on String {
             height: height,
             fit: fit,
             color: color,
-            placeholderBuilder: (context) =>
-                loadingWidget ?? const Center(child: CircularProgressIndicator()),
+            placeholderBuilder:
+                (context) =>
+                    loadingWidget ??
+                    const Center(child: CircularProgressIndicator()),
           );
       }
     } else {
@@ -76,10 +83,12 @@ extension ImageExtension on String {
                   if (showLoadingProgress) {
                     if (state.loadingProgress != null) {
                       final progress = state.loadingProgress!;
-                      final progressValue = progress.expectedTotalBytes != null
-                          ? progress.cumulativeBytesLoaded / progress.expectedTotalBytes!
-                          : null;
-                      
+                      final progressValue =
+                          progress.expectedTotalBytes != null
+                              ? progress.cumulativeBytesLoaded /
+                                  progress.expectedTotalBytes!
+                              : null;
+
                       return Center(
                         child: CircularProgressIndicator(
                           value: progressValue,
@@ -95,7 +104,8 @@ extension ImageExtension on String {
                       );
                     }
                   } else {
-                    return loadingWidget ?? const Center(child: CircularProgressIndicator());
+                    return loadingWidget ??
+                        const Center(child: CircularProgressIndicator());
                   }
                 case LoadState.completed:
                   return null;
@@ -118,26 +128,31 @@ extension ImageExtension on String {
                   if (showLoadingProgress) {
                     if (state.loadingProgress != null) {
                       final progress = state.loadingProgress!;
-                      final progressValue = progress.expectedTotalBytes != null
-                          ? progress.cumulativeBytesLoaded / progress.expectedTotalBytes!
-                          : null;
-                      
-                      return loadingWidget ?? Center(
-                        child: CircularProgressIndicator(
-                          value: progressValue,
-                          color: loadingProgressColor,
-                        ),
-                      );
+                      final progressValue =
+                          progress.expectedTotalBytes != null
+                              ? progress.cumulativeBytesLoaded /
+                                  progress.expectedTotalBytes!
+                              : null;
+
+                      return loadingWidget ??
+                          Center(
+                            child: CircularProgressIndicator(
+                              value: progressValue,
+                              color: loadingProgressColor,
+                            ),
+                          );
                     } else {
                       // Show indeterminate progress when loadingProgress is null
-                      return loadingWidget ?? Center(
-                        child: CircularProgressIndicator(
-                          color: loadingProgressColor,
-                        ),
-                      );
+                      return loadingWidget ??
+                          Center(
+                            child: CircularProgressIndicator(
+                              color: loadingProgressColor,
+                            ),
+                          );
                     }
                   } else {
-                    return loadingWidget ?? const Center(child: CircularProgressIndicator());
+                    return loadingWidget ??
+                        const Center(child: CircularProgressIndicator());
                   }
                 case LoadState.completed:
                   return null;
@@ -160,26 +175,31 @@ extension ImageExtension on String {
                   if (showLoadingProgress) {
                     if (state.loadingProgress != null) {
                       final progress = state.loadingProgress!;
-                      final progressValue = progress.expectedTotalBytes != null
-                          ? progress.cumulativeBytesLoaded / progress.expectedTotalBytes!
-                          : null;
-                      
-                      return loadingWidget ?? Center(
-                        child: CircularProgressIndicator(
-                          value: progressValue,
-                          color: loadingProgressColor,
-                        ),
-                      );
+                      final progressValue =
+                          progress.expectedTotalBytes != null
+                              ? progress.cumulativeBytesLoaded /
+                                  progress.expectedTotalBytes!
+                              : null;
+
+                      return loadingWidget ??
+                          Center(
+                            child: CircularProgressIndicator(
+                              value: progressValue,
+                              color: loadingProgressColor,
+                            ),
+                          );
                     } else {
                       // Show indeterminate progress when loadingProgress is null
-                      return loadingWidget ?? Center(
-                        child: CircularProgressIndicator(
-                          color: loadingProgressColor,
-                        ),
-                      );
+                      return loadingWidget ??
+                          Center(
+                            child: CircularProgressIndicator(
+                              color: loadingProgressColor,
+                            ),
+                          );
                     }
                   } else {
-                    return loadingWidget ?? const Center(child: CircularProgressIndicator());
+                    return loadingWidget ??
+                        const Center(child: CircularProgressIndicator());
                   }
                 case LoadState.completed:
                   return null;
@@ -196,14 +216,14 @@ extension ImageExtension on String {
     if (startsWith('http://') || startsWith('https://')) {
       return ImageType.network;
     }
-    
+
     // Check if it's a local file path (absolute path)
-    if (startsWith('/') || 
+    if (startsWith('/') ||
         (Platform.isWindows && length > 1 && this[1] == ':') ||
         File(this).existsSync()) {
       return ImageType.file;
     }
-    
+
     // Default to asset
     return ImageType.asset;
   }
@@ -218,19 +238,19 @@ extension ImageUrlExtension on String {
       // Extract filename from URL
       final uri = Uri.parse(this);
       final pathSegments = uri.pathSegments;
-      
+
       if (pathSegments.isEmpty) {
         return 'assets/images/$defaultImage.png';
       }
-      
+
       // Get the last segment (filename)
       String filename = pathSegments.last;
-      
+
       // Remove the .png extension if present (like iOS does)
       if (filename.endsWith('.png')) {
         filename = filename.substring(0, filename.length - 4);
       }
-      
+
       // Return the asset path
       return 'assets/images/$filename.png';
     } catch (e) {
@@ -238,7 +258,7 @@ extension ImageUrlExtension on String {
       return 'assets/images/$defaultImage.png';
     }
   }
-  
+
   /// Checks if the asset image exists in the bundle.
   /// This is a simplified version - in a real app you might want to maintain
   /// a list of available assets or check them dynamically.
@@ -247,7 +267,7 @@ extension ImageUrlExtension on String {
     // Available meter images based on actual assets folder
     final availableImages = [
       'TreeBatteryOAT_m.png',
-      'TreeElectricity_m.png', 
+      'TreeElectricity_m.png',
       'TreeGas_m.png',
       'TreeHotWater_m.png',
       'TreeProduction_m.png',
@@ -257,9 +277,9 @@ extension ImageUrlExtension on String {
       'TreeDynamatWorld.png',
       'TreeSite.png',
       // Default fallback image (using TreeElectricity_m as default if ImgTypeDefault doesn't exist)
-      'ImgTypeDefault.png'
+      'ImgTypeDefault.png',
     ];
-    
+
     return availableImages.any((img) => assetName.endsWith(img));
   }
 }

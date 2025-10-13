@@ -1,5 +1,3 @@
-
-
 import '../../app_export.dart';
 
 class CustomCubit<T extends BaseCubitState> extends StatefulWidget {
@@ -11,17 +9,17 @@ class CustomCubit<T extends BaseCubitState> extends StatefulWidget {
   final bool Function(T)? listenWhen;
   final Function(BuildContext context, T state, bool isLoading) builder;
 
-  const CustomCubit(
-      {required this.bloc,
-      key,
-      this.onError,
-      this.onSucceed,
-      this.onLoading,
-      this.buildWhen,
-      this.listener,
-      required this.builder,
-      this.listenWhen})
-      : super(key: key);
+  const CustomCubit({
+    required this.bloc,
+    key,
+    this.onError,
+    this.onSucceed,
+    this.onLoading,
+    this.buildWhen,
+    this.listener,
+    required this.builder,
+    this.listenWhen,
+  }) : super(key: key);
 
   @override
   State<CustomCubit> createState() => _CustomCubitState<T>();
@@ -40,12 +38,13 @@ class _CustomCubitState<T extends BaseCubitState>
     isLoading = false;
     loadingData = {};
 
-
-    _streamSubscription = widget.bloc.stream.where((element) {
-      return widget.listenWhen?.call(element) ?? true;
-    }).listen((state) {
-      _onListen(state);
-    });
+    _streamSubscription = widget.bloc.stream
+        .where((element) {
+          return widget.listenWhen?.call(element) ?? true;
+        })
+        .listen((state) {
+          _onListen(state);
+        });
   }
 
   void _onListen(T state) {
@@ -66,11 +65,12 @@ class _CustomCubitState<T extends BaseCubitState>
         }
         break;
     }
-    if (requestLoading  && state.state != EventState.loading && loadingData[state.id] != null) {
+    if (requestLoading &&
+        state.state != EventState.loading &&
+        loadingData[state.id] != null) {
       loadingData.remove(state.id);
       isLoading = false;
     }
-
   }
 
   @override
@@ -82,10 +82,11 @@ class _CustomCubitState<T extends BaseCubitState>
 
   @override
   Widget build(BuildContext context) => BlocConsumer<Cubit<T>, T>(
-      bloc: widget.bloc,
-      builder: (context, state) => widget.builder(context, state, isLoading),
-      buildWhen: widget.buildWhen,
-      listener: (context, state) {
-        widget.listener?.call(context, state);
-      });
+    bloc: widget.bloc,
+    builder: (context, state) => widget.builder(context, state, isLoading),
+    buildWhen: widget.buildWhen,
+    listener: (context, state) {
+      widget.listener?.call(context, state);
+    },
+  );
 }

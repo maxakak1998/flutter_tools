@@ -110,12 +110,10 @@ extension Curl on RequestOptions {
           if (files.isNotEmpty) {
             postData = "-d '${json.encode(files).toString()}'";
           }
-        } else if(data is List){
+        } else if (data is List) {
           postData = "-d '${json.encode(data)}'";
-
         } else {
           postData = "-d '${json.encode(data).toString()}'";
-
         }
       }
 

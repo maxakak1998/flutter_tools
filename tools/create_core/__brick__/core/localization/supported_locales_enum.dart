@@ -8,5 +8,5 @@ enum SupportedLocales {
 
   const SupportedLocales(this.countryCode);
 
-  Locale get locale => Locale(name,countryCode);
+  Locale get locale => Locale(name, countryCode);
 }

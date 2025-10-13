@@ -14,7 +14,7 @@ extension ImageExtension on String {
     BoxFit fit = BoxFit.cover,
     Color? color,
     Widget? errorWidget,
-    Widget? loadingWidget
+    Widget? loadingWidget,
   }) {
     if (endsWith('.svg')) {
       if (isAsset) {
@@ -24,8 +24,10 @@ extension ImageExtension on String {
           height: height,
           fit: fit,
           color: color,
-          placeholderBuilder: (context) =>
-              loadingWidget ?? const Center(child: CircularProgressIndicator()),
+          placeholderBuilder:
+              (context) =>
+                  loadingWidget ??
+                  const Center(child: CircularProgressIndicator()),
         );
       } else {
         return SvgPicture.network(
@@ -34,10 +36,13 @@ extension ImageExtension on String {
           height: height,
           fit: fit,
           color: color,
-          placeholderBuilder: (context) =>
-              loadingWidget ?? const Center(child: CircularProgressIndicator()),
-          errorBuilder: (context, error, stackTrace) =>
-              errorWidget ?? const Icon(Icons.broken_image),
+          placeholderBuilder:
+              (context) =>
+                  loadingWidget ??
+                  const Center(child: CircularProgressIndicator()),
+          errorBuilder:
+              (context, error, stackTrace) =>
+                  errorWidget ?? const Icon(Icons.broken_image),
         );
       }
     } else {
@@ -53,7 +58,8 @@ extension ImageExtension on String {
               case LoadState.failed:
                 return errorWidget ?? const Icon(Icons.broken_image);
               case LoadState.loading:
-                return loadingWidget ?? const Center(child: CircularProgressIndicator());
+                return loadingWidget ??
+                    const Center(child: CircularProgressIndicator());
               case LoadState.completed:
                 return null;
             }
@@ -71,7 +77,8 @@ extension ImageExtension on String {
               case LoadState.failed:
                 return errorWidget ?? const Icon(Icons.broken_image);
               case LoadState.loading:
-                return loadingWidget ?? const Center(child: CircularProgressIndicator());
+                return loadingWidget ??
+                    const Center(child: CircularProgressIndicator());
               case LoadState.completed:
                 return null;
             }
@@ -91,19 +98,19 @@ extension ImageUrlExtension on String {
       // Extract filename from URL
       final uri = Uri.parse(this);
       final pathSegments = uri.pathSegments;
-      
+
       if (pathSegments.isEmpty) {
         return 'assets/images/$defaultImage.png';
       }
-      
+
       // Get the last segment (filename)
       String filename = pathSegments.last;
-      
+
       // Remove the .png extension if present (like iOS does)
       if (filename.endsWith('.png')) {
         filename = filename.substring(0, filename.length - 4);
       }
-      
+
       // Return the asset path
       return 'assets/images/$filename.png';
     } catch (e) {
@@ -111,7 +118,7 @@ extension ImageUrlExtension on String {
       return 'assets/images/$defaultImage.png';
     }
   }
-  
+
   /// Checks if the asset image exists in the bundle.
   /// This is a simplified version - in a real app you might want to maintain
   /// a list of available assets or check them dynamically.
@@ -120,7 +127,7 @@ extension ImageUrlExtension on String {
     // Available meter images based on actual assets folder
     final availableImages = [
       'TreeBatteryOAT_m.png',
-      'TreeElectricity_m.png', 
+      'TreeElectricity_m.png',
       'TreeGas_m.png',
       'TreeHotWater_m.png',
       'TreeProduction_m.png',
@@ -130,9 +137,9 @@ extension ImageUrlExtension on String {
       'TreeDynamatWorld.png',
       'TreeSite.png',
       // Default fallback image (using TreeElectricity_m as default if ImgTypeDefault doesn't exist)
-      'ImgTypeDefault.png'
+      'ImgTypeDefault.png',
     ];
-    
+
     return availableImages.any((img) => assetName.endsWith(img));
   }
 }

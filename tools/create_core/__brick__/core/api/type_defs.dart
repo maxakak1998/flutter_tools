@@ -1,1 +1,1 @@
-typedef GenericObject<Input,Output> = Output Function(Input input);
+typedef GenericObject<Input, Output> = Output Function(Input input);

@@ -20,13 +20,16 @@ class NavigationRedirectUseCase extends INavigationRedirectUseCase
   Future<UserAuthState> getUserAuthState() async {
     try {
       final localUser = await service.getLocalUser();
-      final isLoggedIn = localUser != null && localUser.apiUrl != null && localUser.apiUrl!.isNotEmpty;
+      final isLoggedIn =
+          localUser != null &&
+          localUser.apiUrl != null &&
+          localUser.apiUrl!.isNotEmpty;
       if (isLoggedIn) {
         return UserAuthState.loggedIn;
       } else {
         return UserAuthState.loggedOut;
       }
-    }  catch (e) {
+    } catch (e) {
       service.removeUserData();
       return UserAuthState.loggedOut;
     }

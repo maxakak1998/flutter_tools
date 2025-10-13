@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:rxdart/rxdart.dart' as rx;
 
-
 class ScrollNotifierController {
   final ValueNotifier<int> _resetValue = ValueNotifier(0);
 
@@ -83,54 +82,56 @@ class _ScrollNotifierState extends State<ScrollNotifier> {
       return _buildChild();
     }
     return NotificationListener(
-        onNotification: (data) {
-          if (data is ScrollMetricsNotification &&
-              data.metrics.axis == widget.axis) {
-            _stream.add(data);
-          }
-          return false;
-        },
-        child: _buildChild());
+      onNotification: (data) {
+        if (data is ScrollMetricsNotification &&
+            data.metrics.axis == widget.axis) {
+          _stream.add(data);
+        }
+        return false;
+      },
+      child: _buildChild(),
+    );
   }
 
   ValueListenableBuilder<bool> _buildLoading() {
     return ValueListenableBuilder<bool>(
-        valueListenable: isLoading,
-        builder: (context, value, child) {
-          return value
-              ? Container(
-                  color: Colors.transparent,
-                  margin: EdgeInsets.symmetric(
-                    vertical: widget.axis == Axis.vertical ? 12 : 0,
-                    horizontal: widget.axis == Axis.horizontal ? 4 : 0,
+      valueListenable: isLoading,
+      builder: (context, value, child) {
+        return value
+            ? Container(
+              color: Colors.transparent,
+              margin: EdgeInsets.symmetric(
+                vertical: widget.axis == Axis.vertical ? 12 : 0,
+                horizontal: widget.axis == Axis.horizontal ? 4 : 0,
+              ),
+              child: SafeArea(
+                top: false,
+                bottom: true,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2.0,
+                  valueColor: AlwaysStoppedAnimation<Color>(
+                    Colors.blue, // Replace with your desired color
                   ),
-                  child:  SafeArea(
-                    top: false,
-                    bottom: true,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2.0,
-                      valueColor: AlwaysStoppedAnimation<Color>(
-                        Colors.blue, // Replace with your desired color
-                      ),
-                    ),
-                  ),
-                )
-              : const SizedBox();
-          // return SwipeTransition(
-          //     visible: value,
-          //     axisAlignment: widget.axis == Axis.vertical ? 1.0 : 0,
-          //     child: Container(
-          //       color: Colors.transparent,
-          //       margin: EdgeInsets.symmetric(
-          //         vertical: widget.axis == Axis.vertical ? 12 : 0,
-          //         horizontal: widget.axis == Axis.horizontal ? 4 : 0,
-          //       ),
-          //       child: const LoadingWidget(
-          //         isLoading: true,
-          //         child: SizedBox(),
-          //       ),
-          //     ));
-        });
+                ),
+              ),
+            )
+            : const SizedBox();
+        // return SwipeTransition(
+        //     visible: value,
+        //     axisAlignment: widget.axis == Axis.vertical ? 1.0 : 0,
+        //     child: Container(
+        //       color: Colors.transparent,
+        //       margin: EdgeInsets.symmetric(
+        //         vertical: widget.axis == Axis.vertical ? 12 : 0,
+        //         horizontal: widget.axis == Axis.horizontal ? 4 : 0,
+        //       ),
+        //       child: const LoadingWidget(
+        //         isLoading: true,
+        //         child: SizedBox(),
+        //       ),
+        //     ));
+      },
+    );
   }
 
   void _listen(event) async {

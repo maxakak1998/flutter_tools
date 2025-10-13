@@ -1,2 +1,1 @@
-abstract class ITheme{
-}
+abstract class ITheme {}

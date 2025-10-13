@@ -3,38 +3,37 @@ import 'package:flutter_easyloading/flutter_easyloading.dart';
 import '../../app_export.dart';
 
 /// CommonLoadingWidget - A centralized loading widget using flutter_easyloading
-/// 
+///
 /// This widget provides a consistent loading experience across the app using flutter_easyloading package.
 /// It supports different loading types, custom messages, and theme-aware styling.
-/// 
+///
 /// Features:
 /// - Overlay loading with customizable messages
 /// - Progress indicators for long-running operations
 /// - Theme-aware styling that follows the app's design system
 /// - Static methods for easy usage throughout the app
 /// - Proper initialization and configuration
-/// 
+///
 /// Usage:
 /// ```dart
 /// // Show simple loading
 /// CommonLoadingWidget.show();
-/// 
+///
 /// // Show loading with custom message
 /// CommonLoadingWidget.show(message: 'Uploading photos...');
-/// 
+///
 /// // Show progress loading
 /// CommonLoadingWidget.showProgress(0.5, message: 'Processing...');
-/// 
+///
 /// // Hide loading
 /// CommonLoadingWidget.dismiss();
 /// ```
 class CommonLoadingWidget {
-  
   /// Initialize EasyLoading with theme-aware configuration
   /// Call this in main.dart or app initialization
   static void initialize() {
     final ITheme currentTheme = GetIt.I<MainAppCubit>().currentTheme;
-    
+
     EasyLoading.instance
       ..displayDuration = const Duration(milliseconds: 2000)
       ..indicatorType = EasyLoadingIndicatorType.fadingCircle
@@ -49,28 +48,22 @@ class CommonLoadingWidget {
       ..userInteractions = false
       ..dismissOnTap = false
       ..fontSize = 14.sp
-      ..contentPadding = EdgeInsets.symmetric(
-        vertical: 15.h,
-        horizontal: 20.w,
-      );
+      ..contentPadding = EdgeInsets.symmetric(vertical: 15.h, horizontal: 20.w);
   }
 
   /// Show simple loading overlay
-  /// 
+  ///
   /// [message] - Optional message to display below the loading indicator
   /// [maskType] - Type of mask to apply (default: black)
   static void show({
     String? message,
     EasyLoadingMaskType maskType = EasyLoadingMaskType.black,
   }) {
-    EasyLoading.show(
-      status: message ?? 'Loading...',
-      maskType: maskType,
-    );
+    EasyLoading.show(status: message ?? 'Loading...', maskType: maskType);
   }
 
   /// Show loading with progress indicator
-  /// 
+  ///
   /// [progress] - Progress value between 0.0 and 1.0
   /// [message] - Optional message to display
   /// [maskType] - Type of mask to apply
@@ -87,13 +80,10 @@ class CommonLoadingWidget {
   }
 
   /// Show success message with checkmark
-  /// 
+  ///
   /// [message] - Success message to display
   /// [duration] - How long to show the success message
-  static void showSuccess(
-    String message, {
-    Duration? duration,
-  }) {
+  static void showSuccess(String message, {Duration? duration}) {
     EasyLoading.showSuccess(
       message,
       duration: duration ?? const Duration(seconds: 2),
@@ -102,13 +92,10 @@ class CommonLoadingWidget {
   }
 
   /// Show error message with error icon
-  /// 
+  ///
   /// [message] - Error message to display
   /// [duration] - How long to show the error message
-  static void showError(
-    String message, {
-    Duration? duration,
-  }) {
+  static void showError(String message, {Duration? duration}) {
     EasyLoading.showError(
       message,
       duration: duration ?? const Duration(seconds: 3),
@@ -117,13 +104,10 @@ class CommonLoadingWidget {
   }
 
   /// Show info message with info icon
-  /// 
+  ///
   /// [message] - Info message to display
   /// [duration] - How long to show the info message
-  static void showInfo(
-    String message, {
-    Duration? duration,
-  }) {
+  static void showInfo(String message, {Duration? duration}) {
     EasyLoading.showInfo(
       message,
       duration: duration ?? const Duration(seconds: 2),
@@ -132,7 +116,7 @@ class CommonLoadingWidget {
   }
 
   /// Show toast message (appears at bottom)
-  /// 
+  ///
   /// [message] - Toast message to display
   /// [duration] - How long to show the toast
   static void showToast(
@@ -160,7 +144,7 @@ class CommonLoadingWidget {
   /// Call this when the app theme is changed
   static void updateTheme() {
     final ITheme currentTheme = GetIt.I<MainAppCubit>().currentTheme;
-    
+
     // EasyLoading.instance
     //   ..progressColor = currentTheme.primaryColor
     //   ..indicatorColor = currentTheme.primaryColor
@@ -168,7 +152,7 @@ class CommonLoadingWidget {
   }
 
   /// Configuration for specific loading scenarios
-  
+
   /// Show loading for API calls
   static void showApiLoading({String? message}) {
     show(
@@ -178,15 +162,13 @@ class CommonLoadingWidget {
   }
 
   /// Show loading for file uploads with progress
-  static void showUploadProgress(
-    double progress, {
-    String? fileName,
-  }) {
+  static void showUploadProgress(double progress, {String? fileName}) {
     showProgress(
       progress,
-      message: fileName != null 
-        ? 'Uploading $fileName...\n${(progress * 100).toInt()}%'
-        : 'Uploading...\n${(progress * 100).toInt()}%',
+      message:
+          fileName != null
+              ? 'Uploading $fileName...\n${(progress * 100).toInt()}%'
+              : 'Uploading...\n${(progress * 100).toInt()}%',
     );
   }
 
@@ -200,10 +182,7 @@ class CommonLoadingWidget {
 
   /// Show loading for saving operations
   static void showSaveLoading({String? message}) {
-    show(
-      message: message ?? 'Saving...',
-      maskType: EasyLoadingMaskType.black,
-    );
+    show(message: message ?? 'Saving...', maskType: EasyLoadingMaskType.black);
   }
 }
 

@@ -1,4 +1,3 @@
-
 import 'manger_service_export.dart';
 
 class FlavorEnvService extends BaseEnvService {

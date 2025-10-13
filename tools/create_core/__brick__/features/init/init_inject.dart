@@ -15,7 +15,6 @@ void injectInitModule() {
   // Repositories
   sl.registerLazySingleton<IInitRepository>(() => InitRepository());
 
-
   // UseCases
   sl.registerFactory<INavigationRedirectUseCase>(
     () => NavigationRedirectUseCase(sl<ISecureStorageService>()),

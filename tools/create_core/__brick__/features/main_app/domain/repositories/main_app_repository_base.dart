@@ -1,3 +1,1 @@
-abstract class IMainAppRepository {
-  
-}
+abstract class IMainAppRepository {}

@@ -1,3 +1,1 @@
-abstract class BaseEnvOptions{
-
-}
+abstract class BaseEnvOptions {}

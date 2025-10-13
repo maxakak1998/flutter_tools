@@ -8,21 +8,18 @@ class CountdownTimer {
   final BehaviorSubject<int?> _stream = BehaviorSubject();
   Timer? _timer;
   final Function()? onDone;
-  bool get isActive=>_timer?.isActive == true;
+  bool get isActive => _timer?.isActive == true;
   CountdownTimer({this.onDone});
   void start({int? from = 30, bool repeating = false}) {
     this.from = from;
     _secondsRemaining = from;
     this.repeating = repeating;
     const oneSec = Duration(seconds: 1);
-    _timer = Timer.periodic(
-      oneSec,
-      (Timer timer) => _tick(),
-    );
+    _timer = Timer.periodic(oneSec, (Timer timer) => _tick());
   }
 
   void _tick() {
-    if(_stream.isClosed){
+    if (_stream.isClosed) {
       _timer?.cancel();
       return;
     }
@@ -33,7 +30,6 @@ class CountdownTimer {
       } else {
         reset();
       }
-   
     } else {
       _secondsRemaining = _secondsRemaining! - 1;
     }
@@ -51,7 +47,7 @@ class CountdownTimer {
 
   void dispose() {
     _timer?.cancel();
-    _timer=null;
+    _timer = null;
     _stream.close();
   }
 

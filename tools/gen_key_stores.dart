@@ -195,7 +195,7 @@ storePassword=$password
           }
         }
       } else if (buildType == "Debug") {
-        String flavor="dev";
+        String flavor = "dev";
         String aliasName = '$flavor$buildType';
         final file = File(
           "$_root/android/key_properties/${buildType.toLowerCase()}/debug.properties",

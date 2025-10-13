@@ -1,4 +1,1 @@
-class StorageAssets {
-
-}
-
+class StorageAssets {}

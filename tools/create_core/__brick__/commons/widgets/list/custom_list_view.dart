@@ -1,4 +1,3 @@
-
 import 'dart:math';
 
 import 'package:flutter/material.dart';
@@ -6,10 +5,8 @@ import 'package:flutter/material.dart';
 import 'count_down_timer.dart';
 import 'scroll_notifier.dart';
 
-typedef CustomItemBuilder<T> = Widget Function(
-    T data, int index, BuildContext context);
-
-
+typedef CustomItemBuilder<T> =
+    Widget Function(T data, int index, BuildContext context);
 
 class CustomListView<T> extends StatefulWidget {
   final List<T>? data;
@@ -95,10 +92,11 @@ class _CustomListViewState<T> extends State<CustomListView<T>> {
   }
 
   void initRefreshTimer() {
-    refreshTimer = CountdownTimer(onDone: () {
-      widget.refresh!.onDone.call(_scrollNotifierController);
-    })
-      ..start(repeating: true, from: widget.refresh!.after.inSeconds);
+    refreshTimer = CountdownTimer(
+      onDone: () {
+        widget.refresh!.onDone.call(_scrollNotifierController);
+      },
+    )..start(repeating: true, from: widget.refresh!.after.inSeconds);
   }
 
   @override
@@ -114,13 +112,14 @@ class _CustomListViewState<T> extends State<CustomListView<T>> {
   Widget build(BuildContext context) {
     if (widget.data == null || widget.loading) {
       return Center(
-        child: widget.loadingWidget ??
+        child:
+            widget.loadingWidget ??
             const CircularProgressIndicator(
-                        strokeWidth: 2.0,
-                        valueColor: AlwaysStoppedAnimation<Color>(
-                          Colors.blue, // Replace with your desired color
-                        ),
-                      ),
+              strokeWidth: 2.0,
+              valueColor: AlwaysStoppedAnimation<Color>(
+                Colors.blue, // Replace with your desired color
+              ),
+            ),
       );
     } else if (widget.data!.isEmpty) {
       Widget noFoundChild = Center(
@@ -129,19 +128,20 @@ class _CustomListViewState<T> extends State<CustomListView<T>> {
       if (widget.onRefresh != null) {
         if (widget.canTouchErrorWidget) {
           return LayoutBuilder(
-              builder: (BuildContext context, BoxConstraints constraints) {
-            return RefreshIndicator(
-              onRefresh: widget.onRefresh!,
-              child: SingleChildScrollView(
-                physics: const AlwaysScrollableScrollPhysics(),
-                child: SizedBox(
-                  height: constraints.maxHeight,
-                  width: constraints.maxWidth,
-                  child: noFoundChild,
+            builder: (BuildContext context, BoxConstraints constraints) {
+              return RefreshIndicator(
+                onRefresh: widget.onRefresh!,
+                child: SingleChildScrollView(
+                  physics: const AlwaysScrollableScrollPhysics(),
+                  child: SizedBox(
+                    height: constraints.maxHeight,
+                    width: constraints.maxWidth,
+                    child: noFoundChild,
+                  ),
                 ),
-              ),
-            );
-          });
+              );
+            },
+          );
         }
         noFoundChild = Stack(
           children: [
@@ -151,9 +151,7 @@ class _CustomListViewState<T> extends State<CustomListView<T>> {
               child: ListView(
                 physics: const AlwaysScrollableScrollPhysics(),
                 children: [
-                  SizedBox(
-                    height: MediaQuery.of(context).size.height * 2,
-                  )
+                  SizedBox(height: MediaQuery.of(context).size.height * 2),
                 ],
               ),
             ),
@@ -182,12 +180,20 @@ class _CustomListViewState<T> extends State<CustomListView<T>> {
             if (itemIndex > widget.data!.length - 1) return const SizedBox();
             if (i.isEven) {
               child = widget.itemBuilder(
-                  widget.data![itemIndex], itemIndex, context);
+                widget.data![itemIndex],
+                itemIndex,
+                context,
+              );
 
               child = Builder(
-                  key: child.key,
-                  builder: (context) => widget.itemBuilder(
-                      widget.data![itemIndex], itemIndex, context));
+                key: child.key,
+                builder:
+                    (context) => widget.itemBuilder(
+                      widget.data![itemIndex],
+                      itemIndex,
+                      context,
+                    ),
+              );
             } else {
               child = widget.separatedWidget!(context, itemIndex);
             }
@@ -202,12 +208,14 @@ class _CustomListViewState<T> extends State<CustomListView<T>> {
               context,
             );
             child = Builder(
-                key: child.key,
-                builder: (BuildContext context) => widget.itemBuilder(
-                      widget.data![itemIndex],
-                      itemIndex,
-                      context,
-                    ));
+              key: child.key,
+              builder:
+                  (BuildContext context) => widget.itemBuilder(
+                    widget.data![itemIndex],
+                    itemIndex,
+                    context,
+                  ),
+            );
 
             if (widget.conditionBuild != null) {
               child = widget.conditionBuild!(child, widget.data![itemIndex]);
@@ -256,10 +264,7 @@ class _CustomListViewState<T> extends State<CustomListView<T>> {
         child: child,
       );
     }
-    child = SizedBox(
-      height: widget.height,
-      child: child,
-    );
+    child = SizedBox(height: widget.height, child: child);
     return child;
   }
 

@@ -1,3 +1,1 @@
-class InitModel{
-
-}
+class InitModel {}
