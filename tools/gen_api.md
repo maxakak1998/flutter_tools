@@ -384,6 +384,66 @@ static RequestOptions getUsers({
 }
 ```
 
+### Special Characters in Parameter Names
+
+The generator automatically sanitizes special characters in parameter names while preserving the original keys for API requests:
+
+```json
+{
+  "name": "searchData",
+  "path": "/api/search",
+  "method": "GET",
+  "query": {
+    "list[0]": {
+      "type": "string",
+      "required": true
+    },
+    "filter[name]": {
+      "type": "string",
+      "required": false
+    },
+    "sort-by": {
+      "type": "string",
+      "required": false
+    },
+    "page.number": {
+      "type": "int",
+      "required": true
+    }
+  }
+}
+```
+
+**Generated Dart:**
+```dart
+static RequestOptions searchData({
+  BaseOptions? baseOption,
+  required String list0,          // Sanitized from list[0]
+  String? filterName,              // Sanitized from filter[name]
+  String? sortBy,                  // Sanitized from sort-by
+  required num pageNumber,         // Sanitized from page.number
+}) {
+  final options = Options(
+    method: 'GET',
+  ).compose(
+    baseOption, 
+    '/api/search', 
+    queryParameters: _removeNullValues({
+      "list[0]": list0,              // Original key preserved
+      "filter[name]": filterName,    // Original key preserved
+      "sort-by": sortBy,             // Original key preserved
+      "page.number": pageNumber,     // Original key preserved
+    })
+  );
+  return options;
+}
+```
+
+**Sanitization Rules:**
+- Special characters `[](){}.<>,;:!@#$%^&*+=|\~`?/-` and whitespace are replaced with underscores
+- Result is converted to camelCase for Dart variable names
+- Original keys are preserved in the actual API request
+
 ## Response Models
 
 Define response models to generate corresponding Dart classes:
@@ -554,6 +614,101 @@ static RequestOptions createProject({
 })
 ```
 
+## Custom Class Names
+
+### Using `_className` for Custom Naming
+
+By default, the generator creates class names based on the context (e.g., `CalculateQuaddieRacesItem`). You can override this with the `_className` property:
+
+```json
+{
+  "responseModel": {
+    "races": {
+      "type": "list",
+      "_className": "QuaddieComboResult",
+      "value": {
+        "type": "map",
+        "value": {
+          "combo": "int",
+          "selections": {
+            "type": "list",
+            "value": {
+              "type": "int"
+            }
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+**Without `_className` (generated name):**
+```dart
+class CalculateQuaddieRacesItem {
+  num? raceNumber;
+  List<num>? selections;
+  // ...
+}
+```
+
+**With `_className` (custom name):**
+```dart
+class QuaddieComboResult {
+  num? combo;
+  List<num>? selections;
+  // ...
+}
+
+class CalculateQuaddie extends Decoder<CalculateQuaddie> {
+  List<QuaddieComboResult>? races;  // Uses custom class name
+  
+  factory CalculateQuaddie.fromJson(Map<String, dynamic> json) => CalculateQuaddie(
+    races: (json['races'] as List?)
+      ?.map((e) => QuaddieComboResult.fromJson(e as Map<String, dynamic>))
+      .toList(),  // Uses custom class in parsing
+  );
+}
+```
+
+### When to Use `_className`
+
+✅ **Use `_className` when:**
+- You want to match existing entity/model class names
+- The auto-generated name is unclear or too verbose
+- You're integrating with external APIs and need specific naming
+- Multiple endpoints share the same data structure (reuse the same class)
+
+❌ **Don't use `_className` for:**
+- Simple primitive types (`string`, `int`, `bool`) - they don't generate classes
+- When the auto-generated name is already clear and descriptive
+
+### `_className` Placement Rules
+
+1. **For List Types:** Place `_className` at the list level
+```json
+{
+  "items": {
+    "type": "list",
+    "_className": "CustomItemClass",  // ← Here
+    "value": {
+      "type": "map",
+      "value": { /* fields */ }
+    }
+  }
+}
+```
+
+2. **Not for Primitives:** Don't use with primitive types
+```json
+{
+  "count": {
+    "type": "int",
+    "_className": "CountValue"  // ❌ Won't work - int doesn't generate a class
+  }
+}
+```
+
 ## Key Features
 
 ### 🎯 **Type Safety**
@@ -575,6 +730,7 @@ static RequestOptions createProject({
 - Supports both legacy and new JSON formats
 - Handles complex nested structures
 - Extensible for future requirements
+- Custom class naming with `_className`
 
 ### 📝 **Generated Methods Include**
 - Constructor with named parameters

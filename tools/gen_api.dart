@@ -4,15 +4,30 @@ import 'dart:io';
 String root = "lib/core/api/api_routes";
 String packageName = "upcoz_flutter"; // <-- Add this variable
 
-String toPascalCase(String input) =>
-    input
-        .split('_')
-        .where((e) => e.isNotEmpty)
-        .map((e) => e[0].toUpperCase() + e.substring(1))
-        .join();
+String toPascalCase(String input) {
+  // Remove special characters like [], (), {}, etc. and replace with underscore
+  // This handles cases like "list[0]" → "List0"
+  final sanitized = input.replaceAll(
+    RegExp(r'[\[\]\(\)\{\}<>.,;:!@#$%^&*+=|\\~`?/\s-]'),
+    '_',
+  );
+
+  return sanitized
+      .split('_')
+      .where((e) => e.isNotEmpty)
+      .map((e) => e[0].toUpperCase() + e.substring(1))
+      .join();
+}
 
 String toCamelCase(String input) {
-  final parts = input.split('_').where((e) => e.isNotEmpty).toList();
+  // Remove special characters like [], (), {}, etc. and replace with empty string
+  // This handles cases like "list[0]" → "list0"
+  final sanitized = input.replaceAll(
+    RegExp(r'[\[\]\(\)\{\}<>.,;:!@#$%^&*+=|\\~`?/\s-]'),
+    '_',
+  );
+
+  final parts = sanitized.split('_').where((e) => e.isNotEmpty).toList();
   if (parts.isEmpty) return '';
   return parts.first +
       parts.skip(1).map((e) => e[0].toUpperCase() + e.substring(1)).join();
@@ -40,6 +55,7 @@ String processListValueType(
   StringBuffer modelBuffer,
   Map<String, String> generatedClasses, {
   bool isResponseModel = false,
+  String? customClassName,
 }) {
   if (valueDefinition is Map<String, dynamic>) {
     final valueType = valueDefinition['type'];
@@ -52,11 +68,12 @@ String processListValueType(
         modelBuffer,
         generatedClasses,
         isResponseModel: isResponseModel,
+        customClassName: customClassName,
       );
       return 'List<$innerType>';
     } else if (valueType == 'map' && valueDefinition.containsKey('value')) {
       // List of maps with defined structure
-      final className = '${toPascalCase(contextName)}Item';
+      final className = customClassName ?? '${toPascalCase(contextName)}Item';
       final mapValue = valueDefinition['value'] as Map<String, dynamic>;
 
       // Process the map value recursively
@@ -82,10 +99,10 @@ String processListValueType(
       // Simple primitive type in list
       return dartType(valueType);
     } else if (valueDefinition.keys.any(
-      (key) => !['type', 'required'].contains(key),
+      (key) => !['type', 'required', 'className'].contains(key),
     )) {
       // Object structure without explicit type - create a class
-      final className = '${toPascalCase(contextName)}Item';
+      final className = customClassName ?? '${toPascalCase(contextName)}Item';
 
       // Process the object fields recursively
       final processedFields = processFieldDefinitions(
@@ -117,6 +134,7 @@ String generateListValueParseExpression(
   dynamic valueDefinition,
   String itemVar, {
   String contextName = '',
+  String? customClassName,
 }) {
   if (valueDefinition is Map<String, dynamic>) {
     final valueType = valueDefinition['type'];
@@ -127,14 +145,15 @@ String generateListValueParseExpression(
         valueDefinition['value'],
         'inner',
         contextName: contextName,
+        customClassName: customClassName,
       );
       return '($itemVar as List).map((inner) => $innerParseExpression).toList()';
     } else if (valueType == 'map' ||
         valueDefinition.keys.any(
-          (key) => !['type', 'required'].contains(key),
+          (key) => !['type', 'required', '_className'].contains(key),
         )) {
       // Object type - needs fromJson
-      final className = '${toPascalCase(contextName)}Item';
+      final className = customClassName ?? '${toPascalCase(contextName)}Item';
       return '$className.fromJson($itemVar as Map<String, dynamic>)';
     } else if (valueType is String) {
       // Simple primitive type
@@ -315,9 +334,12 @@ Map<String, dynamic> processFieldDefinitions(
           };
         } else if (fieldType == 'list' && value.containsKey('value')) {
           // List with value definition - process recursively
+          // Check if a custom className is provided for the list items
+          final customClassName = value['_className'] as String?;
           processedFields[key] = {
             '_listValueType': value['value'],
             '_optional': !isRequired,
+            if (customClassName != null) '_customClassName': customClassName,
           };
         } else {
           // Regular field with type and required
@@ -376,6 +398,7 @@ dynamic processArrayField(
   String key,
   String contextName, {
   bool isResponseModel = false,
+  String? customClassName,
 }) {
   if (arrayValue.isEmpty) return arrayValue;
 
@@ -388,6 +411,7 @@ dynamic processArrayField(
     if (hasUnderscoreFields) {
       // This contains actual field names with underscore prefixes
       final itemClassName =
+          customClassName ??
           '${toPascalCase(contextName)}${toPascalCase(key)}Item';
       final processedItem = processFieldDefinitions(
         firstItem,
@@ -432,6 +456,7 @@ dynamic processArrayField(
     } else {
       // Complex object structure in array - process recursively
       final itemClassName =
+          customClassName ??
           '${toPascalCase(contextName)}${toPascalCase(key)}Item';
       final processedItem = processFieldDefinitions(
         firstItem,
@@ -513,6 +538,7 @@ String generateParametersFromFields(
           params.add('required List<$itemClass> $paramName');
         } else if (field.containsKey('_listValueType')) {
           final listValueType = field['_listValueType'];
+          final customClassName = field['_customClassName'] as String?;
           final isOptional = field['_optional'] ?? true;
           final paramName = toCamelCase(key);
           final dartListType = processListValueType(
@@ -521,6 +547,7 @@ String generateParametersFromFields(
             modelBuffer,
             generatedClasses,
             isResponseModel: false,
+            customClassName: customClassName,
           );
           final finalType = 'List<$dartListType>';
 
@@ -632,12 +659,14 @@ void generateNestedClasses(
       } else if (field.containsKey('_listValueType')) {
         // Handle list with value type - may need to generate nested classes
         final listValueType = field['_listValueType'];
+        final customClassName = field['_customClassName'] as String?;
         processListValueType(
           listValueType,
           '${contextName}${toPascalCase(key)}',
           modelBuffer,
           generatedClasses,
           isResponseModel: isResponseModel,
+          customClassName: customClassName,
         );
       }
       // Skip fields that only contain array metadata like _arraySchemaType
@@ -780,6 +809,7 @@ String generateModel(
         value.containsKey('_listValueType')) {
       // Handle list with value definition (nested lists or objects)
       final listValueType = value['_listValueType'];
+      final customClassName = value['_customClassName'] as String?;
       final isOptional = value['_optional'] ?? true;
       final dartListType = processListValueType(
         listValueType,
@@ -787,6 +817,7 @@ String generateModel(
         StringBuffer(),
         <String, String>{},
         isResponseModel: false,
+        customClassName: customClassName,
       );
       final fieldType =
           isOptional ? 'List<$dartListType>?' : 'List<$dartListType>';
@@ -985,11 +1016,13 @@ String generateModel(
         value.containsKey('_listValueType')) {
       // Handle list with value definition (nested lists or objects)
       final listValueType = value['_listValueType'];
+      final customClassName = value['_customClassName'] as String?;
       final isOptional = value['_optional'] ?? true;
       final parseExpression = generateListValueParseExpression(
         listValueType,
         'e',
         contextName: '${name}${toPascalCase(key)}',
+        customClassName: customClassName,
       );
 
       if (isOptional) {
@@ -1155,12 +1188,14 @@ String generateModel(
         value.containsKey('_listValueType')) {
       // Handle list with value definition (nested lists or objects)
       final listValueType = value['_listValueType'];
+      final customClassName = value['_customClassName'] as String?;
       final dartListType = processListValueType(
         listValueType,
         '${name}${toPascalCase(key)}',
         StringBuffer(),
         <String, String>{},
         isResponseModel: false,
+        customClassName: customClassName,
       );
       type = 'List<$dartListType>';
     } else if (value is Map<String, dynamic>) {

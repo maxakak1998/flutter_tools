@@ -208,5 +208,77 @@
                 }
             }
         }
+    },
+    {
+        "name": "special_characters_in_query_params",
+        "path": "/api/special_characters_test",
+        "method": "GET",
+        "query": {
+            "list[0]": {
+                "type": "string",
+                "required": true
+            },
+            "filter[name]": {
+                "type": "string",
+                "required": false
+            },
+            "sort-by": {
+                "type": "string",
+                "required": false
+            },
+            "page.number": {
+                "type": "int",
+                "required": true
+            }
+        }
+    },
+    {
+        "name": "custom_class_name_example",
+        "path": "/api/custom_class_name_example",
+        "method": "POST",
+        "body": {
+            "products": {
+                "type": "list",
+                "_className": "ProductItem",
+                "value": {
+                    "type": "map",
+                    "value": {
+                        "id": {
+                            "type": "int"
+                        },
+                        "name": {
+                            "type": "string"
+                        },
+                        "price": {
+                            "type": "num"
+                        }
+                    }
+                }
+            }
+        },
+        "responseModel": {
+            "items": {
+                "type": "list",
+                "_className": "OrderResult",
+                "value": {
+                    "type": "map",
+                    "value": {
+                        "orderId": "int",
+                        "total": "num",
+                        "products": {
+                            "type": "list",
+                            "_className": "OrderProductItem",
+                            "value": {
+                                "type": "map",
+                                "value": {
+                                    "productId": "int",
+                                    "quantity": "int"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 ]
