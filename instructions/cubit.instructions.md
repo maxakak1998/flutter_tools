@@ -4,7 +4,7 @@ applyTo: '**'
 
 
 # 🧠 Instructions for Copilot Agency for using  CustomCubit
-
+ The cubit contains presentation logics or pure calculation logics only. It should not contain any business logic. Business logic should be in the usecase.
 
 1. **BaseCubitState State**
    -Always extend BaseCubitState located in `lib/commons/base_cubit/base_cubit.dart` for all states.
