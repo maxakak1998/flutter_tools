@@ -22,11 +22,6 @@ applyTo: '**'
      YourUseCase(this._repository1, this._repository2);
    }
    ```
-3. One usecase should only have one method due to Single Responsibility Principle (SRP).
-   ```dart
-   Future<ReturnType> call(ParamType param) async {
-     // Business logic here
-   }
-   ```
+3. One usecase should only have one public methods due to Single Responsibility Principle (SRP), we can have multiple private methods.
 4. Usecase should only contain business logic and not UI logic.
 5. Usecase should return data to Cubit/Bloc for state management.

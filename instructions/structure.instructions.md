@@ -26,17 +26,25 @@ Each feature follows this pattern:
 features/meter_reading/
 ├── data/
 │   └── repositories/        # Data access layer
-│       ├── meter_reading_repository.dart         # Factory
-│       ├── meter_reading_online_repository.dart  # API calls
-│       └── meter_reading_offline_repository.dart # Local DB
+│       ├── meter_reading_repository.dart         # Concrete implementation
 ├── domain/
+│   ├── models/            # Entities domain models
 │   ├── useCases/            # Business logic
 │   └── repositories/        # Interfaces
+├── application/             # Cross-feature coordination (optional)
+│   └── orchestrators/       # Business logic orchestrators
 ├── presentation/
 │   ├── cubit/               # State management
-│   └── pages/               # UI screens
+│   ├── coordinators/        # UI flow coordinators (optional)
+│   └── screens/               # UI screens
+│   └── widgets/               # Widgets (optional)
+│   └── routes/               # Routes (optional)
 └── meter_reading_inject.dart # Dependency injection
 ```
+
+**Note:** 
+- `application/orchestrators/` - Add when feature needs to coordinate with other features
+- `presentation/coordinators/` - Add when feature has complex UI navigation flows
 
 ## Key Architecture Patterns
 
@@ -87,6 +95,140 @@ class MeterReadingCubit extends Cubit<MeterReadingState> {
 }
 ```
 
+### 4. Orchestrator Pattern
+**Location:** `application/` layer (Business logic layer)
+
+**Purpose:** Coordinates multiple business operations across different features/services
+
+**Characteristics:**
+- Cross-feature coordination - manages workflows spanning multiple features
+- Business logic orchestration - coordinates complex multi-step processes
+- Service coordination - brings together multiple services/cubits
+- Async workflows - handles sequential or parallel async operations
+
+**Structure:**
+```dart
+// Abstract interface
+abstract class IBetslipOrchestrator {
+  Future<void> updateSelectionTypeWithPromotionSync({
+    required SportPlaceBetVipCubit betslipCubit,
+    required PromotionsCubit promotionsCubit,
+    required String betslipId,
+    required String selectionId,
+    required String? selectionType,
+  });
+}
+
+// Implementation coordinates multiple features
+class BetslipOrchestrator implements IBetslipOrchestrator {
+  @override
+  Future<void> updateSelectionTypeWithPromotionSync({
+    required SportPlaceBetVipCubit betslipCubit,
+    required PromotionsCubit promotionsCubit,
+    required String betslipId,
+    required String selectionId,
+    required String? selectionType,
+  }) async {
+    // Step 1: Update selection type in betslip feature
+    await betslipCubit.updateSelectionTypeForSingleRacing(
+      betslipId: betslipId,
+      selectionId: selectionId,
+      selectionType: selectionType,
+    );
+
+    // Step 2: Fetch updated betslip data
+    await betslipCubit.fetchBetslips();
+
+    // Step 3: Sync promotions feature with new state
+    await promotionsCubit.refreshPromotionsSilently();
+  }
+}
+```
+
+**When to use Orchestrator:**
+- ✅ Coordinating multiple features/services
+- ✅ Complex business workflows (with/without UI)
+- ✅ Cross-cutting concerns between domains
+- ✅ Need to synchronize multiple state managers
+
+**Examples in project:**
+- `BetslipOrchestrator` - Coordinates betslip + promotions
+- `NotificationOrchestrator` - Coordinates notifications + Firebase + deep linking
+- `DepositFundsFlowOrchestrator` - Coordinates deposit flow with user data
+
+### 5. Coordinator Pattern
+**Location:** `presentation/coordinators/` or `presentation/application/` layer
+
+**Purpose:** Coordinates UI-related concerns like navigation, dialogs, and user flows
+
+**Characteristics:**
+- UI coordination - manages navigation, dialogs, and screen transitions
+- Presentation logic - handles user interaction flows
+- Context-aware - often works with BuildContext for UI operations
+- Simpler workflows - focused on single-feature UI flows
+
+**Structure:**
+```dart
+// Abstract interface
+abstract class ILoginCoordinator {
+  void handleLoginSuccess(BuildContext context);
+  void openAppSettings(BuildContext context);
+}
+
+// Implementation handles UI navigation and flows
+class LoginCoordinator implements ILoginCoordinator {
+  final MainAppCubit mainAppCubit;
+
+  LoginCoordinator({required this.mainAppCubit});
+
+  @override
+  void handleLoginSuccess(BuildContext context) async {
+    await mainAppCubit.getThemeInit();
+    await mainAppCubit.fetchUserInfo();
+    await mainAppCubit.updateAuthenticationState();
+    
+    // Navigate based on verification status
+    if (mainAppCubit.currentUserNotifier.value?.isVerified ?? false) {
+      HomeVipRoute().go(context);
+      return;
+    }
+    VerificationRoute().go(context);
+  }
+
+  @override
+  void openAppSettings(BuildContext context) async {
+    context.pop();
+    await AppSettings.openAppSettings(type: AppSettingsType.security);
+    await mainAppCubit.getPreferredBiometricType();
+  }
+}
+```
+
+**When to use Coordinator:**
+- ✅ Managing navigation flows
+- ✅ Showing dialogs/bottom sheets/overlays
+- ✅ User interaction flows within a feature
+- ✅ Post-action UI transitions
+
+**Examples in project:**
+- `ShowDialogPlaceBetCoordinator` - Shows success/error dialogs after bet placement
+- `LoginCoordinator` - Handles post-login navigation flows
+
+### Orchestrator vs Coordinator Comparison
+
+| Aspect | Orchestrator | Coordinator |
+|--------|-------------|-------------|
+| **Layer** | Application/Business | Presentation |
+| **Scope** | Cross-feature | Single feature (UI) |
+| **Concerns** | Business logic workflows | UI flows & navigation |
+| **Dependencies** | Multiple Cubits/Services | BuildContext, UI widgets |
+| **Complexity** | Complex multi-step processes | Simpler UI transitions |
+| **File Location** | `application/` | `presentation/coordinators/` |
+
+**Key Rule:**
+- **Orchestrator** = "Backend-facing" business logic coordinator
+- **Coordinator** = "Frontend-facing" UI flow manager
+
 ## Dependency Injection Setup
 
 Uses **GetIt** service locator for dependency management:
@@ -120,7 +262,24 @@ void injectMeterReadingModule() {
   // Use cases
   sl.registerFactory(() => GetMeterReadingUseCase(sl()));
   
+  // Orchestrators (Business logic coordination)
+  sl.registerFactory<IBetslipOrchestrator>(
+    () => BetslipOrchestrator(),
+  );
+  
+  // Coordinators (UI flow coordination)
+  sl.registerFactory<ILoginCoordinator>(
+    () => LoginCoordinator(mainAppCubit: sl<MainAppCubit>()),
+  );
+  
   // Cubit
   sl.registerFactory(() => MeterReadingCubit(sl()));
 }
 ```
+
+**Registration Guidelines:**
+- Use `registerFactory` for Orchestrators (new instance per use)
+- Use `registerFactory` for Coordinators (new instance per use)
+- Use `registerLazySingleton` for Repositories (shared instance)
+- Use `registerFactory` for UseCases (new instance per use)
+- Use `registerFactory` for Cubits (new instance per screen)
