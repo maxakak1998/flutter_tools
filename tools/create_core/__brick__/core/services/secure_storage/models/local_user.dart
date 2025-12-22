@@ -10,8 +10,10 @@ class LocalUser {
     apiUrl = json['apiUrl'];
   }
 
-  LocalUser copyWith({String? apiUrl}) =>
-      LocalUser(apiUrl: apiUrl ?? this.apiUrl);
+  LocalUser copyWith({String? apiUrl, AuthToken? authToken}) => LocalUser(
+    apiUrl: apiUrl ?? this.apiUrl,
+    authToken: authToken ?? this.authToken,
+  );
 
   Map<String, dynamic> toJson() {
     final map = <String, dynamic>{};
