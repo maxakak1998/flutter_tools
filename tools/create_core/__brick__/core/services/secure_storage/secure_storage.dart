@@ -5,15 +5,13 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:{{project_name}}/core/services/secure_storage/base_secure_storage.dart';
 import 'package:{{project_name}}/core/services/secure_storage/models/local_user.dart';
 
+import 'models/auth_token.dart';
+
 class SecureStorageService implements ISecureStorageService {
   static String get userInfoKey => 'user_info';
   final storage = FlutterSecureStorage(
     aOptions: AndroidOptions(encryptedSharedPreferences: true),
   );
-
-  // Hardcoded values for testing/demo
-  static const String hardcodedUsername = 'tam_testing';
-  static const String hardcodedPassword = 'tam_testing';
 
   @override
   Future<LocalUser?> getLocalUser() =>
@@ -68,5 +66,11 @@ class SecureStorageService implements ISecureStorageService {
   Future<void> removeRememberedCredentials() async {
     await storage.delete(key: 'remember_username');
     await storage.delete(key: 'remember_password');
+  }
+
+  @override
+  Future<AuthToken?> getInterceptorAuthToken() async {
+    final user = await getLocalUser();
+    return user?.authToken;
   }
 }

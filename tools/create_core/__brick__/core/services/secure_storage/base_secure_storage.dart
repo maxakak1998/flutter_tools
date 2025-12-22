@@ -1,5 +1,7 @@
 import 'package:{{project_name}}/core/services/secure_storage/models/local_user.dart';
 
+import 'models/auth_token.dart';
+
 abstract class ISecureStorageService {
   Future<LocalUser?> getLocalUser();
 
@@ -18,4 +20,5 @@ abstract class ISecureStorageService {
   Future<void> saveRememberedCredentials(String username, String password);
 
   Future<void> removeRememberedCredentials();
+  Future<AuthToken?> getInterceptorAuthToken();
 }

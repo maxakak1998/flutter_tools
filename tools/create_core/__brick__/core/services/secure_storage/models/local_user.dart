@@ -1,11 +1,14 @@
+import 'auth_token.dart';
+
 class LocalUser {
-  LocalUser({this.apiUrl});
+  AuthToken? authToken;
+  String? apiUrl;
+
+  LocalUser({this.apiUrl, this.authToken});
 
   LocalUser.fromJson(dynamic json) {
     apiUrl = json['apiUrl'];
   }
-
-  String? apiUrl;
 
   LocalUser copyWith({String? apiUrl}) =>
       LocalUser(apiUrl: apiUrl ?? this.apiUrl);

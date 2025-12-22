@@ -322,7 +322,7 @@
   ],
   "generator": "pub",
   "generatorVersion": "3.9.0",
-  "flutterRoot": "file:///Users/kiet.phi/fvm/versions/3.35.2",
-  "flutterVersion": "3.35.2",
+  "flutterRoot": "file:///Users/kiet.phi/fvm/versions/stable",
+  "flutterVersion": "3.35.1",
   "pubCache": "file:///Users/kiet.phi/.pub-cache"
 }
