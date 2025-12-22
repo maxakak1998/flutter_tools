@@ -1,3 +1,5 @@
+import 'package:{{project_name}}/core/api/api_interceptors/token_interceptor.dart';
+
 import '../api_export.dart';
 
 typedef APIProgressCallback = void Function(double value);
@@ -8,6 +10,7 @@ class APIClient
     instance = Dio(
       BaseOptions(
         baseUrl: baseUrl,
+        receiveDataWhenStatusError: true,
         sendTimeout: const Duration(seconds: 15 * 60),
         receiveTimeout: const Duration(seconds: 15 * 60),
         validateStatus: (code) {
@@ -19,11 +22,8 @@ class APIClient
     );
   }
 
-  String _authBaseUrl = '';
-
-  void updateAuthBaseUrl(String url) {
-    _authBaseUrl = url;
-  }
+  TokenInterceptor? get tokenInterceptor =>
+      instance.interceptors.whereType<TokenInterceptor?>().firstOrNull;
 
   @override
   Future<T> request<T>({
@@ -35,10 +35,9 @@ class APIClient
     option.path = mapVariableQuery(option.path, pathVariable);
 
     if (formData != null) {
-      final bodyData =
-          option.data is Map<String, dynamic>
-              ? option.data as Map<String, dynamic>
-              : <String, dynamic>{};
+      final bodyData = option.data is Map<String, dynamic>
+          ? option.data as Map<String, dynamic>
+          : <String, dynamic>{};
       for (final field in formData.fields) {
         bodyData[field.key] = field.value;
       }
@@ -47,12 +46,9 @@ class APIClient
       }
       option.data = FormData.fromMap(bodyData);
     }
+
     if (option.baseUrl.isEmpty) {
       option = option.copyWith(baseUrl: instance.options.baseUrl);
-    }
-
-    if (option.extra["auth"] != false) {
-      option.baseUrl = _authBaseUrl;
     }
 
     Response response = await instance.fetch(option);

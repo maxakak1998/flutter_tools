@@ -4,7 +4,6 @@ import 'package:{{project_name}}/features/init/domain/useCases/navigation_redire
 
 import 'data/repositories/init_repository.dart';
 import 'domain/repositories/init_repository_base.dart';
-import 'domain/useCases/get_init_use_case.dart';
 import 'presentation/cubit/init_cubit.dart';
 
 import '../../../app_export.dart';

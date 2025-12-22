@@ -1,5 +1,6 @@
 import '../../../../app_export.dart';
 import 'main_app_cubit_state.dart';
+import '../../domain/useCases/change_locale_to_use_case.dart';
 
 class MainAppCubit extends Cubit<BaseCubitState> {
   final IChangeThemeUseCase changeThemeUserCase;
@@ -8,9 +9,12 @@ class MainAppCubit extends Cubit<BaseCubitState> {
   late Locale currentLocale;
 
   ITheme currentTheme = NormalTheme();
-  late Locale currentLocale;
 
-  MainAppCubit() : super(MainAppInitState()) {
+  MainAppCubit({
+    required this.changeThemeUserCase,
+    required this.changeLocaleToUseCase,
+    required this.localeService,
+  }) : super(MainAppInitState()) {
     currentLocale = localeService.defaultLocale;
   }
 

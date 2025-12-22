@@ -1,12 +1,15 @@
 import '../../api_export.dart';
 
-class ErrorResponse extends BaseAPIResponseWrapper<Response, dynamic>
+class ErrorResponse<T> extends BaseAPIResponseWrapper<Response, T>
     implements Exception {
   late APIErrorType error;
   String? code;
+  String? message;
+  String? title;
 
-  ErrorResponse({String? message, this.code}) {
+  ErrorResponse({this.message, this.code, this.title, super.originalResponse}) {
     error = getErrorType(code);
+    hasError = true;
   }
 
   ErrorResponse.fromSystem(this.error, String message) {
@@ -14,16 +17,15 @@ class ErrorResponse extends BaseAPIResponseWrapper<Response, dynamic>
   }
 
   APIErrorType getErrorType(dynamic error) {
-    if (error == "error.unauthorized") {
-      return APIErrorType.unauthorized;
-    }
-
-    return APIErrorType.unknown;
+    return switch (error) {
+      "error.unauthorized" => APIErrorType.unauthorized,
+      _ => APIErrorType.unknown,
+    };
   }
 
   @override
   String toString() {
-    return 'ErrorResponse: $error  ${originalResponse?.data?.toString()}';
+    return message ?? 'Unknown error';
   }
 }
 

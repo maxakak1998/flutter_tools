@@ -1,9 +1,7 @@
-import 'package:{{project_name}}/core/api/decodable.dart';
-
 typedef RootKeyExtractor = List<String> Function(Map<String, dynamic>? data);
 
 ///R = Raw type you get from response ( Ex: Using DIO is Response object)
-///E = Expected type ( Ex: Common data format you want to get is Map<String,dynamic>
+///E = Expected type ( Ex: Common data format you want to get is Map\<String,dynamic\>
 abstract class BaseAPIResponseDataTransformer<R, E, T> {
   RootKeyExtractor rootKeyExtractor;
 

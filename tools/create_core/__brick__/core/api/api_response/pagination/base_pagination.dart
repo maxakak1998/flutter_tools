@@ -6,7 +6,7 @@ abstract class BasePagination {
 
   int get _total => total ?? 9999;
 
-  bool isEnd() => (page * limit) >= _total;
+  bool isEnd() => (max(1, (page - 1)) * limit) >= _total;
 
   int getLastPage() {
     num number = (_total / limit);
