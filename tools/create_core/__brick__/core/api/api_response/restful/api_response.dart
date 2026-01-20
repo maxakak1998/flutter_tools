@@ -10,7 +10,7 @@ class APIResponse<T> extends BaseAPIResponseWrapper<Response, T> {
        );
 
   @override
-  APIResponse<T> decode() {
+  BaseAPIResponseWrapper<Response, T> decode() {
     return dataTransformer?.transform(originalResponse, decodedData);
   }
 }

@@ -1,7 +1,7 @@
-import 'package:{{project_name}}/features/init/presentation/mixins/init_mixin.dart';
-
 import '../../../../../app_export.dart';
 import '../cubit/init_cubit_state.dart' show UserAuthStateChanged;
+import '../cubit/init_cubit.dart';
+import 'package:flutter/scheduler.dart';
 
 class InitScreen extends StatefulWidget {
   const InitScreen({super.key});
@@ -36,7 +36,6 @@ class _InitScreenState extends State<InitScreen> {
   Widget build(BuildContext context) {
     return CustomCubit(
       bloc: initCubit,
-      onSucceed: (state) {},
       onSucceed: (state) {
         if (state is UserAuthStateChanged) {
           switch (initCubit.userAuthState) {

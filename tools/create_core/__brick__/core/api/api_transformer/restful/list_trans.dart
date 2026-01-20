@@ -42,9 +42,33 @@ class APIListResponseDataTransformer<T>
         originalResponse: response,
       );
     } else {
+      String errorMessage = "Unknown error";
+
+      final responseData = response.data;
+      if (responseData is String) {
+        final htmlTagRegex = RegExp(r'<[^>]+>');
+
+        if (htmlTagRegex.hasMatch(responseData) &&
+            response.statusMessage != null) {
+          errorMessage = response.statusMessage!;
+        } else {
+          errorMessage = responseData;
+        }
+      } else {
+        final messageData = response.data["error"]?["message"];
+
+        if (messageData is Map) {
+          errorMessage = messageData['error'];
+        } else if (messageData is String) {
+          errorMessage = messageData;
+        }
+      }
+
       return ErrorResponse<T>(
-        message: response.data["error"]["message"] ?? "Unknown error",
-        code: response.data["code"].toString(),
+        message: errorMessage,
+        title: response.data["error"]?["title"]?.toString(),
+        code: response.data["error"]?["code"].toString(),
+        originalResponse: response,
       );
     }
   }

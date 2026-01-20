@@ -1,5 +1,3 @@
-import 'package:{{project_name}}/features/init/presentation/mixins/init_mixin.dart';
-
 import '../../../../app_export.dart';
 
 enum UserAuthState { loggedIn, loggedOut, unknown }
@@ -12,8 +10,7 @@ abstract class INavigationRedirectUseCase {
   Future<UserAuthState> getUserAuthState();
 }
 
-class NavigationRedirectUseCase extends INavigationRedirectUseCase
-    with InitMixin {
+class NavigationRedirectUseCase extends INavigationRedirectUseCase {
   NavigationRedirectUseCase(super.service);
 
   @override
