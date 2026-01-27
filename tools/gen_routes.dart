@@ -1,11 +1,65 @@
 import 'dart:io';
 import 'package:path/path.dart' as p;
 
+/// Extracts ALL route class names from main_home_page_route.dart
+/// These routes are already defined in the StatefulShellRoute and should be excluded
+/// from allRoutes to avoid duplicate route definitions
+Set<String> extractNestedShellBranchRoutes() {
+  final excludedRoutes = <String>{};
+
+  final mainRouteFile = File(
+    'lib/features/main_home_page/presentation/routes/main_home_page_route.dart',
+  );
+  if (!mainRouteFile.existsSync()) {
+    print(
+      'Warning: main_home_page_route.dart not found, no routes will be excluded',
+    );
+    return excludedRoutes;
+  }
+
+  final content = mainRouteFile.readAsStringSync();
+
+  // Find ALL TypedGoRoute declarations in main_home_page_route.dart
+  // All these routes are already included via the StatefulShellRoute
+  // and should not be added separately
+  final allRoutePattern = RegExp(r'TypedGoRoute<(\w+)>');
+
+  for (final match in allRoutePattern.allMatches(content)) {
+    final routeName = match.group(1)!;
+    final snakeCase = _toSnakeCase(routeName);
+    excludedRoutes.add(snakeCase);
+  }
+
+  print(
+    'Routes defined in main_home_page_route.dart (excluded): ${excludedRoutes.length} routes',
+  );
+
+  return excludedRoutes;
+}
+
+/// Convert PascalCase to snake_case
+String _toSnakeCase(String pascalCase) {
+  return pascalCase
+      .replaceAllMapped(
+        RegExp(r'([A-Z])'),
+        (m) => '_${m.group(1)!.toLowerCase()}',
+      )
+      .substring(1);
+}
+
 Future<void> main(List<String> args) async {
   if (args.isEmpty) {
     print('Usage: fvm dart gen_routes.dart <package_name>');
     return;
   }
+
+  // Dynamically extract nested routes from main_home_page_route.dart
+  // These routes are already defined inside StatefulShellBranch and should not
+  // be added separately to avoid duplicate routes and breaking bottom navigation
+  final excludedShellBranchRoutes = extractNestedShellBranchRoutes();
+  print(
+    'Detected shell branch nested routes to exclude: $excludedShellBranchRoutes',
+  );
 
   String packageName = args[0];
   final buffer = StringBuffer();
@@ -22,16 +76,23 @@ Future<void> main(List<String> args) async {
     throw Exception('Directory lib/features not found!');
   }
 
-  for (final file in featureDir
-      .listSync(recursive: true)
-      .whereType<File>()
-      .where((f) => f.path.endsWith('_route.g.dart'))) {
+  for (final file
+      in featureDir
+          .listSync(recursive: true)
+          .whereType<File>()
+          .where((f) => f.path.endsWith('_route.g.dart'))) {
     final relativeImport = p
         .relative(file.path, from: 'lib')
         .replaceAll(".g", "");
     final importAlias = p
         .basenameWithoutExtension(file.path)
         .replaceAll(".g", "");
+
+    // Skip routes that are nested inside shell branches
+    if (excludedShellBranchRoutes.contains(importAlias)) {
+      print('Skipping shell branch route: $importAlias');
+      continue;
+    }
 
     buffer.writeln(
       'import \'package:$packageName/$relativeImport\' as $importAlias;',
