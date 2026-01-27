@@ -72,3 +72,59 @@ applyTo: '**'
  ```
  4. Always use `ImageExtension` for Image Assets
  5. Remember to update the `pubspec.yaml` with new assets if needed
+ 6. **ALWAYS use `flutter_screenutil` for responsive sizing** - See Responsive Design section below
+
+---
+
+## 📱 Responsive Design (CRITICAL - ScreenUtil)
+
+**ALWAYS use `flutter_screenutil` for responsive sizing. NEVER use hardcoded numeric values.**
+
+### Import Required
+```dart
+import 'package:flutter_screenutil/flutter_screenutil.dart';
+```
+
+### ✅ Correct Pattern
+```dart
+// Font sizes - use .sp
+Text('Hello', style: TextStyle(fontSize: 16.sp))
+theme.bodyText.copyWith(fontSize: 14.sp)
+
+// Width - use .w
+SizedBox(width: 100.w)
+Container(width: 200.w)
+EdgeInsets.symmetric(horizontal: 16.w)
+
+// Height - use .h
+SizedBox(height: 50.h)
+Container(height: 100.h)
+EdgeInsets.symmetric(vertical: 12.h)
+
+// Border radius - use .r
+BorderRadius.circular(8.r)
+RoundedRectangleBorder(borderRadius: BorderRadius.circular(12.r))
+
+// Combined padding
+EdgeInsets.fromLTRB(16.w, 12.h, 16.w, 12.h)
+EdgeInsets.only(left: 8.w, top: 4.h, right: 8.w, bottom: 4.h)
+```
+
+### ❌ WRONG Pattern (DO NOT USE)
+```dart
+// NEVER use hardcoded values - these will NOT scale properly on different devices
+Text('Hello', style: TextStyle(fontSize: 16))  // ❌ Missing .sp
+SizedBox(width: 100)  // ❌ Missing .w
+SizedBox(height: 50)  // ❌ Missing .h
+EdgeInsets.all(16)    // ❌ Missing .w or .h
+BorderRadius.circular(8)  // ❌ Missing .r
+Container(padding: EdgeInsets.symmetric(horizontal: 20, vertical: 10))  // ❌ Missing suffixes
+```
+
+### When to Use Each Suffix
+| Suffix | Use For | Example |
+|--------|---------|---------|
+| `.sp` | Font sizes, icon sizes | `fontSize: 16.sp`, `Icon(size: 24.sp)` |
+| `.w` | Horizontal values (width, horizontal padding/margin) | `width: 100.w`, `horizontal: 16.w` |
+| `.h` | Vertical values (height, vertical padding/margin) | `height: 50.h`, `vertical: 12.h` |
+| `.r` | Border radius | `BorderRadius.circular(8.r)` |

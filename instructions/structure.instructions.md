@@ -24,6 +24,11 @@ Each feature follows this pattern:
 
 ```
 features/meter_reading/
+├── docs/                    # Feature documentation
+│   ├── README.md           # Overview, purpose, dependencies
+│   ├── api.md              # API endpoints (optional)
+│   ├── flows.md            # User flows, business logic (optional)
+│   └── decisions.md        # Feature-specific decisions (optional)
 ├── data/
 │   └── repositories/        # Data access layer
 │       ├── meter_reading_repository.dart         # Concrete implementation
@@ -43,8 +48,46 @@ features/meter_reading/
 ```
 
 **Note:** 
+- `docs/` - Feature documentation (README.md required, others as needed)
 - `application/orchestrators/` - Add when feature needs to coordinate with other features
 - `presentation/coordinators/` - Add when feature has complex UI navigation flows
+
+### Feature Documentation Guidelines
+
+The `docs/` folder contains feature-specific documentation:
+
+| File | Purpose | Required |
+|------|---------|----------|
+| `README.md` | Feature overview, purpose, dependencies, quick start | ✅ Yes |
+| `api.md` | API endpoints, request/response, error handling | If uses APIs |
+| `flows.md` | User flows, state diagrams, business logic | For complex features |
+| `decisions.md` | Architectural decisions specific to this feature | When non-obvious |
+
+**README.md Template:**
+```markdown
+# [Feature Name]
+
+## Overview
+Brief description of what this feature does.
+
+## Dependencies
+- List other features this depends on
+- External packages used
+
+## Quick Start
+How to use/test this feature.
+
+## Related Docs
+- [API Documentation](./api.md)
+- [User Flows](./flows.md)
+- [Cart Feature](../../cart/docs/README.md) (cross-reference example)
+```
+
+**Cross-Reference Pattern:**
+```markdown
+<!-- Link to other feature docs -->
+See [Product Selection](../../product/docs/flows.md#selection) for details.
+```
 
 ## Key Architecture Patterns
 
@@ -251,9 +294,11 @@ void main() async {
 void injectMeterReadingModule() {
   final sl = GetIt.instance;
   
-  // Repository (Factory pattern)
-  sl.registerLazySingleton<IMeterReadingRepository>(
-    () => MeterReadingRepository(
+  // Repository (Factory function pattern - runtime params)
+  sl.registerFactory<IMeterReadingRepository Function(String, String)>(
+    () => (String userId, String storeId) => MeterReadingRepository(
+      userId: userId,
+      storeId: storeId,
       onlineRepository: MeterReadingOnlineRepository(),
       offlineRepository: MeterReadingOfflineRepository(),
     ),
@@ -280,6 +325,6 @@ void injectMeterReadingModule() {
 **Registration Guidelines:**
 - Use `registerFactory` for Orchestrators (new instance per use)
 - Use `registerFactory` for Coordinators (new instance per use)
-- Use `registerLazySingleton` for Repositories (shared instance)
+- Use `registerFactory` for Repositories (no singleton - use Function pattern)
 - Use `registerFactory` for UseCases (new instance per use)
 - Use `registerFactory` for Cubits (new instance per screen)
