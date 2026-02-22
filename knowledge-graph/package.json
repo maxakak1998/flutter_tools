@@ -1,0 +1,32 @@
+{
+  "name": "knowledge-graph-mcp",
+  "version": "1.0.0",
+  "type": "module",
+  "bin": {
+    "knowledge-graph": "dist/cli.js",
+    "kg": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "start": "node dist/cli.js serve",
+    "build": "tsc && cp src/dashboard/index.html dist/dashboard/index.html",
+    "dev": "tsx src/cli.ts serve",
+    "doctor": "tsx src/cli.ts doctor",
+    "setup": "tsx src/cli.ts setup",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "glob": "^11.0.0",
+    "kuzu": "^0.11.3",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}
