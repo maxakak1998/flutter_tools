@@ -1,16 +1,15 @@
-import { KuzuStorage } from '../storage/kuzu.js';
+import { IStorage } from '../storage/interface.js';
 import { Embedder } from '../engine/embedder.js';
 import { Retriever } from '../engine/retriever.js';
 import { StorageStats, QueryFilters, log } from '../types.js';
 
 /**
  * Get full graph data for vis-network visualization.
- * Returns nodes (chunks + code entities) and edges.
+ * Returns nodes (chunks) and edges.
  */
-export async function handleGraphData(storage: KuzuStorage, embedder: Embedder) {
-  const [chunks, codeEntities, edges] = await Promise.all([
+export async function handleGraphData(storage: IStorage, embedder: Embedder) {
+  const [chunks, edges] = await Promise.all([
     storage.listChunks({}, 500),
-    storage.listCodeEntities(),
     storage.getAllEdges(),
   ]);
 
@@ -25,15 +24,8 @@ export async function handleGraphData(storage: KuzuStorage, embedder: Embedder) 
     domain: c.domain,
     layer: c.layer,
     version: c.version,
-  }));
-
-  const codeNodes = codeEntities.map(e => ({
-    id: e.id,
-    label: e.name,
-    title: `${e.entity_type}: ${e.file_path}`,
-    type: 'code_entity',
-    entity_type: e.entity_type,
-    layer: e.layer,
+    confidence: c.confidence,
+    lifecycle: c.lifecycle,
   }));
 
   const visEdges = edges.map((e, i) => ({
@@ -45,7 +37,7 @@ export async function handleGraphData(storage: KuzuStorage, embedder: Embedder) 
   }));
 
   return {
-    nodes: [...chunkNodes, ...codeNodes],
+    nodes: chunkNodes,
     edges: visEdges,
   };
 }
@@ -53,7 +45,7 @@ export async function handleGraphData(storage: KuzuStorage, embedder: Embedder) 
 /**
  * Get aggregate stats for dashboard display.
  */
-export async function handleStats(storage: KuzuStorage, embedder: Embedder): Promise<StorageStats> {
+export async function handleStats(storage: IStorage, embedder: Embedder): Promise<StorageStats> {
   const stats = await storage.getStats();
   const cacheStats = embedder.getCacheStats();
 
@@ -79,25 +71,15 @@ export async function handleSearch(
 /**
  * Get detailed info for a single chunk (for node click detail panel).
  */
-export async function handleChunkDetail(storage: KuzuStorage, id: string) {
+export async function handleChunkDetail(storage: IStorage, id: string) {
   const chunk = await storage.getChunk(id);
   if (!chunk) return null;
 
-  const [codeLinks, relatedChunks] = await Promise.all([
-    storage.getCodeLinksForChunk(id),
-    storage.getRelatedChunks(id, 1),
-  ]);
+  const relatedChunks = await storage.getRelatedChunks(id, 1);
 
   return {
     ...chunk,
     embedding: undefined, // Don't send 1024-dim vector to browser
-    code_links: codeLinks.map(l => ({
-      name: l.entity.name,
-      type: l.entity.entity_type,
-      path: l.entity.file_path,
-      relation: l.relation,
-      description: l.description,
-    })),
     related_chunks: relatedChunks.map(r => ({
       id: r.id,
       summary: r.summary,

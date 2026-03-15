@@ -11,7 +11,7 @@
 set -euo pipefail
 
 KG_HOME="${KG_HOME:-$HOME/.knowledge-graph}"
-REPO_URL="https://github.com/user/knowledge-graph-mcp.git"
+REPO_URL="https://github.com/maxakak1998/flutter_tools.git"
 
 # Colors
 RED='\033[0;31m'
@@ -100,11 +100,6 @@ else
   fi
 fi
 
-# ── Create data directory ─────────────────────────────────────
-
-mkdir -p "$KG_HOME/data"
-info "Data directory: $KG_HOME/data/"
-
 # ── Check Ollama ──────────────────────────────────────────────
 
 if command -v ollama &>/dev/null; then
@@ -125,7 +120,11 @@ node "$KG_HOME/src/dist/cli.js" setup || warn "Auto-setup failed. Run 'knowledge
 echo ""
 echo -e "${GREEN}${BOLD}Installation complete!${NC}"
 echo ""
-echo "  Verify:    knowledge-graph doctor"
-echo "  Dashboard: knowledge-graph serve  (then open http://localhost:3333)"
-echo "  MCP:       Restart Claude Code to pick up the new server"
+echo "  Next steps:"
+echo "    1. cd into your project and run: kg init"
+echo "    2. Verify:    kg doctor"
+echo "    3. Restart Claude Code to pick up the MCP server"
+echo ""
+echo "  Each project gets its own .knowledge-graph/ directory (like .git/)."
+echo "  Multiple Claude sessions can connect to the same project simultaneously."
 echo ""

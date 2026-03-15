@@ -1,31 +1,34 @@
-import { KuzuStorage } from '../storage/kuzu.js';
-import { ListFilters, StoredChunk } from '../types.js';
-
-interface ListResult {
-  chunks: Array<{
-    id: string;
-    summary: string;
-    domain: string;
-    category: string;
-    importance: string;
-    layer: string | null;
-    source: string | null;
-    version: number;
-    updated_at: string;
-    tags: string[];
-  }>;
-  total: number;
-}
+import { IStorage } from '../storage/interface.js';
+import { ListFilters, ListResult, StoredChunk } from '../types.js';
+import { computeDecay } from '../engine/confidence.js';
 
 export async function handleList(
-  storage: KuzuStorage,
+  storage: IStorage,
   filters: ListFilters,
-  limit = 50
+  limit = 50,
+  decayRates?: Record<string, number>,
 ): Promise<ListResult> {
-  const chunks = await storage.listChunks(filters, limit);
+  // Extract min_confidence from filters — apply AFTER decay, not in storage query
+  const minConfidence = filters.min_confidence;
+  const storageFilters = { ...filters };
+  delete storageFilters.min_confidence;
+
+  const chunks = await storage.listChunks(storageFilters, limit);
+
+  // Compute effective confidence (with temporal decay) and filter
+  const enriched = chunks.map((c: StoredChunk) => {
+    const decayRate = decayRates?.[c.category] ?? decayRates?.['default'] ?? 0.95;
+    const effectiveConfidence = computeDecay(c.confidence, c.last_validated_at, decayRate);
+    return { chunk: c, effectiveConfidence: Math.round(effectiveConfidence * 1000) / 1000 };
+  });
+
+  // Apply min_confidence on EFFECTIVE (decayed) confidence, not raw
+  const filtered = minConfidence != null
+    ? enriched.filter(e => e.effectiveConfidence >= minConfidence)
+    : enriched;
 
   return {
-    chunks: chunks.map((c: StoredChunk) => ({
+    chunks: filtered.map(({ chunk: c, effectiveConfidence }) => ({
       id: c.id,
       summary: c.summary,
       domain: c.domain,
@@ -36,7 +39,13 @@ export async function handleList(
       version: c.version,
       updated_at: c.updated_at,
       tags: c.tags,
+      confidence: c.confidence,
+      effective_confidence: effectiveConfidence,
+      lifecycle: c.lifecycle,
+      validation_count: c.validation_count,
+      access_count: c.access_count,
+      last_validated_at: c.last_validated_at,
     })),
-    total: chunks.length,
+    total: filtered.length,
   };
 }

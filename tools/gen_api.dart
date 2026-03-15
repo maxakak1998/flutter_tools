@@ -83,6 +83,15 @@ String processListValueType(
         isResponseModel: isResponseModel,
       );
 
+      // Generate nested classes within the item class first (depth-first)
+      generateNestedClasses(
+        processedFields,
+        modelBuffer,
+        generatedClasses,
+        className,
+        isResponseModel: isResponseModel,
+      );
+
       // Generate the class for the map value
       modelBuffer.writeln(
         generateModel(

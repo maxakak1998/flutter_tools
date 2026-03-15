@@ -2,12 +2,16 @@ import { join } from 'path';
 import { homedir } from 'os';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { log } from './types.js';
+import type { StorageBackend } from './storage/interface.js';
 
 // ============================================================
 // Config schema
 // ============================================================
 
 export interface KnowledgeConfig {
+  storage: {
+    backend: StorageBackend;
+  };
   db: {
     path: string;
   };
@@ -15,24 +19,24 @@ export interface KnowledgeConfig {
     url: string;
     model: string;
   };
-  dashboard: {
-    enabled: boolean;
-    port: number;
-  };
   search: {
     similarityThreshold: number;
-    defaultLimit: number;
     autoLinkTopK: number;
-  };
-  limits: {
-    maxContentLength: number;
-    maxSummaryLength: number;
   };
   cache: {
     embeddingCacheSize: number;
   };
   dedup: {
     similarityThreshold: number;
+  };
+  learning: {
+    autoPromoteConfidence: number;
+    autoPromoteValidations: number;
+    confirmationBoost: number;
+    refutationPenalty: number;
+    confidenceSearchWeight: number;
+    hypothesisInitialConfidence: number;
+    decayRates: Record<string, number>;
   };
 }
 
@@ -48,6 +52,9 @@ export const CONFIG_PATH = join(CONFIG_DIR, 'knowledge.json');
 // ============================================================
 
 export const DEFAULT_CONFIG: KnowledgeConfig = {
+  storage: {
+    backend: 'kuzu' as StorageBackend,
+  },
   db: {
     path: join(CONFIG_DIR, 'data', 'knowledge'),
   },
@@ -55,24 +62,31 @@ export const DEFAULT_CONFIG: KnowledgeConfig = {
     url: 'http://localhost:11434',
     model: 'bge-m3',
   },
-  dashboard: {
-    enabled: true,
-    port: 3333,
-  },
   search: {
     similarityThreshold: 0.82,
-    defaultLimit: 10,
     autoLinkTopK: 5,
-  },
-  limits: {
-    maxContentLength: 5000,
-    maxSummaryLength: 200,
   },
   cache: {
     embeddingCacheSize: 10_000,
   },
   dedup: {
-    similarityThreshold: 0.95,
+    similarityThreshold: 0.88,
+  },
+  learning: {
+    autoPromoteConfidence: 0.85,
+    autoPromoteValidations: 3,
+    confirmationBoost: 0.25,
+    refutationPenalty: 0.15,
+    confidenceSearchWeight: 0.1,
+    hypothesisInitialConfidence: 0.3,
+    decayRates: {
+      default: 0.95,
+      fact: 1.0,
+      rule: 1.0,
+      insight: 0.95,
+      question: 0.90,
+      workflow: 0.98,
+    },
   },
 };
 
@@ -104,6 +118,9 @@ function mergeWithDefaults(
   overrides: DeepPartial<KnowledgeConfig>,
 ): KnowledgeConfig {
   return {
+    storage: {
+      backend: (overrides.storage?.backend ?? defaults.storage.backend) as StorageBackend,
+    },
     db: {
       path: expandTilde(overrides.db?.path ?? defaults.db.path),
     },
@@ -111,19 +128,10 @@ function mergeWithDefaults(
       url: overrides.ollama?.url ?? defaults.ollama.url,
       model: overrides.ollama?.model ?? defaults.ollama.model,
     },
-    dashboard: {
-      enabled: overrides.dashboard?.enabled ?? defaults.dashboard.enabled,
-      port: overrides.dashboard?.port ?? defaults.dashboard.port,
-    },
     search: {
       similarityThreshold:
         overrides.search?.similarityThreshold ?? defaults.search.similarityThreshold,
-      defaultLimit: overrides.search?.defaultLimit ?? defaults.search.defaultLimit,
       autoLinkTopK: overrides.search?.autoLinkTopK ?? defaults.search.autoLinkTopK,
-    },
-    limits: {
-      maxContentLength: overrides.limits?.maxContentLength ?? defaults.limits.maxContentLength,
-      maxSummaryLength: overrides.limits?.maxSummaryLength ?? defaults.limits.maxSummaryLength,
     },
     cache: {
       embeddingCacheSize:
@@ -132,6 +140,26 @@ function mergeWithDefaults(
     dedup: {
       similarityThreshold:
         overrides.dedup?.similarityThreshold ?? defaults.dedup.similarityThreshold,
+    },
+    learning: {
+      autoPromoteConfidence:
+        overrides.learning?.autoPromoteConfidence ?? defaults.learning.autoPromoteConfidence,
+      autoPromoteValidations:
+        overrides.learning?.autoPromoteValidations ?? defaults.learning.autoPromoteValidations,
+      confirmationBoost:
+        overrides.learning?.confirmationBoost ?? defaults.learning.confirmationBoost,
+      refutationPenalty:
+        overrides.learning?.refutationPenalty ?? defaults.learning.refutationPenalty,
+      confidenceSearchWeight:
+        overrides.learning?.confidenceSearchWeight ?? defaults.learning.confidenceSearchWeight,
+      hypothesisInitialConfidence:
+        overrides.learning?.hypothesisInitialConfidence ?? defaults.learning.hypothesisInitialConfidence,
+      decayRates: Object.fromEntries(
+        Object.entries({
+          ...defaults.learning.decayRates,
+          ...overrides.learning?.decayRates,
+        }).filter((entry): entry is [string, number] => entry[1] !== undefined),
+      ),
     },
   };
 }
@@ -168,6 +196,9 @@ export function saveDefaultConfig(): string {
 
   // Write with tilde paths for readability (expanded at load time)
   const readableConfig = {
+    storage: {
+      backend: DEFAULT_CONFIG.storage.backend,
+    },
     db: {
       path: '~/.knowledge-graph/data/knowledge',
     },
@@ -175,24 +206,24 @@ export function saveDefaultConfig(): string {
       url: DEFAULT_CONFIG.ollama.url,
       model: DEFAULT_CONFIG.ollama.model,
     },
-    dashboard: {
-      enabled: DEFAULT_CONFIG.dashboard.enabled,
-      port: DEFAULT_CONFIG.dashboard.port,
-    },
     search: {
       similarityThreshold: DEFAULT_CONFIG.search.similarityThreshold,
-      defaultLimit: DEFAULT_CONFIG.search.defaultLimit,
       autoLinkTopK: DEFAULT_CONFIG.search.autoLinkTopK,
-    },
-    limits: {
-      maxContentLength: DEFAULT_CONFIG.limits.maxContentLength,
-      maxSummaryLength: DEFAULT_CONFIG.limits.maxSummaryLength,
     },
     cache: {
       embeddingCacheSize: DEFAULT_CONFIG.cache.embeddingCacheSize,
     },
     dedup: {
       similarityThreshold: DEFAULT_CONFIG.dedup.similarityThreshold,
+    },
+    learning: {
+      autoPromoteConfidence: DEFAULT_CONFIG.learning.autoPromoteConfidence,
+      autoPromoteValidations: DEFAULT_CONFIG.learning.autoPromoteValidations,
+      confirmationBoost: DEFAULT_CONFIG.learning.confirmationBoost,
+      refutationPenalty: DEFAULT_CONFIG.learning.refutationPenalty,
+      confidenceSearchWeight: DEFAULT_CONFIG.learning.confidenceSearchWeight,
+      hypothesisInitialConfidence: DEFAULT_CONFIG.learning.hypothesisInitialConfidence,
+      decayRates: DEFAULT_CONFIG.learning.decayRates,
     },
   };
 
@@ -206,11 +237,10 @@ export function saveDefaultConfig(): string {
 // ============================================================
 
 export interface ConfigOverrides {
+  storageBackend?: StorageBackend;
   dbPath?: string;
   ollamaUrl?: string;
   ollamaModel?: string;
-  dashboardPort?: number;
-  noDashboard?: boolean;
 }
 
 export function applyOverrides(
@@ -218,6 +248,9 @@ export function applyOverrides(
   overrides: ConfigOverrides,
 ): KnowledgeConfig {
   return {
+    storage: {
+      backend: overrides.storageBackend ?? config.storage.backend,
+    },
     db: {
       path: overrides.dbPath ? expandTilde(overrides.dbPath) : config.db.path,
     },
@@ -225,13 +258,9 @@ export function applyOverrides(
       url: overrides.ollamaUrl ?? config.ollama.url,
       model: overrides.ollamaModel ?? config.ollama.model,
     },
-    dashboard: {
-      enabled: overrides.noDashboard ? false : config.dashboard.enabled,
-      port: overrides.dashboardPort ?? config.dashboard.port,
-    },
     search: config.search,
-    limits: config.limits,
     cache: config.cache,
     dedup: config.dedup,
+    learning: config.learning,
   };
 }

@@ -1,10 +1,10 @@
-import { KuzuStorage } from '../storage/kuzu.js';
-import { log } from '../types.js';
+import { IStorage } from '../storage/interface.js';
+import { DeleteResult, log } from '../types.js';
 
 export async function handleDelete(
-  storage: KuzuStorage,
+  storage: IStorage,
   id: string
-): Promise<{ deleted: boolean; id: string }> {
+): Promise<DeleteResult> {
   const chunk = await storage.getChunk(id);
   if (!chunk) {
     throw new Error(`Chunk not found: ${id}`);

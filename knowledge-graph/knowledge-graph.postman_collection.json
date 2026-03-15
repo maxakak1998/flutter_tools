@@ -1,0 +1,119 @@
+{
+	"info": {
+		"name": "Knowledge Graph API",
+		"description": "Dashboard HTTP API for the knowledge-graph MCP server. Base URL uses the daemon port from .knowledge-graph/daemon.port.",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"variable": [
+		{
+			"key": "baseUrl",
+			"value": "http://127.0.0.1:59023",
+			"type": "string"
+		}
+	],
+	"item": [
+		{
+			"name": "Health Check",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{baseUrl}}/api/health",
+					"host": ["{{baseUrl}}"],
+					"path": ["api", "health"]
+				},
+				"description": "Returns daemon status and SSE client count."
+			}
+		},
+		{
+			"name": "Get Stats",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{baseUrl}}/api/stats",
+					"host": ["{{baseUrl}}"],
+					"path": ["api", "stats"]
+				},
+				"description": "Aggregate stats: chunk/edge/code entity counts, breakdowns by domain/category/importance, embedding cache info."
+			}
+		},
+		{
+			"name": "Get Full Graph",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{baseUrl}}/api/graph",
+					"host": ["{{baseUrl}}"],
+					"path": ["api", "graph"]
+				},
+				"description": "Returns all nodes (chunks + code entities) and edges for vis-network rendering. Up to 500 chunks."
+			}
+		},
+		{
+			"name": "Search",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{baseUrl}}/api/search?q=betslip&limit=10",
+					"host": ["{{baseUrl}}"],
+					"path": ["api", "search"],
+					"query": [
+						{ "key": "q", "value": "betslip", "description": "Search query (required)" },
+						{ "key": "domain", "value": "", "description": "Filter by domain", "disabled": true },
+						{ "key": "category", "value": "", "description": "Filter by category", "disabled": true },
+						{ "key": "importance", "value": "", "description": "Filter by importance", "disabled": true },
+						{ "key": "limit", "value": "10", "description": "Max results" }
+					]
+				},
+				"description": "Hybrid search: vector + keyword + graph traversal with MMR reranking."
+			}
+		},
+		{
+			"name": "Get Chunk Detail",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{baseUrl}}/api/chunks/:chunkId",
+					"host": ["{{baseUrl}}"],
+					"path": ["api", "chunks", ":chunkId"],
+					"variable": [
+						{ "key": "chunkId", "value": "", "description": "UUID of the chunk" }
+					]
+				},
+				"description": "Full chunk detail including content, metadata, code links, and related chunks."
+			}
+		},
+		{
+			"name": "Get Recent Events",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{baseUrl}}/api/recent",
+					"host": ["{{baseUrl}}"],
+					"path": ["api", "recent"]
+				},
+				"description": "Returns recent pipeline events (store, query, evolve, etc.) from the event bus."
+			}
+		},
+		{
+			"name": "SSE Event Stream",
+			"request": {
+				"method": "GET",
+				"header": [
+					{ "key": "Accept", "value": "text/event-stream" }
+				],
+				"url": {
+					"raw": "{{baseUrl}}/api/events",
+					"host": ["{{baseUrl}}"],
+					"path": ["api", "events"]
+				},
+				"description": "Server-Sent Events stream for real-time pipeline visualization. Note: Postman shows raw SSE data."
+			}
+		}
+	]
+}

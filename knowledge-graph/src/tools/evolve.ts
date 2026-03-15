@@ -1,11 +1,30 @@
 import { randomUUID } from 'crypto';
-import { KuzuStorage } from '../storage/kuzu.js';
+import { IStorage } from '../storage/interface.js';
 import { Embedder } from '../engine/embedder.js';
 import { Linker } from '../engine/linker.js';
-import { ChunkMetadata, EvolveResult, StepEmitter, log } from '../types.js';
+import { ChunkCategory, ChunkLayer, ChunkMetadata, EvolveResult, StepEmitter, log } from '../types.js';
+
+/** Convert a string to kebab-case: lowercase, replace spaces/underscores with hyphens, collapse multiple hyphens. */
+function toKebabCase(s: string): string {
+  return s.toLowerCase().replace(/[\s_]+/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
+}
+
+/** Auto-infer layer from category when not explicitly provided. */
+function inferLayer(category: ChunkCategory): ChunkLayer {
+  switch (category) {
+    case 'fact':
+    case 'rule':
+      return 'core-knowledge';
+    case 'insight':
+    case 'question':
+      return 'learning';
+    case 'workflow':
+      return 'procedural';
+  }
+}
 
 export async function handleEvolve(
-  storage: KuzuStorage,
+  storage: IStorage,
   embedder: Embedder,
   linker: Linker,
   id: string,
@@ -36,15 +55,19 @@ export async function handleEvolve(
     entities: existing.entities,
     tags: [...existing.tags, 'archived'],
     version: existing.version,
+    confidence: existing.confidence,
+    validation_count: existing.validation_count,
+    refutation_count: existing.refutation_count,
+    last_validated_at: existing.last_validated_at,
+    lifecycle: existing.lifecycle,
+    access_count: existing.access_count,
   });
 
-  // Create SUPERSEDES edge: new → old
+  // Create SUPERSEDES edge: new -> old
   await storage.createRelation(
     id,
     archiveId,
     'SUPERSEDES',
-    'Chunk',
-    'Chunk',
     { reason }
   );
   onStep?.('archive_done', `Archived as ${archiveId}`, { archive_id: archiveId });
@@ -55,19 +78,40 @@ export async function handleEvolve(
   const newVersion = existing.version + 1;
   onStep?.('re_embed_done', 'New embedding generated');
 
-  // Update the chunk
+  // Resolve category (needed for layer inference)
+  const resolvedCategory = (newMetadata?.category ?? existing.category) as ChunkCategory;
+
+  // Normalize metadata — same rules as store.ts
+  const resolvedDomain = newMetadata?.domain !== undefined
+    ? toKebabCase(newMetadata.domain)
+    : existing.domain;
+  const resolvedKeywords = newMetadata?.keywords !== undefined
+    ? [...new Set(newMetadata.keywords.map(k => k.toLowerCase()))]
+    : existing.keywords;
+  const resolvedTags = newMetadata?.tags !== undefined
+    ? [...new Set(newMetadata.tags.map(t => toKebabCase(t)))]
+    : existing.tags;
+  const resolvedEntities = newMetadata?.entities !== undefined
+    ? [...new Set(newMetadata.entities)].filter(e => e.length >= 2)
+    : existing.entities;
+
+  // Re-infer layer when category changes and no explicit layer provided
+  const categoryChanged = newMetadata?.category !== undefined && newMetadata.category !== existing.category;
+  const resolvedLayer = newMetadata?.layer ?? (categoryChanged ? inferLayer(resolvedCategory) : existing.layer);
+
+  // Update the chunk — only content/metadata fields, NOT learning fields
   onStep?.('update', 'Updating chunk in KuzuDB');
   await storage.updateChunk(id, {
     content: newContent,
     summary: newMetadata?.summary ?? existing.summary,
     embedding: newEmbedding,
-    category: newMetadata?.category ?? existing.category,
-    domain: newMetadata?.domain ?? existing.domain,
+    category: resolvedCategory,
+    domain: resolvedDomain,
     importance: newMetadata?.importance ?? existing.importance,
-    layer: newMetadata?.layer ?? existing.layer,
-    keywords: newMetadata?.keywords ?? existing.keywords,
-    entities: newMetadata?.entities ?? existing.entities,
-    tags: newMetadata?.tags ?? existing.tags,
+    layer: resolvedLayer,
+    keywords: resolvedKeywords,
+    entities: resolvedEntities,
+    tags: resolvedTags,
     version: newVersion,
   });
   onStep?.('update_done', `Updated to v${newVersion}`);
@@ -83,5 +127,6 @@ export async function handleEvolve(
     version: newVersion,
     reason,
     superseded_id: archiveId,
+    note: 'Content evolved. If the meaning changed significantly, consider re-validating this chunk.',
   };
 }

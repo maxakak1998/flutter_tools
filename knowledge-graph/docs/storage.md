@@ -1,10 +1,23 @@
 # Layer 4: Storage
 
-**File**: `src/storage/kuzu.ts` (585 lines)
+**Files**: `src/storage/interface.ts`, `src/storage/kuzu.ts`, `src/storage/surreal.ts`
 
 ---
 
-## KuzuDB
+## Storage Abstraction
+
+All storage access goes through the `IStorage` interface (`storage/interface.ts`). The `createStorage(backend, dbPath)` factory dynamically imports the selected backend. Tool handlers and engine components are backend-agnostic.
+
+### Available Backends
+
+| Backend | Package | Connection | Default? |
+|---------|---------|------------|----------|
+| KuzuDB | `kuzu` | File-based embedded | **Yes** |
+| SurrealDB | `surrealdb` + `@surrealdb/node` | `surrealkv://` embedded | No (opt-in via `--storage surreal`) |
+
+---
+
+## KuzuDB (`storage/kuzu.ts`)
 
 Embedded graph database with vector extension. No external server needed — database files live in the configured `DB_PATH` directory.
 
@@ -12,111 +25,85 @@ Embedded graph database with vector extension. No external server needed — dat
 
 ## Schema
 
-### Chunk Node Table (15 columns)
+### Chunk Node Table (21 columns)
 
-| Column | Type | Description |
-|--------|------|-------------|
-| `id` | STRING (PK) | UUID |
-| `content` | STRING | Full knowledge text (max 5000 chars) |
-| `summary` | STRING | 1-sentence description (max 200 chars) |
-| `embedding` | DOUBLE[1024] | bge-m3 vector embedding |
-| `source` | STRING | Origin file path or identifier |
-| `category` | STRING | rule, pattern, example, reference, learning, workflow, concept |
-| `domain` | STRING | Topic area (e.g., "dependency-injection") |
-| `importance` | STRING | critical, high, medium, low |
-| `keywords` | STRING[] | Search terms |
-| `entities` | STRING[] | Named things (class names, tools) |
-| `tags` | STRING[] | Free-form tags |
-| `created_at` | STRING | ISO 8601 timestamp |
-| `updated_at` | STRING | ISO 8601 timestamp |
-| `version` | INT64 | Version counter (starts at 1) |
+15 columns in CREATE TABLE + 6 via ALTER TABLE migrations.
 
-### CodeEntity Node Table (11 columns)
+| Column | Type | Description | Source |
+|--------|------|-------------|--------|
+| `id` | STRING (PK) | UUID | CREATE |
+| `content` | STRING | Full knowledge text (Zod hard limit 5000 chars; per-category size warnings in `store.ts`) | CREATE |
+| `summary` | STRING | 1-sentence description (max 200 chars) | CREATE |
+| `embedding` | DOUBLE[1024] | bge-m3 vector embedding | CREATE |
+| `source` | STRING | Origin file path or identifier | CREATE |
+| `category` | STRING | fact, rule, insight, question, workflow | CREATE |
+| `domain` | STRING | Topic area (e.g., "dependency-injection") | CREATE |
+| `importance` | STRING | critical, high, medium, low | CREATE |
+| `layer` | STRING | core-knowledge, learning, procedural, or custom (DEFAULT 'core-knowledge') | CREATE |
+| `keywords` | STRING[] | Search terms | CREATE |
+| `entities` | STRING[] | Named things (class names, tools) | CREATE |
+| `tags` | STRING[] | Free-form tags | CREATE |
+| `created_at` | STRING | ISO 8601 timestamp | CREATE |
+| `updated_at` | STRING | ISO 8601 timestamp | CREATE |
+| `version` | INT64 | Version counter (starts at 1) | CREATE |
+| `confidence` | DOUBLE | Trust score 0.0–1.0 (DEFAULT 0.5) | ALTER |
+| `validation_count` | INT64 | Times confirmed (DEFAULT 0) | ALTER |
+| `refutation_count` | INT64 | Times refuted (DEFAULT 0) | ALTER |
+| `last_validated_at` | STRING | ISO timestamp of last validation (DEFAULT '') | ALTER |
+| `lifecycle` | STRING | hypothesis, validated, promoted, canonical, refuted, active (DEFAULT 'active') | ALTER |
+| `access_count` | INT64 | Times retrieved via query (DEFAULT 0) | ALTER |
 
-| Column | Type | Description |
-|--------|------|-------------|
-| `id` | STRING (PK) | `code-{uuid8}` |
-| `name` | STRING | Entity name (class, function, file) |
-| `entity_type` | STRING | E.g., "class", "method", "interface" |
-| `file_path` | STRING | Absolute or relative file path |
-| `line_start` | INT64 | Starting line number (0 if unknown) |
-| `line_end` | INT64 | Ending line number (0 if unknown) |
-| `signature` | STRING | Type signature (empty if unknown) |
-| `layer` | STRING | presentation, domain, data, core, test |
-| `feature` | STRING | Feature name |
-| `embedding` | DOUBLE[1024] | Embedding of `name + entity_type + file_path` |
-| `updated_at` | STRING | ISO 8601 timestamp |
+### Content Size Warning Targets
 
-### 13 Relationship Tables
+The `store` handler emits warnings when content exceeds category-specific size targets. These are advisory only -- the Zod hard limit of 5000 chars (in `client.ts`) is the enforced maximum.
 
-**Chunk → Chunk (4 types)**
+| Category | Warning Target |
+|----------|---------------|
+| `fact` | 500 chars |
+| `rule` | 800 chars |
+| `insight` | 600 chars |
+| `question` | 400 chars |
+| `workflow` | 800 chars |
 
-| Table | Properties | Semantics |
-|-------|-----------|-----------|
-| `RELATES_TO` | none | General semantic relationship |
-| `DEPENDS_ON` | none | Source requires target |
-| `CONTRADICTS` | none | Source conflicts with target |
-| `SUPERSEDES` | `reason: STRING` | Source is newer version of target |
-
-**Chunk → CodeEntity (3 types)**
+### 15 Relationship Tables (Chunk → Chunk)
 
 | Table | Properties | Semantics |
 |-------|-----------|-----------|
-| `IMPLEMENTED_BY` | `description: STRING` | Knowledge implemented in this code |
-| `TESTED_BY` | `description: STRING` | Knowledge tested by this code |
-| `DEMONSTRATED_IN` | `description: STRING` | Knowledge demonstrated in this code |
-
-**CodeEntity → CodeEntity (6 types)**
-
-| Table | Properties | Semantics |
-|-------|-----------|-----------|
-| `DEFINED_IN` | none | Entity defined in another entity (e.g., method in class) |
-| `IMPORTS` | none | Entity imports another |
-| `TESTS` | none | Entity tests another |
-| `CODE_DEPENDS_ON` | `via: STRING` | Code dependency (via DI, import, etc.) |
-| `IMPLEMENTS` | none | Entity implements an interface |
-| `INJECTS` | `registration: STRING` | DI injection relationship |
+| `RELATES_TO` | `auto_created STRING` | General semantic relationship |
+| `DEPENDS_ON` | `auto_created STRING` (via migration) | Source requires target |
+| `CONTRADICTS` | `auto_created STRING` (via migration) | Source conflicts with target |
+| `SUPERSEDES` | `reason STRING` | Source is newer version of target |
+| `TRIGGERS` | `description STRING, auto_created STRING` | Source triggers target |
+| `REQUIRES` | `description STRING, auto_created STRING` | Source requires target |
+| `PRODUCES` | `description STRING, auto_created STRING` | Source produces target |
+| `IS_PART_OF` | `description STRING, auto_created STRING` | Source is part of target |
+| `CONSTRAINS` | `description STRING, auto_created STRING` | Source constrains target |
+| `PRECEDES` | `description STRING, auto_created STRING` | Source precedes target |
+| `IS_TRUE` | `description STRING, auto_created STRING` | Source confirms target |
+| `IS_FALSE` | `description STRING, auto_created STRING` | Source contradicts target |
+| `TRANSITIONS_TO` | `description STRING, auto_created STRING` | Source transitions to target |
+| `MUTATES` | `description STRING, auto_created STRING` | Source mutates target |
+| `GOVERNED_BY` | `description STRING, auto_created STRING` | Source is governed by target |
 
 ---
 
 ## Graph Schema Diagram
 
 ```
-                    ┌──────────────────────────────┐
-                    │                              │
-          RELATES_TO│   DEPENDS_ON   CONTRADICTS   │SUPERSEDES
-          ◄────────►│   ◄────────►   ◄────────►   │(reason)
-                    │                              │
-                 ┌──┴──┐                        ┌──┴──┐
-                 │Chunk│──────────────────────── │Chunk│
-                 └──┬──┘                        └─────┘
-                    │
-     ┌──────────────┼──────────────┐
-     │              │              │
- IMPLEMENTED_BY  TESTED_BY  DEMONSTRATED_IN
- (description)  (description)  (description)
-     │              │              │
-     ▼              ▼              ▼
-┌────────────┐ ┌────────────┐ ┌────────────┐
-│ CodeEntity │ │ CodeEntity │ │ CodeEntity │
-└─────┬──────┘ └────────────┘ └────────────┘
-      │
-      │  DEFINED_IN    IMPORTS      TESTS
-      │  IMPLEMENTS    INJECTS      CODE_DEPENDS_ON
-      │  (registration)  (via)
-      ▼
-┌────────────┐
-│ CodeEntity │
-└────────────┘
+                    ┌──────────────────────────────────────────────┐
+                    │                                              │
+          RELATES_TO│   DEPENDS_ON   CONTRADICTS   SUPERSEDES     │
+        (auto_created)  TRIGGERS     REQUIRES      (reason)       │
+                    │   PRODUCES     IS_PART_OF    CONSTRAINS     │
+                    │   PRECEDES     IS_TRUE       IS_FALSE       │
+                    │   TRANSITIONS_TO  MUTATES    GOVERNED_BY    │
+                    │                                              │
+                 ┌──┴──┐                                    ┌──┴──┐
+                 │Chunk│────────────────────────────────────│Chunk│
+                 └─────┘                                    └─────┘
 ```
 
-### Impact Analysis Examples
-
-**"What code implements this knowledge?"**
-```cypher
-MATCH (c:Chunk {id: $id})-[:IMPLEMENTED_BY]->(e:CodeEntity)
-RETURN e.name, e.file_path, e.line_start
-```
+### Query Examples
 
 **"What knowledge relates to this chunk?"**
 ```cypher
@@ -124,11 +111,7 @@ MATCH (c:Chunk {id: $id})-[:RELATES_TO|DEPENDS_ON*1..2]-(related:Chunk)
 RETURN DISTINCT related.id, related.summary, related.domain
 ```
 
-**"What other code depends on this entity?"**
-```cypher
-MATCH (e:CodeEntity {id: $id})<-[:CODE_DEPENDS_ON]-(dep:CodeEntity)
-RETURN dep.name, dep.file_path, dep.layer
-```
+Note: Simplified example — the actual `getRelatedChunks()` implementation traverses all 15 relation types (see full query at line 147).
 
 ---
 
@@ -144,17 +127,18 @@ HNSW (Hierarchical Navigable Small World) index on the Chunk embedding column. C
 
 KuzuDB does not allow `SET` on vector-indexed columns. When a chunk's embedding changes (e.g., during evolve):
 
-1. Read the full chunk
-2. `DETACH DELETE` the old node (removes all relationships)
+1. Save all existing relationships via `saveChunkRelations()`
+2. `DETACH DELETE` the old node
 3. `CREATE` a new node with merged data
+4. Restore all saved relationships via `restoreChunkRelations()`
 
-This means **relationships are lost** when embedding changes. The `evolve` handler compensates by running `relinkChunk()` after update.
+All relationships (both auto-created and manual) are preserved across this cycle. The `evolve` handler then runs `relinkChunk()` to refresh auto-created links with the new embedding.
 
 ---
 
 ## CRUD Operations
 
-**createChunk**: Parameterized `CREATE` with `cast($embedding, 'DOUBLE[1024]')` for the vector column.
+**createChunk**: Accepts `Omit<StoredChunk, 'created_at' | 'updated_at'>` — timestamps are auto-generated. Parameterized `CREATE` with `cast($embedding, 'DOUBLE[1024]')` for the vector column.
 
 **getChunk**: `MATCH (c:Chunk) WHERE c.id = $id RETURN c.*`
 
@@ -162,7 +146,7 @@ This means **relationships are lost** when embedding changes. The `evolve` handl
 
 **deleteChunk**: `MATCH (c:Chunk) WHERE c.id = $id DETACH DELETE c` — removes node and all relationships.
 
-**listChunks**: Dynamic WHERE clause built from filters. Parameterized query with LIMIT.
+**listChunks**: Dynamic WHERE clause built from filters. Parameterized query with LIMIT. Note: although `listChunks()` supports `min_confidence` in its WHERE clause (filtering on raw confidence), the `list` tool handler (`list.ts`) strips `min_confidence` from filters before calling storage, then applies it post-query against effective (decayed) confidence instead.
 
 **vectorSearchUnfiltered**: Used for semantic deduplication. Raw vector search with no metadata filters — returns top-K nearest chunks by cosine distance.
 
@@ -170,26 +154,26 @@ This means **relationships are lost** when embedding changes. The `evolve` handl
 
 ## Search Operations
 
-**vectorSearch**: `CALL QUERY_VECTOR_INDEX(...)` with post-filtering by domain/category/importance/tags. Returns chunks sorted by cosine distance.
+**vectorSearch**: `CALL QUERY_VECTOR_INDEX(...)` with post-filtering by domain/category/importance/layer/tags/min_confidence/lifecycle/since. Returns chunks sorted by cosine distance. Note: The embedding column is not selected in vectorSearch results (for performance). Returned chunks have an empty embedding array (`flatRowToChunk` defaults to `[]`).
 
-**getRelatedChunks**: Variable-length path traversal across all 4 Chunk→Chunk relationship types. Configurable depth (default 2).
+**getRelatedChunks**: Variable-length path traversal across all 15 Chunk→Chunk relationship types. Configurable depth (function signature default 2, but the retriever always calls with depth 1).
 
 ```cypher
-MATCH (c:Chunk {id: $id})-[r:RELATES_TO|DEPENDS_ON|CONTRADICTS|SUPERSEDES*1..N]-(related:Chunk)
+MATCH (c:Chunk {id: $id})-[r:RELATES_TO|DEPENDS_ON|CONTRADICTS|SUPERSEDES|TRIGGERS|REQUIRES|PRODUCES|IS_PART_OF|CONSTRAINS|PRECEDES|IS_TRUE|IS_FALSE|TRANSITIONS_TO|MUTATES|GOVERNED_BY*1..N]-(related:Chunk)
 RETURN DISTINCT related.*
 ```
 
-**getCodeLinksForChunk**: Iterates over 3 Chunk→CodeEntity relationship types (IMPLEMENTED_BY, TESTED_BY, DEMONSTRATED_IN). Returns entity data with relation description.
+**findChunksByDomain**: `WHERE c.domain = $domain`. Exact match only. Used by the linker for suggested relation matching.
 
-**findChunksByDomain**: `WHERE c.domain = $domain`.
+Note: Hierarchical domain matching (`domain STARTS WITH $domainPrefix`) is available in `listChunks()` and `vectorSearch()` post-filters, but NOT in `findChunksByDomain()`.
 
-**findChunksByKeyword**: `WHERE c.content CONTAINS $keyword OR c.summary CONTAINS $keyword` (case-sensitive on stored lowercase keyword).
+**findChunksByKeyword**: Lowercases the search keyword, then runs `WHERE c.content CONTAINS $keyword OR c.summary CONTAINS $keyword`. Note: KuzuDB `CONTAINS` is case-sensitive, and content/summary are stored as-is (not lowered). The lowercased query will only match lowercase occurrences in stored text — mixed-case content (e.g., "GetIt") will NOT match a lowercased query (e.g., "getit").
 
 ---
 
 ## Semantic Deduplication
 
-Before every store operation, the embedding is computed and a `vectorSearchUnfiltered(embedding, 1)` is run. If the nearest existing chunk has cosine similarity >= the configured threshold (default 0.95), the store returns the existing chunk ID along with `duplicate_of`, `similarity`, and `existing_summary` fields. This catches reformatted, paraphrased, or slightly edited content that SHA256 hashing would miss.
+Before every store operation, the embedding is computed and a `vectorSearchUnfiltered(embedding, 1)` is run. If the nearest existing chunk has cosine similarity >= the configured threshold (default 0.88), the store returns the existing chunk ID along with `duplicate_of`, `similarity`, and `existing_summary` fields. This catches reformatted, paraphrased, or slightly edited content that SHA256 hashing would miss.
 
 ---
 
@@ -210,9 +194,7 @@ The `run()` helper catches "already exists" errors silently. This makes `initial
 
 ## Relation Table Mappings
 
-Three maps in `src/types.ts` convert relation strings to KuzuDB table names:
-
-**RELATION_TABLE_MAP** (Chunk → Chunk):
+`RELATION_TABLE_MAP` in `src/types.ts` converts relation strings to KuzuDB table names (15 Chunk → Chunk relations):
 
 | Key | Table |
 |-----|-------|
@@ -220,25 +202,17 @@ Three maps in `src/types.ts` convert relation strings to KuzuDB table names:
 | `depends_on` | `DEPENDS_ON` |
 | `contradicts` | `CONTRADICTS` |
 | `supersedes` | `SUPERSEDES` |
-
-**CODE_RELATION_TABLE_MAP** (Chunk → CodeEntity):
-
-| Key | Table |
-|-----|-------|
-| `implemented_by` | `IMPLEMENTED_BY` |
-| `tested_by` | `TESTED_BY` |
-| `demonstrated_in` | `DEMONSTRATED_IN` |
-
-**CODE_CODE_RELATION_TABLE_MAP** (CodeEntity → CodeEntity):
-
-| Key | Table |
-|-----|-------|
-| `defined_in` | `DEFINED_IN` |
-| `imports` | `IMPORTS` |
-| `tests` | `TESTS` |
-| `code_depends_on` | `CODE_DEPENDS_ON` |
-| `implements` | `IMPLEMENTS` |
-| `injects` | `INJECTS` |
+| `triggers` | `TRIGGERS` |
+| `requires` | `REQUIRES` |
+| `produces` | `PRODUCES` |
+| `is_part_of` | `IS_PART_OF` |
+| `constrains` | `CONSTRAINS` |
+| `precedes` | `PRECEDES` |
+| `is_true` | `IS_TRUE` |
+| `is_false` | `IS_FALSE` |
+| `transitions_to` | `TRANSITIONS_TO` |
+| `mutates` | `MUTATES` |
+| `governed_by` | `GOVERNED_BY` |
 
 ---
 
@@ -248,17 +222,15 @@ Three maps in `src/types.ts` convert relation strings to KuzuDB table names:
 
 | Interface | Purpose |
 |-----------|---------|
-| `StoredChunk` | Full chunk as stored in KuzuDB (14 fields including embedding and version) |
-| `StoredCodeEntity` | Code entity in KuzuDB (11 fields including embedding) |
+| `StoredChunk` | Full chunk as stored in the database (fields including embedding, version, learning fields) |
 
 ### Enums (Type Aliases)
 
 | Type | Values |
 |------|--------|
-| `ChunkCategory` | rule, pattern, example, reference, learning, workflow, concept |
+| `ChunkCategory` | fact, rule, insight, question, workflow |
 | `Importance` | critical, high, medium, low |
-| `KnowledgeRelation` | relates_to, depends_on, contradicts, supersedes |
-| `CodeRelation` | implemented_by, tested_by, demonstrated_in, depends_on, implements, injects |
+| `KnowledgeRelation` | 15 relation types (see RELATION_TABLE_MAP above) |
 
 ### Constants
 
@@ -280,9 +252,56 @@ Uses `console.error` because `console.log` writes to stdout and would corrupt th
 
 ---
 
-## Error Handling
+## Error Handling (KuzuDB)
 
 - "Already exists" errors: silently ignored (idempotent schema creation)
 - Connection not initialized: throws immediately
 - Prepare failure: throws with KuzuDB error message
 - Vector index creation: wrapped in try-catch (may already exist)
+
+---
+
+## SurrealDB (`storage/surreal.ts`)
+
+Embedded graph+document database using `@surrealdb/node` native bindings. No external server needed — uses `surrealkv://` protocol for file-based storage.
+
+### Connection
+
+```typescript
+const db = new Surreal({ engines: createNodeEngines() });
+await db.connect(`surrealkv://${dbPath}`);
+await db.use({ namespace: 'knowledge', database: 'graph' });
+```
+
+### Schema
+
+SCHEMAFULL `chunk` table with all 24 fields. Array fields use typed sub-fields (e.g., `keywords.*` TYPE string). Embedding field is `array<float>` with HNSW vector index (1024 dims, COSINE distance).
+
+### Key Differences from KuzuDB
+
+| Aspect | KuzuDB | SurrealDB |
+|--------|--------|-----------|
+| `updateChunk` with embedding | Delete + recreate workaround | Direct `UPDATE` — no workaround needed |
+| Record IDs | Plain strings | `RecordId` objects — `extractId()` strips table prefix |
+| Relation tables | UPPERCASE (e.g., `RELATES_TO`) | lowercase (e.g., `relates_to`) |
+| `REQUIRES` table | `REQUIRES` | `requires_rel` (reserved word) |
+| Vector search | `CALL QUERY_VECTOR_INDEX(...)` | `embedding <\|K, COSINE\|> $vec` KNN operator |
+| Graph traversal | Variable-length Cypher path | Per-table outgoing+incoming queries with FETCH |
+| Row mapping | `rowToChunk` + `flatRowToChunk` (prefixed columns) | Single `rowToChunk` (flat objects) |
+
+### Relation Table Mapping
+
+`SURREAL_REL_TABLE` maps UPPERCASE relation types to SurrealDB table names:
+
+| Relation Type | SurrealDB Table |
+|---------------|-----------------|
+| `RELATES_TO` | `relates_to` |
+| `DEPENDS_ON` | `depends_on` |
+| `REQUIRES` | `requires_rel` |
+| ... (12 more) | lowercase equivalent |
+
+### Error Handling (SurrealDB)
+
+- Schema uses `DEFINE ... IF NOT EXISTS` for idempotent creation
+- `deleteAutoRelations` wrapped in try-catch (table may be empty)
+- Empty query results return `[]` (never null)

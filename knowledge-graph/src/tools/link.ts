@@ -1,8 +1,8 @@
-import { KuzuStorage } from '../storage/kuzu.js';
+import { IStorage } from '../storage/interface.js';
 import { LinkResult, RELATION_TABLE_MAP, log } from '../types.js';
 
 export async function handleLink(
-  storage: KuzuStorage,
+  storage: IStorage,
   sourceId: string,
   targetId: string,
   relation: string
@@ -21,7 +21,7 @@ export async function handleLink(
   const target = await storage.getChunk(targetId);
   if (!target) throw new Error(`Target chunk not found: ${targetId}`);
 
-  await storage.createRelation(sourceId, targetId, relTable, 'Chunk', 'Chunk');
+  await storage.createRelation(sourceId, targetId, relTable);
 
   log('Linked', sourceId, '-[', relation, ']->', targetId);
   return {

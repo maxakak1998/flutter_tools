@@ -11,19 +11,24 @@ export interface ChunkMetadata {
   suggested_relations?: SuggestedRelation[];
   tags?: string[];
   source?: string;
-  code_refs?: CodeRef[];
 }
 
-export type ChunkLayer = 'business-domain' | 'code-knowledge' | string;
+export type ChunkLayer = 'core-knowledge' | 'learning' | 'procedural' | string;
 
 export type ChunkCategory =
+  | 'fact'
   | 'rule'
-  | 'pattern'
-  | 'example'
-  | 'reference'
-  | 'learning'
-  | 'workflow'
-  | 'concept';
+  | 'insight'
+  | 'question'
+  | 'workflow';
+
+export type ChunkLifecycle =
+  | 'hypothesis'
+  | 'validated'
+  | 'promoted'
+  | 'canonical'
+  | 'refuted'
+  | 'active';
 
 export type Importance = 'critical' | 'high' | 'medium' | 'low';
 
@@ -37,53 +42,16 @@ export type KnowledgeRelation =
   | 'produces'
   | 'is_part_of'
   | 'constrains'
-  | 'precedes';
-
-export type CodeRelation =
-  | 'implemented_by'
-  | 'tested_by'
-  | 'demonstrated_in'
-  | 'depends_on'
-  | 'implements'
-  | 'injects';
-
-export type EntityType =
-  | 'class'
-  | 'method'
-  | 'function'
-  | 'interface'
-  | 'file'
-  | 'mixin'
-  | 'enum'
-  | 'widget'
-  | 'cubit'
-  | 'repository'
-  | 'use-case'
-  | 'test-file'
-  | 'factory'
-  | 'extension'
-  | 'constant'
-  | 'type-alias'
-  | 'screen'
-  | 'route'
-  | 'inject-module';
+  | 'precedes'
+  | 'is_true'
+  | 'is_false'
+  | 'transitions_to'
+  | 'mutates'
+  | 'governed_by';
 
 export interface SuggestedRelation {
   concept: string;
-  relation: 'relates_to' | 'depends_on' | 'contradicts' | 'triggers' | 'requires' | 'produces' | 'is_part_of' | 'constrains' | 'precedes';
-}
-
-export interface CodeRef {
-  name: string;
-  entity_type: EntityType;
-  file_path: string;
-  line_start?: number;
-  layer?: 'presentation' | 'domain' | 'data' | 'core' | 'test';
-  feature?: string;
-  signature?: string;
-  relation: CodeRelation;
-  via?: string;
-  description?: string;
+  relation: 'relates_to' | 'depends_on' | 'contradicts' | 'triggers' | 'requires' | 'produces' | 'is_part_of' | 'constrains' | 'precedes' | 'is_true' | 'is_false' | 'transitions_to' | 'mutates' | 'governed_by';
 }
 
 // === Stored types (what lives in KuzuDB) ===
@@ -104,20 +72,12 @@ export interface StoredChunk {
   created_at: string;
   updated_at: string;
   version: number;
-}
-
-export interface StoredCodeEntity {
-  id: string;
-  name: string;
-  entity_type: string;
-  file_path: string;
-  line_start: number | null;
-  line_end: number | null;
-  signature: string | null;
-  layer: string | null;
-  feature: string | null;
-  embedding: number[];
-  updated_at: string;
+  confidence: number;
+  validation_count: number;
+  refutation_count: number;
+  last_validated_at: string;
+  lifecycle: string;
+  access_count: number;
 }
 
 // === Tool result types ===
@@ -134,17 +94,12 @@ export interface QueryChunk {
     version: number;
     created_at: string;
     updated_at: string;
+    confidence: number;
+    lifecycle: string;
+    validation_count: number;
+    access_count: number;
   };
   score: number;
-  code_links: CodeLink[];
-}
-
-export interface CodeLink {
-  name: string;
-  type: string;
-  path: string;
-  relation: string;
-  description?: string;
 }
 
 export interface StoreResult {
@@ -154,6 +109,16 @@ export interface StoreResult {
   duplicate_of?: string;
   similarity?: number;
   existing_summary?: string;
+  existing_content?: string;
+  action_hint?: string;
+  related_knowledge?: Array<{
+    id: string;
+    summary: string;
+    confidence: number;
+    lifecycle: string;
+    similarity: number;
+    relation_hint: 'similar' | 'loosely_related';
+  }>;
 }
 
 export interface AutoLink {
@@ -173,7 +138,56 @@ export interface EvolveResult {
   id: string;
   version: number;
   reason: string;
-  superseded_id: string | null;
+  superseded_id: string;
+  note: string;
+}
+
+export interface ValidateResult {
+  id: string;
+  action: 'confirmed' | 'refuted';
+  confidence: number;
+  validation_count: number;
+  refutation_count: number;
+  lifecycle: string;
+  auto_promoted: boolean;
+  promotion_details?: { reason: string };
+}
+
+export interface DeleteResult {
+  deleted: boolean;
+  id: string;
+}
+
+export interface ListResult {
+  chunks: Array<{
+    id: string;
+    summary: string;
+    domain: string;
+    category: string;
+    importance: string;
+    layer: string | null;
+    source: string | null;
+    version: number;
+    updated_at: string;
+    tags: string[];
+    confidence: number;
+    effective_confidence: number;
+    lifecycle: string;
+    validation_count: number;
+    access_count: number;
+    last_validated_at: string;
+  }>;
+  total: number;
+}
+
+export interface PromoteResult {
+  id: string;
+  previous_category: string;
+  new_category: string;
+  previous_lifecycle: string;
+  new_lifecycle: string;
+  confidence: number;
+  reason: string;
 }
 
 // === Filter types ===
@@ -183,7 +197,10 @@ export interface QueryFilters {
   category?: string;
   importance?: string;
   tags?: string[];
-  limit?: number;
+  layer?: string;
+  min_confidence?: number;
+  lifecycle?: string;
+  since?: string;
 }
 
 export interface ListFilters {
@@ -192,6 +209,10 @@ export interface ListFilters {
   importance?: string;
   tags?: string[];
   source?: string;
+  layer?: string;
+  min_confidence?: number;
+  lifecycle?: string;
+  since?: string;
 }
 
 // === Constants ===
@@ -212,21 +233,11 @@ export const RELATION_TABLE_MAP: Record<string, string> = {
   is_part_of: 'IS_PART_OF',
   constrains: 'CONSTRAINS',
   precedes: 'PRECEDES',
-};
-
-export const CODE_RELATION_TABLE_MAP: Record<string, string> = {
-  implemented_by: 'IMPLEMENTED_BY',
-  tested_by: 'TESTED_BY',
-  demonstrated_in: 'DEMONSTRATED_IN',
-};
-
-export const CODE_CODE_RELATION_TABLE_MAP: Record<string, string> = {
-  defined_in: 'DEFINED_IN',
-  imports: 'IMPORTS',
-  tests: 'TESTS',
-  code_depends_on: 'CODE_DEPENDS_ON',
-  implements: 'IMPLEMENTS',
-  injects: 'INJECTS',
+  is_true: 'IS_TRUE',
+  is_false: 'IS_FALSE',
+  transitions_to: 'TRANSITIONS_TO',
+  mutates: 'MUTATES',
+  governed_by: 'GOVERNED_BY',
 };
 
 // === Dashboard types ===
@@ -236,7 +247,9 @@ export interface DashboardEvent {
   id: string;           // UUID for the REQUEST (all steps of one request share this)
   timestamp: string;    // ISO 8601
   tool: string;         // 'store' | 'query' | 'evolve' | 'link' | ...
-  step: string;         // 'start' | 'embedding' | 'vector_search' | 'keyword_boost' | 'graph_expand' | 'score_merge' | 'mmr_rerank' | 'complete' | 'error'
+  step: string;         // store: embedding, embedding_done, dedup_check, dedup_hit, stored, auto_link, auto_link_done
+                        // query: embedding, embedding_done, vector_search, keyword_extract, graph_expand, graph_expand_done, score_merge, mmr_rerank
+                        // evolve: fetch, archive, archive_done, re_embed, re_embed_done, update, update_done, re_link, re_link_done
   summary: string;      // Human-readable for this step
   data?: unknown;       // Step-specific payload for animation
   duration_ms?: number; // Time for this step (or total on 'complete')
@@ -255,7 +268,6 @@ export interface GraphEdge {
 /** Aggregate stats for the dashboard. */
 export interface StorageStats {
   total_chunks: number;
-  total_code_entities: number;
   total_edges: number;
   by_domain: Record<string, number>;
   by_category: Record<string, number>;

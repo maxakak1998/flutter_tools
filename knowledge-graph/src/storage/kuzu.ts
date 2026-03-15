@@ -1,17 +1,17 @@
 import { Database, Connection } from 'kuzu';
 import { mkdirSync } from 'fs';
 import { dirname } from 'path';
-import { StoredChunk, StoredCodeEntity, GraphEdge, QueryFilters, ListFilters, EMBEDDING_DIMENSIONS, RELATION_TABLE_MAP, log } from '../types.js';
+import { StoredChunk, GraphEdge, QueryFilters, ListFilters, EMBEDDING_DIMENSIONS, log } from '../types.js';
+import { IStorage } from './interface.js';
 
 interface SavedRelation {
   relType: string;
   direction: 'outgoing' | 'incoming';
   otherId: string;
-  otherTable: string;
   props?: Record<string, string>;
 }
 
-export class KuzuStorage {
+export class KuzuStorage implements IStorage {
   private db: Database | null = null;
   private conn: Connection | null = null;
   private dbPath: string;
@@ -81,7 +81,7 @@ export class KuzuStorage {
         category STRING,
         domain STRING,
         importance STRING,
-        layer STRING DEFAULT 'code-knowledge',
+        layer STRING DEFAULT 'core-knowledge',
         keywords STRING[],
         entities STRING[],
         tags STRING[],
@@ -93,24 +93,15 @@ export class KuzuStorage {
     `);
 
     // Migration: add layer column to existing Chunk tables that lack it
-    await this.run("ALTER TABLE Chunk ADD layer STRING DEFAULT 'code-knowledge'");
+    await this.run("ALTER TABLE Chunk ADD layer STRING DEFAULT 'core-knowledge'");
 
-    await this.run(`
-      CREATE NODE TABLE CodeEntity (
-        id STRING,
-        name STRING,
-        entity_type STRING,
-        file_path STRING,
-        line_start INT64,
-        line_end INT64,
-        signature STRING,
-        layer STRING,
-        feature STRING,
-        embedding DOUBLE[${EMBEDDING_DIMENSIONS}],
-        updated_at STRING,
-        PRIMARY KEY (id)
-      )
-    `);
+    // Migration: add new fields for confidence/lifecycle tracking
+    await this.run("ALTER TABLE Chunk ADD confidence DOUBLE DEFAULT 0.5");
+    await this.run("ALTER TABLE Chunk ADD validation_count INT64 DEFAULT 0");
+    await this.run("ALTER TABLE Chunk ADD refutation_count INT64 DEFAULT 0");
+    await this.run("ALTER TABLE Chunk ADD last_validated_at STRING DEFAULT ''");
+    await this.run("ALTER TABLE Chunk ADD lifecycle STRING DEFAULT 'active'");
+    await this.run("ALTER TABLE Chunk ADD access_count INT64 DEFAULT 0");
 
     // Chunk → Chunk relationships
     await this.run('CREATE REL TABLE RELATES_TO (FROM Chunk TO Chunk, auto_created STRING)');
@@ -129,18 +120,17 @@ export class KuzuStorage {
     await this.run('CREATE REL TABLE CONSTRAINS (FROM Chunk TO Chunk, description STRING, auto_created STRING)');
     await this.run('CREATE REL TABLE PRECEDES (FROM Chunk TO Chunk, description STRING, auto_created STRING)');
 
-    // Chunk → CodeEntity relationships
-    await this.run('CREATE REL TABLE IMPLEMENTED_BY (FROM Chunk TO CodeEntity, description STRING)');
-    await this.run('CREATE REL TABLE TESTED_BY (FROM Chunk TO CodeEntity, description STRING)');
-    await this.run('CREATE REL TABLE DEMONSTRATED_IN (FROM Chunk TO CodeEntity, description STRING)');
+    // ECA edge types
+    await this.run('CREATE REL TABLE IS_TRUE (FROM Chunk TO Chunk, description STRING, auto_created STRING)');
+    await this.run('CREATE REL TABLE IS_FALSE (FROM Chunk TO Chunk, description STRING, auto_created STRING)');
+    await this.run('CREATE REL TABLE TRANSITIONS_TO (FROM Chunk TO Chunk, description STRING, auto_created STRING)');
+    await this.run('CREATE REL TABLE MUTATES (FROM Chunk TO Chunk, description STRING, auto_created STRING)');
+    await this.run('CREATE REL TABLE GOVERNED_BY (FROM Chunk TO Chunk, description STRING, auto_created STRING)');
 
-    // CodeEntity → CodeEntity relationships
-    await this.run('CREATE REL TABLE DEFINED_IN (FROM CodeEntity TO CodeEntity)');
-    await this.run('CREATE REL TABLE IMPORTS (FROM CodeEntity TO CodeEntity)');
-    await this.run('CREATE REL TABLE TESTS (FROM CodeEntity TO CodeEntity)');
-    await this.run('CREATE REL TABLE CODE_DEPENDS_ON (FROM CodeEntity TO CodeEntity, via STRING)');
-    await this.run('CREATE REL TABLE IMPLEMENTS (FROM CodeEntity TO CodeEntity)');
-    await this.run('CREATE REL TABLE INJECTS (FROM CodeEntity TO CodeEntity, registration STRING)');
+    // Migration: add auto_created to DEPENDS_ON and CONTRADICTS for consistency
+    await this.run("ALTER TABLE DEPENDS_ON ADD auto_created STRING DEFAULT 'false'");
+    await this.run("ALTER TABLE CONTRADICTS ADD auto_created STRING DEFAULT 'false'");
+
   }
 
   private async createIndices(): Promise<void> {
@@ -173,7 +163,13 @@ export class KuzuStorage {
         tags: $tags,
         created_at: $created_at,
         updated_at: $updated_at,
-        version: $version
+        version: $version,
+        confidence: $confidence,
+        validation_count: $validation_count,
+        refutation_count: $refutation_count,
+        last_validated_at: $last_validated_at,
+        lifecycle: $lifecycle,
+        access_count: $access_count
       })`,
       {
         id: chunk.id,
@@ -184,13 +180,19 @@ export class KuzuStorage {
         category: chunk.category,
         domain: chunk.domain,
         importance: chunk.importance,
-        layer: chunk.layer ?? 'code-knowledge',
+        layer: chunk.layer ?? 'core-knowledge',
         keywords: chunk.keywords,
         entities: chunk.entities,
         tags: chunk.tags,
         created_at: now,
         updated_at: now,
         version: chunk.version,
+        confidence: chunk.confidence ?? 0.5,
+        validation_count: chunk.validation_count ?? 0,
+        refutation_count: chunk.refutation_count ?? 0,
+        last_validated_at: chunk.last_validated_at ?? '',
+        lifecycle: chunk.lifecycle ?? 'active',
+        access_count: chunk.access_count ?? 0,
       },
     );
     return chunk.id;
@@ -242,6 +244,12 @@ export class KuzuStorage {
         entities: merged.entities,
         tags: merged.tags,
         version: merged.version,
+        confidence: merged.confidence,
+        validation_count: merged.validation_count,
+        refutation_count: merged.refutation_count,
+        last_validated_at: merged.last_validated_at,
+        lifecycle: merged.lifecycle,
+        access_count: merged.access_count,
       });
 
       // Restore saved relationships
@@ -298,6 +306,30 @@ export class KuzuStorage {
         setClauses.push('c.version = $version');
         params.version = updates.version;
       }
+      if (updates.confidence !== undefined) {
+        setClauses.push('c.confidence = $confidence');
+        params.confidence = updates.confidence;
+      }
+      if (updates.validation_count !== undefined) {
+        setClauses.push('c.validation_count = $validation_count');
+        params.validation_count = updates.validation_count;
+      }
+      if (updates.refutation_count !== undefined) {
+        setClauses.push('c.refutation_count = $refutation_count');
+        params.refutation_count = updates.refutation_count;
+      }
+      if (updates.last_validated_at !== undefined) {
+        setClauses.push('c.last_validated_at = $last_validated_at');
+        params.last_validated_at = updates.last_validated_at;
+      }
+      if (updates.lifecycle !== undefined) {
+        setClauses.push('c.lifecycle = $lifecycle');
+        params.lifecycle = updates.lifecycle;
+      }
+      if (updates.access_count !== undefined) {
+        setClauses.push('c.access_count = $access_count');
+        params.access_count = updates.access_count;
+      }
       await this.queryParams(
         `MATCH (c:Chunk) WHERE c.id = $id SET ${setClauses.join(', ')}`,
         params,
@@ -317,8 +349,9 @@ export class KuzuStorage {
     const params: Record<string, unknown> = { limit };
 
     if (filters.domain) {
-      conditions.push('c.domain = $domain');
+      conditions.push('(c.domain = $domain OR c.domain STARTS WITH $domainPrefix)');
       params.domain = filters.domain;
+      params.domainPrefix = filters.domain + '.';
     }
     if (filters.category) {
       conditions.push('c.category = $category');
@@ -328,61 +361,40 @@ export class KuzuStorage {
       conditions.push('c.importance = $importance');
       params.importance = filters.importance;
     }
+    if (filters.layer) {
+      conditions.push('c.layer = $layer');
+      params.layer = filters.layer;
+    }
     if (filters.source) {
       conditions.push('c.source = $source');
       params.source = filters.source;
     }
+    if (filters.min_confidence !== undefined) {
+      conditions.push('c.confidence >= $min_confidence');
+      params.min_confidence = filters.min_confidence;
+    }
+    if (filters.lifecycle) {
+      conditions.push('c.lifecycle = $lifecycle');
+      params.lifecycle = filters.lifecycle;
+    }
+    if (filters.since) {
+      conditions.push('c.updated_at >= $since');
+      params.since = filters.since;
+    }
 
     const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-    const rows = await this.queryParams(
+    let rows = await this.queryParams(
       `MATCH (c:Chunk) ${where} RETURN c.* LIMIT $limit`,
       params,
     );
+
+    // Post-filter by tags (KuzuDB lacks parameterized array-contains in WHERE)
+    if (filters.tags && filters.tags.length > 0) {
+      const filterTags = filters.tags;
+      const chunks = rows.map((r) => this.rowToChunk(r));
+      return chunks.filter((c) => filterTags.some((t) => c.tags.includes(t)));
+    }
     return rows.map((r) => this.rowToChunk(r));
-  }
-
-  // === CodeEntity CRUD ===
-
-  async createCodeEntity(entity: Omit<StoredCodeEntity, 'updated_at'>): Promise<string> {
-    const now = new Date().toISOString();
-    await this.queryParams(
-      `CREATE (e:CodeEntity {
-        id: $id,
-        name: $name,
-        entity_type: $entity_type,
-        file_path: $file_path,
-        line_start: $line_start,
-        line_end: $line_end,
-        signature: $signature,
-        layer: $layer,
-        feature: $feature,
-        embedding: cast($embedding, 'DOUBLE[${EMBEDDING_DIMENSIONS}]'),
-        updated_at: $updated_at
-      })`,
-      {
-        id: entity.id,
-        name: entity.name,
-        entity_type: entity.entity_type,
-        file_path: entity.file_path,
-        line_start: entity.line_start ?? 0,
-        line_end: entity.line_end ?? 0,
-        signature: entity.signature ?? '',
-        layer: entity.layer ?? '',
-        feature: entity.feature ?? '',
-        embedding: entity.embedding,
-        updated_at: now,
-      },
-    );
-    return entity.id;
-  }
-
-  async getCodeEntity(id: string): Promise<StoredCodeEntity | null> {
-    const rows = await this.queryParams(
-      'MATCH (e:CodeEntity) WHERE e.id = $id RETURN e.*',
-      { id },
-    );
-    if (rows.length === 0) return null;
-    return this.rowToCodeEntity(rows[0]);
   }
 
   // === Relationships ===
@@ -391,8 +403,6 @@ export class KuzuStorage {
     fromId: string,
     toId: string,
     relType: string,
-    fromTable: string,
-    toTable: string,
     props?: Record<string, string>,
   ): Promise<void> {
     const entries = props ? Object.entries(props) : [];
@@ -401,14 +411,14 @@ export class KuzuStorage {
       : '';
 
     await this.queryParams(
-      `MATCH (a:${fromTable}), (b:${toTable})
+      `MATCH (a:Chunk), (b:Chunk)
        WHERE a.id = $fromId AND b.id = $toId
        CREATE (a)-[:${relType}${propsClause}]->(b)`,
       { fromId, toId },
     );
   }
 
-  async deleteRelationsForNode(nodeId: string, table: string): Promise<void> {
+  private async deleteRelationsForNode(nodeId: string, table: string): Promise<void> {
     // Delete all outgoing and incoming relationships
     await this.queryParams(
       `MATCH (n:${table})-[r]->() WHERE n.id = $id DELETE r`,
@@ -454,8 +464,8 @@ export class KuzuStorage {
     // Chunk → Chunk (outgoing)
     const chunkRelTypes = [
       { type: 'RELATES_TO', propCols: ['r.auto_created AS auto_created'] },
-      { type: 'DEPENDS_ON', propCols: [] },
-      { type: 'CONTRADICTS', propCols: [] },
+      { type: 'DEPENDS_ON', propCols: ['r.auto_created AS auto_created'] },
+      { type: 'CONTRADICTS', propCols: ['r.auto_created AS auto_created'] },
       { type: 'SUPERSEDES', propCols: ['r.reason AS reason'] },
       { type: 'TRIGGERS', propCols: ['r.description AS description', 'r.auto_created AS auto_created'] },
       { type: 'REQUIRES', propCols: ['r.description AS description', 'r.auto_created AS auto_created'] },
@@ -463,6 +473,11 @@ export class KuzuStorage {
       { type: 'IS_PART_OF', propCols: ['r.description AS description', 'r.auto_created AS auto_created'] },
       { type: 'CONSTRAINS', propCols: ['r.description AS description', 'r.auto_created AS auto_created'] },
       { type: 'PRECEDES', propCols: ['r.description AS description', 'r.auto_created AS auto_created'] },
+      { type: 'IS_TRUE', propCols: ['r.description AS description', 'r.auto_created AS auto_created'] },
+      { type: 'IS_FALSE', propCols: ['r.description AS description', 'r.auto_created AS auto_created'] },
+      { type: 'TRANSITIONS_TO', propCols: ['r.description AS description', 'r.auto_created AS auto_created'] },
+      { type: 'MUTATES', propCols: ['r.description AS description', 'r.auto_created AS auto_created'] },
+      { type: 'GOVERNED_BY', propCols: ['r.description AS description', 'r.auto_created AS auto_created'] },
     ];
 
     for (const { type, propCols } of chunkRelTypes) {
@@ -487,7 +502,6 @@ export class KuzuStorage {
             relType: type,
             direction: 'outgoing',
             otherId: row['target_id'] as string,
-            otherTable: 'Chunk',
             props: Object.keys(props).length > 0 ? props : undefined,
           });
         }
@@ -519,34 +533,6 @@ export class KuzuStorage {
             relType: type,
             direction: 'incoming',
             otherId: row['source_id'] as string,
-            otherTable: 'Chunk',
-            props: Object.keys(props).length > 0 ? props : undefined,
-          });
-        }
-      } catch {
-        // Relation type may not exist yet
-      }
-    }
-
-    // Chunk → CodeEntity (outgoing only)
-    const codeRelTypes = ['IMPLEMENTED_BY', 'TESTED_BY', 'DEMONSTRATED_IN'];
-    for (const type of codeRelTypes) {
-      try {
-        const rows = await this.queryParams(
-          `MATCH (c:Chunk)-[r:${type}]->(e:CodeEntity) WHERE c.id = $id
-           RETURN e.id AS target_id, r.description AS description`,
-          { id: chunkId },
-        );
-        for (const row of rows) {
-          const props: Record<string, string> = {};
-          if (row['description']) {
-            props['description'] = row['description'] as string;
-          }
-          saved.push({
-            relType: type,
-            direction: 'outgoing',
-            otherId: row['target_id'] as string,
-            otherTable: 'CodeEntity',
             props: Object.keys(props).length > 0 ? props : undefined,
           });
         }
@@ -563,9 +549,9 @@ export class KuzuStorage {
     for (const rel of relations) {
       try {
         if (rel.direction === 'outgoing') {
-          await this.createRelation(chunkId, rel.otherId, rel.relType, 'Chunk', rel.otherTable, rel.props);
+          await this.createRelation(chunkId, rel.otherId, rel.relType, rel.props);
         } else {
-          await this.createRelation(rel.otherId, chunkId, rel.relType, rel.otherTable, 'Chunk', rel.props);
+          await this.createRelation(rel.otherId, chunkId, rel.relType, rel.props);
         }
       } catch (e) {
         log('Restore relation failed:', rel.relType, rel.direction, rel.otherId, ':', e);
@@ -591,6 +577,9 @@ export class KuzuStorage {
               node.keywords AS keywords,
               node.entities AS entities, node.tags AS tags, node.created_at AS created_at,
               node.updated_at AS updated_at, node.version AS version,
+              node.confidence AS confidence, node.validation_count AS validation_count,
+              node.refutation_count AS refutation_count, node.last_validated_at AS last_validated_at,
+              node.lifecycle AS lifecycle, node.access_count AS access_count,
               distance`,
       { emb: embedding, k },
     );
@@ -602,7 +591,7 @@ export class KuzuStorage {
 
     // Apply post-filters
     if (filters?.domain) {
-      results = results.filter((r) => r.chunk.domain === filters.domain);
+      results = results.filter((r) => r.chunk.domain === filters.domain || r.chunk.domain.startsWith(filters.domain + '.'));
     }
     if (filters?.category) {
       results = results.filter((r) => r.chunk.category === filters.category);
@@ -610,15 +599,23 @@ export class KuzuStorage {
     if (filters?.importance) {
       results = results.filter((r) => r.chunk.importance === filters.importance);
     }
+    if (filters?.layer) {
+      results = results.filter((r) => r.chunk.layer === filters.layer);
+    }
     if (filters?.tags && filters.tags.length > 0) {
       results = results.filter((r) =>
         filters.tags!.some((t) => r.chunk.tags.includes(t)),
       );
     }
-    if (filters?.limit) {
-      results = results.slice(0, filters.limit);
+    if (filters?.min_confidence !== undefined) {
+      results = results.filter((r) => r.chunk.confidence >= filters.min_confidence!);
     }
-
+    if (filters?.lifecycle) {
+      results = results.filter((r) => r.chunk.lifecycle === filters.lifecycle);
+    }
+    if (filters?.since) {
+      results = results.filter((r) => r.chunk.updated_at >= filters.since!);
+    }
     return results;
   }
 
@@ -635,6 +632,9 @@ export class KuzuStorage {
               node.keywords AS keywords,
               node.entities AS entities, node.tags AS tags, node.created_at AS created_at,
               node.updated_at AS updated_at, node.version AS version,
+              node.confidence AS confidence, node.validation_count AS validation_count,
+              node.refutation_count AS refutation_count, node.last_validated_at AS last_validated_at,
+              node.lifecycle AS lifecycle, node.access_count AS access_count,
               distance`,
       { emb: embedding, k },
     );
@@ -647,36 +647,11 @@ export class KuzuStorage {
 
   async getRelatedChunks(chunkId: string, depth = 2): Promise<StoredChunk[]> {
     const rows = await this.queryParams(
-      `MATCH (c:Chunk {id: $id})-[r:RELATES_TO|DEPENDS_ON|CONTRADICTS|SUPERSEDES|TRIGGERS|REQUIRES|PRODUCES|IS_PART_OF|CONSTRAINS|PRECEDES*1..${depth}]-(related:Chunk)
+      `MATCH (c:Chunk {id: $id})-[r:RELATES_TO|DEPENDS_ON|CONTRADICTS|SUPERSEDES|TRIGGERS|REQUIRES|PRODUCES|IS_PART_OF|CONSTRAINS|PRECEDES|IS_TRUE|IS_FALSE|TRANSITIONS_TO|MUTATES|GOVERNED_BY*1..${depth}]-(related:Chunk)
        RETURN DISTINCT related.*`,
       { id: chunkId },
     );
     return rows.map((r) => this.rowToChunk(r));
-  }
-
-  async getCodeLinksForChunk(
-    chunkId: string,
-  ): Promise<Array<{ entity: StoredCodeEntity; relation: string; description: string | null }>> {
-    const relTypes = ['IMPLEMENTED_BY', 'TESTED_BY', 'DEMONSTRATED_IN'];
-    const results: Array<{ entity: StoredCodeEntity; relation: string; description: string | null }> = [];
-
-    for (const relType of relTypes) {
-      const rows = await this.queryParams(
-        `MATCH (c:Chunk)-[r:${relType}]->(e:CodeEntity)
-         WHERE c.id = $id
-         RETURN e.*, r.description AS rel_description`,
-        { id: chunkId },
-      );
-      for (const row of rows) {
-        results.push({
-          entity: this.rowToCodeEntity(row),
-          relation: relType.toLowerCase(),
-          description: (row['rel_description'] as string) || null,
-        });
-      }
-    }
-
-    return results;
   }
 
   async findChunksByDomain(domain: string): Promise<StoredChunk[]> {
@@ -706,8 +681,8 @@ export class KuzuStorage {
     // Chunk → Chunk relationships
     const chunkRelTypes = [
       { type: 'RELATES_TO', hasAutoProp: true },
-      { type: 'DEPENDS_ON', hasAutoProp: false },
-      { type: 'CONTRADICTS', hasAutoProp: false },
+      { type: 'DEPENDS_ON', hasAutoProp: true },
+      { type: 'CONTRADICTS', hasAutoProp: true },
       { type: 'SUPERSEDES', hasAutoProp: false },
       { type: 'TRIGGERS', hasAutoProp: true },
       { type: 'REQUIRES', hasAutoProp: true },
@@ -715,6 +690,11 @@ export class KuzuStorage {
       { type: 'IS_PART_OF', hasAutoProp: true },
       { type: 'CONSTRAINS', hasAutoProp: true },
       { type: 'PRECEDES', hasAutoProp: true },
+      { type: 'IS_TRUE', hasAutoProp: true },
+      { type: 'IS_FALSE', hasAutoProp: true },
+      { type: 'TRANSITIONS_TO', hasAutoProp: true },
+      { type: 'MUTATES', hasAutoProp: true },
+      { type: 'GOVERNED_BY', hasAutoProp: true },
     ];
 
     for (const { type, hasAutoProp } of chunkRelTypes) {
@@ -740,42 +720,18 @@ export class KuzuStorage {
       }
     }
 
-    // Chunk → CodeEntity relationships
-    const codeRelTypes = ['IMPLEMENTED_BY', 'TESTED_BY', 'DEMONSTRATED_IN'];
-    for (const type of codeRelTypes) {
-      try {
-        const rows = await this.query(
-          `MATCH (a:Chunk)-[r:${type}]->(b:CodeEntity) RETURN a.id AS from_id, b.id AS to_id`
-        );
-        for (const row of rows) {
-          edges.push({
-            from: row['from_id'] as string,
-            to: row['to_id'] as string,
-            relation: type.toLowerCase(),
-            from_table: 'Chunk',
-            to_table: 'CodeEntity',
-          });
-        }
-      } catch {
-        // Table may not have edges yet
-      }
-    }
-
     return edges;
   }
 
-  async getStats(): Promise<{ total_chunks: number; total_code_entities: number; total_edges: number; by_domain: Record<string, number>; by_category: Record<string, number>; by_importance: Record<string, number> }> {
+  async getStats(): Promise<{ total_chunks: number; total_edges: number; by_domain: Record<string, number>; by_category: Record<string, number>; by_importance: Record<string, number> }> {
     const [chunkCount] = await this.query('MATCH (c:Chunk) RETURN count(c) AS cnt');
-    const [codeCount] = await this.query('MATCH (e:CodeEntity) RETURN count(e) AS cnt');
 
-    // Count all edges across all relationship types
+    // Count all edges across all Chunk→Chunk relationship types
     let totalEdges = 0;
-    const relTypes = ['RELATES_TO', 'DEPENDS_ON', 'CONTRADICTS', 'SUPERSEDES', 'TRIGGERS', 'REQUIRES', 'PRODUCES', 'IS_PART_OF', 'CONSTRAINS', 'PRECEDES', 'IMPLEMENTED_BY', 'TESTED_BY', 'DEMONSTRATED_IN'];
+    const relTypes = ['RELATES_TO', 'DEPENDS_ON', 'CONTRADICTS', 'SUPERSEDES', 'TRIGGERS', 'REQUIRES', 'PRODUCES', 'IS_PART_OF', 'CONSTRAINS', 'PRECEDES', 'IS_TRUE', 'IS_FALSE', 'TRANSITIONS_TO', 'MUTATES', 'GOVERNED_BY'];
     for (const type of relTypes) {
       try {
-        const fromTable = ['IMPLEMENTED_BY', 'TESTED_BY', 'DEMONSTRATED_IN'].includes(type) ? 'Chunk' : 'Chunk';
-        const toTable = ['IMPLEMENTED_BY', 'TESTED_BY', 'DEMONSTRATED_IN'].includes(type) ? 'CodeEntity' : 'Chunk';
-        const [row] = await this.query(`MATCH (a:${fromTable})-[r:${type}]->(b:${toTable}) RETURN count(r) AS cnt`);
+        const [row] = await this.query(`MATCH (a:Chunk)-[r:${type}]->(b:Chunk) RETURN count(r) AS cnt`);
         totalEdges += Number(row?.['cnt'] ?? 0);
       } catch {
         // Table may be empty
@@ -798,17 +754,11 @@ export class KuzuStorage {
 
     return {
       total_chunks: Number(chunkCount?.['cnt'] ?? 0),
-      total_code_entities: Number(codeCount?.['cnt'] ?? 0),
       total_edges: totalEdges,
       by_domain: toRecord(domainRows, 'domain'),
       by_category: toRecord(categoryRows, 'category'),
       by_importance: toRecord(importanceRows, 'importance'),
     };
-  }
-
-  async listCodeEntities(): Promise<StoredCodeEntity[]> {
-    const rows = await this.query('MATCH (e:CodeEntity) RETURN e.*');
-    return rows.map((r) => this.rowToCodeEntity(r));
   }
 
   // === Utility ===
@@ -845,6 +795,12 @@ export class KuzuStorage {
       created_at: (row['c.created_at'] ?? row['related.created_at'] ?? '') as string,
       updated_at: (row['c.updated_at'] ?? row['related.updated_at'] ?? '') as string,
       version: Number(row['c.version'] ?? row['related.version'] ?? 0),
+      confidence: Number(row['c.confidence'] ?? row['related.confidence'] ?? 0.5),
+      validation_count: Number(row['c.validation_count'] ?? row['related.validation_count'] ?? 0),
+      refutation_count: Number(row['c.refutation_count'] ?? row['related.refutation_count'] ?? 0),
+      last_validated_at: (row['c.last_validated_at'] ?? row['related.last_validated_at'] ?? '') as string,
+      lifecycle: (row['c.lifecycle'] ?? row['related.lifecycle'] ?? 'active') as string,
+      access_count: Number(row['c.access_count'] ?? row['related.access_count'] ?? 0),
     };
   }
 
@@ -866,23 +822,23 @@ export class KuzuStorage {
       created_at: (row['created_at'] ?? '') as string,
       updated_at: (row['updated_at'] ?? '') as string,
       version: Number(row['version'] ?? 0),
+      confidence: Number(row['confidence'] ?? 0.5),
+      validation_count: Number(row['validation_count'] ?? 0),
+      refutation_count: Number(row['refutation_count'] ?? 0),
+      last_validated_at: (row['last_validated_at'] ?? '') as string,
+      lifecycle: (row['lifecycle'] ?? 'active') as string,
+      access_count: Number(row['access_count'] ?? 0),
     };
   }
 
-  /** Map a row from `RETURN e.*` to StoredCodeEntity */
-  private rowToCodeEntity(row: Record<string, unknown>): StoredCodeEntity {
-    return {
-      id: (row['e.id'] ?? '') as string,
-      name: (row['e.name'] ?? '') as string,
-      entity_type: (row['e.entity_type'] ?? '') as string,
-      file_path: (row['e.file_path'] ?? '') as string,
-      line_start: row['e.line_start'] != null ? Number(row['e.line_start']) : null,
-      line_end: row['e.line_end'] != null ? Number(row['e.line_end']) : null,
-      signature: (row['e.signature'] as string) || null,
-      layer: (row['e.layer'] as string) || null,
-      feature: (row['e.feature'] as string) || null,
-      embedding: (row['e.embedding'] ?? []) as number[],
-      updated_at: (row['e.updated_at'] ?? '') as string,
-    };
+  // === Access tracking ===
+
+  async incrementAccessCount(ids: string[]): Promise<void> {
+    for (const id of ids) {
+      await this.queryParams(
+        'MATCH (c:Chunk) WHERE c.id = $id SET c.access_count = c.access_count + 1',
+        { id },
+      );
+    }
   }
 }

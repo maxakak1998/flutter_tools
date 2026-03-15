@@ -16,12 +16,13 @@ High-level overview of the system. Each layer has its own deep-dive document.
 **Layer deep-dives**:
 - [Layer 1: MCP Server](mcp-server.md) — CLI, transport, tool registration, startup, shutdown
 - [Layer 2: Tool Handlers](tool-handlers.md) — Each tool handler's flow and behavior
-- [Layer 3: Knowledge Engine](engine.md) — Embedder, Retriever (search pipeline), Linker
-- [Layer 4: Storage](storage.md) — KuzuDB, schema, CRUD, vector index, graph schema
+- [Layer 3: Knowledge Engine](engine.md) — Embedder, Retriever (search pipeline), Linker, Confidence
+- [Layer 4: Storage](storage.md) — IStorage abstraction, KuzuDB + SurrealDB backends, schema, CRUD, vector index
 
 **Other references**:
 - [Metadata Schema](metadata.md) — Metadata standards for knowledge operations
 - [MCP Tool Reference](tools.md) — Tool parameter specs and examples
+- [Claude Interaction Guide](claude-interaction.md) — Full interaction flows between Claude Code and the MCP server
 
 ---
 
@@ -50,7 +51,7 @@ Claude decides:
 
 The server handles:
 - Embedding via Ollama
-- Graph storage and indexing via KuzuDB
+- Graph storage and indexing via KuzuDB or SurrealDB
 - Hybrid search (vector + keyword + graph)
 - Auto-linking by vector similarity
 - Version management and archival
@@ -61,27 +62,28 @@ The server handles:
 
 ```
 ┌─────────────────────────────────────────────────┐
-│          CLI (src/cli.ts) + Config (src/config.ts) │
-│  Arg parsing · knowledge.json · config resolution  │
+│   Entry Point: CLI (src/cli.ts) + Config (src/config.ts) │
+│   Arg parsing · knowledge.json · config resolution       │
 ├─────────────────────────────────────────────────┤
-│         Layer 1: MCP Server (src/index.ts)        │
-│  StdioServerTransport ↔ JSON-RPC ↔ 8 tools       │
+│         Layer 1: MCP Server (daemon + client)       │
+│  client.ts (stdio MCP) ↔ daemon.ts (HTTP JSON-RPC) │
 │  zod validation · startup lifecycle · shutdown     │
 ├─────────────────────────────────────────────────┤
 │         Layer 2: Tool Handlers (src/tools/)        │
-│  store · query · evolve · link · link-code         │
-│  list · delete · ingest                            │
+│  store · query · evolve · link · validate · promote │
+│  list · delete                                     │
 │  Orchestrate engine + storage for each tool call   │
 ├─────────────────────────────────────────────────┤
 │         Layer 3: Knowledge Engine (src/engine/)    │
 │  Embedder: Ollama + LRU SHA256 cache               │
-│  Retriever: hybrid search pipeline (7 steps + MMR) │
+│  Retriever: hybrid search pipeline                  │
 │  Linker: auto-link by similarity + suggestions     │
+│  Confidence: confirmation/refutation + decay        │
 ├─────────────────────────────────────────────────┤
-│         Layer 4: Storage (src/storage/kuzu.ts)     │
-│  KuzuDB: embedded graph + vector database          │
-│  HNSW index (cosine) · Cypher queries              │
-│  2 node tables · 13 relationship tables            │
+│         Layer 4: Storage (src/storage/)             │
+│  IStorage interface + backend factory               │
+│  KuzuDB (default) or SurrealDB (opt-in)            │
+│  HNSW index (cosine) · 1 node table · 15 relations │
 └─────────────────────────────────────────────────┘
 ```
 
@@ -94,7 +96,7 @@ Dependencies flow **downward only**. Each layer depends on the layer(s) below it
 ```
 Layer 1 (MCP Server)
   ├── creates → Layer 3 (Embedder, Retriever, Linker)
-  ├── creates → Layer 4 (KuzuStorage)
+  ├── creates → Layer 4 (IStorage via createStorage factory)
   └── registers tool handlers that call → Layer 2
 
 Layer 2 (Tool Handlers)
@@ -105,7 +107,7 @@ Layer 3 (Knowledge Engine)
   └── calls → Layer 4 (Storage for vector search, graph traversal, relations)
 
 Layer 4 (Storage)
-  └── owns → KuzuDB (no upward dependencies)
+  └── owns → KuzuDB or SurrealDB (no upward dependencies)
 ```
 
 **What each layer owns**:
@@ -115,7 +117,7 @@ Layer 4 (Storage)
 | 1 — MCP Server | Transport, tool registration, startup/shutdown, config injection | Business logic, data access |
 | 2 — Tool Handlers | Orchestration logic per tool, input validation, result formatting | Embedding, search algorithms, DB queries |
 | 3 — Engine | Embedding, search pipeline, auto-linking, keyword scoring | Raw DB operations, schema management |
-| 4 — Storage | KuzuDB schema, CRUD, vector index, Cypher queries | Business logic, tool semantics |
+| 4 — Storage | IStorage abstraction, backend-specific schema/CRUD/vector index | Business logic, tool semantics |
 
 ---
 
@@ -127,17 +129,16 @@ Layer 4 (Storage)
 Claude calls knowledge_store(content, metadata)
   │
   ├─ 1. embedder.embed(content) → DOUBLE[1024]
-  ├─ 2. vectorSearchUnfiltered(embedding, 1) → similarity ≥ 0.95? return existing ID + duplicate_of
-  ├─ 3. storage.createChunk(UUID, content, embedding, metadata)
-  ├─ 4. For each code_ref:
-  │     ├─ embedder.embed("name type path")
-  │     ├─ storage.createCodeEntity()
-  │     └─ storage.createRelation(chunk → code, IMPLEMENTED_BY|TESTED_BY|DEMONSTRATED_IN)
-  ├─ 5. linker.autoLink(chunkId, embedding, suggested_relations)
-  │     ├─ vectorSearch(embedding, 6) → filter ≥ 0.82 similarity → RELATES_TO edges
+  ├─ 2. vectorSearchUnfiltered(embedding, 1) → similarity ≥ 0.88? return existing ID + duplicate_of
+  ├─ 3. vectorSearchUnfiltered(embedding, 5) → proactive surfacing (validated/canonical/promoted, sim 0.60–0.88)
+  ├─ 4. Normalize metadata, infer layer, set learning defaults
+  ├─ 5. storage.createChunk(UUID, content, embedding, metadata)
+  ├─ 6. linker.autoLink(chunkId, embedding, suggested_relations)
+  │     ├─ vectorSearch(embedding, autoLinkTopK + 1) → filter ≥ 0.82 similarity → RELATES_TO edges
+  │     │   (default: autoLinkTopK=5, so 6 candidates to exclude self-match)
   │     └─ For each suggested_relation:
   │           findBestMatch(concept) → domain/keyword/embedding → create edge
-  └─ 6. Return { id, auto_links[], warnings[] }
+  └─ 7. Return { id, auto_links[], warnings[], related_knowledge[]? }
 ```
 
 ### Query Flow
@@ -147,16 +148,16 @@ Claude calls knowledge_query(query, filters?)
   │
   ├─ 1. embedder.embed(query) → DOUBLE[1024]
   │     └─ On failure: keyword-only fallback
-  ├─ 2. storage.vectorSearch(embedding, limit*2, filters) → vector hits
+  ├─ 2. storage.vectorSearch(embedding, 50, filters) → vector hits
   ├─ 3. extractTerms(query) → lowercase, filter >2 chars, dedupe
   ├─ 4. Graph expansion: top 3 hits → getRelatedChunks(id, depth=1)
   ├─ 5. Merge all candidates with weighted scoring:
-  │     ├─ Vector: (1 - distance) × 0.6
+  │     ├─ Vector: (1 - distance) × 0.55
   │     ├─ Keyword: computeKeywordScore() × 0.2
-  │     └─ Graph: 0.2 (in vector results) or 0.15 (graph-only)
-  ├─ 6. MMR rerank (λ=0.7) → top N
-  ├─ 7. Enrich each with getCodeLinksForChunk()
-  └─ 8. Return { chunks[], total }
+  │     ├─ Graph: 0.2 (in vector results) or 0.15 (graph-only)
+  │     └─ Confidence boost: (effective_confidence - 0.5) × weight
+  ├─ 6. Sort by score, filter refuted, post-filters (min_confidence, lifecycle, since)
+  └─ 7. Return { chunks[], total }
 ```
 
 ### Evolve Flow
@@ -169,25 +170,17 @@ Claude calls knowledge_evolve(id, new_content, new_metadata?, reason)
   ├─ 3. storage.createRelation(id → archiveId, SUPERSEDES, {reason})
   ├─ 4. embedder.embed(new_content) → new embedding
   ├─ 5. storage.updateChunk(id, merged fields, version+1)
-  │     └─ Embedding changed? → DETACH DELETE + CREATE (relationships lost)
+  │     └─ Embedding changed? → KuzuDB: save relations → DETACH DELETE + CREATE → restore; SurrealDB: direct UPDATE
   ├─ 6. linker.relinkChunk(id, newEmbedding, suggested_relations)
-  └─ 7. Return { id, version, reason, superseded_id }
+  └─ 7. Return { id, version, reason, superseded_id, note }
 ```
 
-### Ingest → Re-Ingestion Flow
+### Re-Ingestion Flow
 
 ```
-Claude calls knowledge_ingest(path)
-  │
-  ├─ 1. readFile(path, 'utf-8')
-  ├─ 2. If >50K chars: append chunking warning
-  └─ 3. Return { content, path, size } to Claude
-       └─ Claude analyzes content
-       └─ Claude calls knowledge_store() N times with chunked content
-
 To update knowledge from a changed source file:
   1. knowledge_list(filters: { source: "path/to/file.md" })
-  2. knowledge_ingest(path)
+  2. Read the file (Claude's built-in Read tool)
   3. For each chunk:
      ├─ Content changed? → knowledge_evolve(id, new_content, reason)
      ├─ Content removed? → knowledge_delete(id)
@@ -213,45 +206,42 @@ CLI flags  >  env vars  >  knowledge.json  >  DEFAULT_CONFIG (config.ts)
 
 | Section | Key | Default | Consumed By |
 |---------|-----|---------|-------------|
-| `db` | `path` | `~/.knowledge-graph/data/knowledge` | KuzuStorage |
+| `storage` | `backend` | `kuzu` | createStorage factory |
+| `db` | `path` | `~/.knowledge-graph/data/knowledge` | IStorage backend |
 | `ollama` | `url` | `http://localhost:11434` | Embedder |
 | `ollama` | `model` | `bge-m3` | Embedder |
-| `dashboard` | `enabled` | `true` | main() |
-| `dashboard` | `port` | `3333` | DashboardServer |
 | `search` | `similarityThreshold` | `0.82` | Linker |
-| `search` | `defaultLimit` | `10` | Retriever |
 | `search` | `autoLinkTopK` | `5` | Linker |
-| `limits` | `maxContentLength` | `5000` | Zod schemas |
-| `limits` | `maxSummaryLength` | `200` | Zod schemas |
+| `dedup` | `similarityThreshold` | `0.88` | Store (dedup check) |
 | `cache` | `embeddingCacheSize` | `10000` | Embedder LRU cache |
+| `learning` | `autoPromoteConfidence` | `0.85` | Validate (auto-promote) |
+| `learning` | `autoPromoteValidations` | `3` | Validate (auto-promote) |
+| `learning` | `confirmationBoost` | `0.25` | Validate (confirmation) |
+| `learning` | `refutationPenalty` | `0.15` | Validate (refutation) |
+| `learning` | `confidenceSearchWeight` | `0.1` | Retriever (scoring) |
+| `learning` | `hypothesisInitialConfidence` | `0.3` | Store (learning defaults) |
+| `learning` | `decayRates.*` | `0.95` (default) | List, Retriever (temporal decay) |
 
 ### CLI Flags & Env Vars
 
 | CLI Flag | Env Variable | Maps To |
 |----------|-------------|---------|
+| `--storage <backend>` | `KNOWLEDGE_STORAGE_BACKEND` | `storage.backend` |
 | `--db-path <path>` | `KNOWLEDGE_DB_PATH` | `db.path` |
 | `--ollama-url <url>` | `OLLAMA_URL` | `ollama.url` |
 | `--ollama-model <name>` | `OLLAMA_MODEL` | `ollama.model` |
-| `--port <port>` | `DASHBOARD_PORT` | `dashboard.port` |
-| `--no-dashboard` | `NO_DASHBOARD=1` | `dashboard.enabled = false` |
 
 ### Hard Constants
 
 | Constant | Value | File | Purpose |
 |----------|-------|------|---------|
-| `EMBEDDING_DIMENSIONS` | 1024 | `types.ts` | bge-m3 vector size, baked into KuzuDB schema |
+| `EMBEDDING_DIMENSIONS` | 1024 | `types.ts` | bge-m3 vector size, baked into both KuzuDB and SurrealDB schemas |
 
 Changing `EMBEDDING_DIMENSIONS` requires a database migration.
 
 ---
 
 ## Known Limitations
-
-### CodeEntity Vector Index Not Created
-
-The schema defines `DOUBLE[1024]` embedding on CodeEntity but no vector index is created for it (unlike Chunk which has `chunk_embedding_idx`). CodeEntity search by embedding is not currently used.
-
-**Impact**: None currently. Would need index if code entity similarity search is added.
 
 ### No Pagination for Large Result Sets
 
@@ -267,13 +257,9 @@ Chunks persist indefinitely. There is no automatic cleanup of stale knowledge, a
 
 **Mitigation**: Manual cleanup via `knowledge_delete` or periodic maintenance scripts.
 
-### Evolve Loses Relationships
+### ~~Evolve Loses Relationships~~ (RESOLVED)
 
-Because of the [vector-indexed column workaround](storage.md#vector-indexed-column-workaround), evolving a chunk that changes its embedding causes `DETACH DELETE` + re-create, which removes all existing relationships. The `relinkChunk()` call after only re-creates auto-links, not manually-created links.
-
-**Impact**: Manual links (`knowledge_link`) are lost when a chunk is evolved.
-
-**Mitigation**: Re-create manual links after evolve, or avoid evolving chunks with important manual relationships.
+`updateChunk()` now uses `saveChunkRelations()`/`restoreChunkRelations()` to preserve ALL relationships (both auto-created and manual) across the DETACH DELETE + re-create cycle. The `relinkChunk()` call after only refreshes auto-created links.
 
 ### ~~Embedding Cache is Unbounded~~ (RESOLVED)
 

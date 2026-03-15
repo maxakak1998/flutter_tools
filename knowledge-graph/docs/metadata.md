@@ -10,123 +10,74 @@ Passed as the `metadata` parameter to `knowledge_store` and partially to `knowle
 
 | Field | Type | Required | Constraints | Default |
 |-------|------|----------|-------------|---------|
-| `summary` | string | YES | min 1, max 200 chars (configurable via `limits.maxSummaryLength`) | -- |
+| `summary` | string | YES | min 1, max 200 chars (enforced by Zod) | -- |
 | `keywords` | string[] | YES | 1-15 items, each min 2 chars (enforced by Zod) | -- |
-| `domain` | string | YES | max 50 chars (enforced by Zod), kebab-case recommended | -- |
-| `category` | enum | YES | `rule` \| `pattern` \| `example` \| `reference` \| `learning` \| `workflow` \| `concept` | -- |
+| `domain` | string | YES | max 50 chars (enforced by Zod), no min length (empty string passes Zod), auto-normalized to kebab-case on store | -- |
+| `category` | enum | YES | `fact` \| `rule` \| `insight` \| `question` \| `workflow` | -- |
 | `importance` | enum | YES | `critical` \| `high` \| `medium` \| `low` | -- |
 | `entities` | string[] | no | min 2 chars each, deduplicated | `[]` |
-| `suggested_relations` | SuggestedRelation[] | no | see [Section 4](#4-suggestedrelation) | -- |
+| `suggested_relations` | SuggestedRelation[] | no | see [Section 3](#3-suggestedrelation) | -- |
 | `tags` | string[] | no | kebab-case enforced, deduplicated | `[]` |
 | `source` | string | no | trimmed, origin file path or identifier | `null` |
-| `code_refs` | CodeRef[] | no | see [Section 2](#2-coderef) | -- |
+| `layer` | string | no | auto-inferred from category if omitted | inferred |
 
 ### Content (sibling to metadata)
 
 | Field | Type | Required | Constraints |
 |-------|------|----------|-------------|
-| `content` | string | YES | max 5000 chars (configurable via `limits.maxContentLength`) |
+| `content` | string | YES | Zod hard limit 5000 chars (in `client.ts`); per-category size warnings in `store.ts` (fact: 500, rule: 800, insight: 600, question: 400, workflow: 800) |
 
 ---
 
-## 2. CodeRef
-
-Nested object within `metadata.code_refs[]`. Links a knowledge chunk to a code entity.
-
-| Field | Type | Required | Constraints |
-|-------|------|----------|-------------|
-| `name` | string | YES | entity name (class, function, file), trimmed |
-| `entity_type` | enum | YES | `class` \| `method` \| `function` \| `interface` \| `file` \| `mixin` \| `enum` \| `widget` \| `cubit` \| `repository` \| `use-case` \| `test-file` \| `factory` \| `extension` \| `constant` \| `type-alias` \| `screen` \| `route` \| `inject-module` |
-| `file_path` | string | YES | min 1 char (enforced by Zod), must not be empty |
-| `line_start` | number | no | starting line number |
-| `layer` | enum | no | `presentation` \| `domain` \| `data` \| `core` \| `test` |
-| `feature` | string | no | feature name, trimmed |
-| `signature` | string | no | type signature, trimmed |
-| `relation` | enum | YES | `implemented_by` \| `tested_by` \| `demonstrated_in` \| `depends_on` \| `implements` \| `injects` |
-| `via` | string | no | how the relation is established (e.g., "GetIt factory"), trimmed |
-| `description` | string | no | human-readable description of the link, trimmed |
-
-### entity_type enum values (enforced by Zod)
-
-`class`, `method`, `function`, `interface`, `file`, `mixin`, `enum`, `widget`, `cubit`, `repository`, `use-case`, `test-file`, `factory`, `extension`, `constant`, `type-alias`, `screen`, `route`, `inject-module`
-
-Unknown values are rejected with a Zod validation error.
-
-### Relation edge behavior
-
-Only 3 relations create Chunk-to-CodeEntity edges in the graph database:
-
-| Relation | Creates Chunk->CodeEntity edge |
-|----------|-------------------------------|
-| `implemented_by` | YES |
-| `tested_by` | YES |
-| `demonstrated_in` | YES |
-| `depends_on` | NO -- accepted by schema but no edge created |
-| `implements` | NO -- accepted by schema but no edge created |
-| `injects` | NO -- accepted by schema but no edge created |
-
----
-
-## 3. Validation Rules
+## 2. Validation Rules
 
 ### Blocking (request rejected by Zod)
 
 | Condition | Error |
 |-----------|-------|
-| `content` is empty | String must contain at least 1 character |
-| `content` > 5000 chars | String must contain at most 5000 characters |
+| `content` is empty | String must contain at least 1 character (Zod hard limit in `client.ts`) |
+| `content` > 5000 chars | String must contain at most 5000 characters (Zod hard limit in `client.ts`) |
 | `summary` is empty | String must contain at least 1 character |
 | `summary` > 200 chars | String must contain at most 200 characters |
 | `keywords` is empty array | Array must contain at least 1 element |
 | `keywords` > 15 items | Array must contain at most 15 elements |
 | Any keyword < 2 chars | String must contain at least 2 characters |
 | Any entity < 2 chars | String must contain at least 2 characters |
-| `domain` is missing | Required field |
+| `domain` is missing | Required field (but empty string passes — Zod has no `.min(1)`) |
 | `domain` > 50 chars | String must contain at most 50 characters |
 | `category` not in enum | Invalid enum value |
 | `importance` not in enum | Invalid enum value |
-| `code_refs[].entity_type` not in enum | Invalid enum value (19 accepted values) |
-| `code_refs[].file_path` is empty | String must contain at least 1 character |
-| `code_refs[].relation` not in enum | Invalid enum value |
-| `code_refs[].layer` not in enum (if provided) | Invalid enum value |
 | `filters.category` not in enum (query/list) | Invalid enum value |
 | `filters.importance` not in enum (query/list) | Invalid enum value |
 
-### Warnings (non-blocking)
-
-The validator returns warnings that don't prevent storage but indicate potential issues:
-
-| Condition | Warning |
-|-----------|---------|
-| `entity_type` unusual for `layer` | `entity_type "X" is unusual for layer "Y"` |
-| `relation` won't create edge | `relation "X" does not create a Chunk→CodeEntity edge` |
-
-Warnings are returned in the `warnings[]` array of both `knowledge_store` and `knowledge_link_code` responses.
+Warnings are returned in the `warnings[]` array of the `knowledge_store` response (e.g., content size exceeding category targets).
 
 ### Semantic deduplication
 
-If content is semantically near-identical to an existing chunk (cosine similarity >= 0.95), `knowledge_store` returns the existing chunk ID along with `duplicate_of`, `similarity`, and `existing_summary` fields. This catches paraphrased or reformatted content, not just byte-identical duplicates.
+If content is semantically near-identical to an existing chunk (cosine similarity >= dedup threshold, default 0.88), `knowledge_store` returns the existing chunk ID along with `duplicate_of`, `similarity`, and `existing_summary` fields. This catches paraphrased or reformatted content, not just byte-identical duplicates.
 
 ### Auto-normalization (silent)
 
 | What | Normalization |
 |------|--------------|
+| Domain | Kebab-case (e.g., "State Management" → "state-management") |
 | Keywords | Lowercased, deduplicated |
 | Tags | Normalized to kebab-case, deduplicated |
-| Entities | Deduplicated |
+| Entities | Deduplicated, filtered to 2+ chars |
 | Source | Trimmed |
-| CodeRef string fields | Trimmed |
 
 ---
 
-## 4. SuggestedRelation
+## 3. SuggestedRelation
 
 Nested object within `metadata.suggested_relations[]`. Hints at connections to other chunks.
 
 | Field | Type | Required | Constraints |
 |-------|------|----------|-------------|
 | `concept` | string | YES | name or description of the related concept |
-| `relation` | enum | YES | `relates_to` \| `depends_on` \| `contradicts` |
+| `relation` | enum | YES | `relates_to` \| `depends_on` \| `contradicts` \| `triggers` \| `requires` \| `produces` \| `is_part_of` \| `constrains` \| `precedes` \| `is_true` \| `is_false` \| `transitions_to` \| `mutates` \| `governed_by` |
+
+Note: `supersedes` is intentionally excluded from suggested relations. Supersedes edges are system-managed — created automatically by `knowledge_evolve` when archiving old versions. Use `knowledge_link` to create manual `supersedes` edges.
 
 The linker attempts to match the `concept` string to existing chunks using:
 1. Domain match (score 0.9)
@@ -137,56 +88,70 @@ If a match is found, the specified relationship is created automatically.
 
 ---
 
-## 5. knowledge_evolve Metadata
+## 4. knowledge_evolve Metadata
 
 When calling `knowledge_evolve`, `new_metadata` is optional and all fields within it are optional. Only provided fields are updated; others retain their existing values.
 
-| Field | Type | Required | Same constraints as ChunkMetadata |
-|-------|------|----------|----------------------------------|
-| `summary` | string | no | max 200 chars |
-| `keywords` | string[] | no | -- |
-| `domain` | string | no | -- |
-| `category` | enum | no | same 7 values |
-| `importance` | enum | no | same 4 values |
-| `entities` | string[] | no | -- |
-| `suggested_relations` | SuggestedRelation[] | no | -- |
-| `tags` | string[] | no | -- |
+All provided metadata fields are normalized using the same rules as `knowledge_store` (domain→kebab-case, keywords→lowercased+deduplicated, tags→kebab-case+deduplicated, entities→deduplicated+filtered to 2+ chars). When `category` changes and no explicit `layer` is provided, the layer is automatically re-inferred from the new category.
 
-Note: `code_refs` and `source` are NOT available in `knowledge_evolve`. To update code links after evolve, use `knowledge_link_code`.
+| Field | Type | Required | Constraints |
+|-------|------|----------|-------------|
+| `summary` | string | no | min 1, max 200 chars |
+| `keywords` | string[] | no | 1–15 items, each min 2 chars (same as store) |
+| `domain` | string | no | max 50 chars (same as store) |
+| `category` | enum | no | same 5 values |
+| `importance` | enum | no | same 4 values |
+| `layer` | string | no | auto-inferred from category if omitted and category changed |
+| `entities` | string[] | no | Min 2 chars each (same as store), also filtered to 2+ chars during normalization |
+| `suggested_relations` | SuggestedRelation[] | no | same as store |
+| `tags` | string[] | no | same as store |
+
+Note: `source` is NOT available in `knowledge_evolve`.
 
 ---
 
-## 6. QueryFilters
+## 5. QueryFilters
 
 Used with `knowledge_query` to narrow search results.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `domain` | string | no | Filter by domain |
-| `category` | string | no | Filter by category |
-| `importance` | string | no | Filter by importance |
+| `category` | enum | no | Filter by category |
+| `importance` | enum | no | Filter by importance |
 | `tags` | string[] | no | Filter by tags |
-| `limit` | number | no | Max results (default: 10) |
+| `layer` | string | no | Filter by layer |
+| `min_confidence` | number | no | Min effective confidence (0.0-1.0, applies temporal decay) |
+| `lifecycle` | enum | no | `hypothesis` \| `validated` \| `promoted` \| `canonical` \| `refuted` \| `active` |
+| `since` | string | no | ISO timestamp — only chunks updated after this date |
+
+Tag filtering uses OR logic — chunks matching **any** of the listed tags are included.
 
 ---
 
-## 7. ListFilters
+## 6. ListFilters
 
 Used with `knowledge_list` to browse chunks.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `domain` | string | no | Filter by domain |
-| `category` | string | no | Filter by category |
-| `importance` | string | no | Filter by importance |
+| `category` | enum | no | Filter by category |
+| `importance` | enum | no | Filter by importance |
 | `tags` | string[] | no | Filter by tags |
 | `source` | string | no | Filter by source path |
+| `layer` | string | no | Filter by layer |
+| `min_confidence` | number | no | Min effective confidence (0.0-1.0) |
+| `lifecycle` | enum | no | `hypothesis` \| `validated` \| `promoted` \| `canonical` \| `refuted` \| `active` |
+| `since` | string | no | ISO timestamp — only chunks updated after this date |
+
+Tag filtering uses OR logic — chunks matching **any** of the listed tags are included.
 
 Default limit: 50 results.
 
 ---
 
-## 8. Examples
+## 7. Examples
 
 ### Valid metadata (complete)
 
@@ -205,19 +170,7 @@ Default limit: 50 results.
       { "concept": "cubit creation in BlocProvider", "relation": "relates_to" }
     ],
     "tags": ["multi-tenant", "security"],
-    "source": "CLAUDE.md",
-    "code_refs": [
-      {
-        "name": "FirestoreProductRepository",
-        "entity_type": "repository",
-        "file_path": "lib/features/product/data/repositories/firestore_product_repository.dart",
-        "line_start": 15,
-        "layer": "data",
-        "feature": "product",
-        "relation": "implemented_by",
-        "description": "Repository that requires userId and storeId at construction time"
-      }
-    ]
+    "source": "CLAUDE.md"
   }
 }
 ```

@@ -1,14 +1,14 @@
 # Layer 1: MCP Server
 
-**Entry point**: `src/cli.ts` → `src/index.ts`
+**Entry point**: `src/cli.ts` → `src/daemon-manager.ts` → `src/daemon.ts` + `src/client.ts`
 
-The CLI (`cli.ts`) handles arg parsing, config resolution, and command dispatch. The `serve` command calls `main(config)` from `index.ts`.
+The system uses a daemon+client architecture. The CLI (`cli.ts`) handles arg parsing, config resolution, and command dispatch. The `serve` command discovers the project, ensures a daemon is running via `daemon-manager.ts`, and starts the MCP client proxy (`client.ts`) that forwards tool calls to the daemon over HTTP.
 
 ---
 
 ## Transport
 
-Uses `StdioServerTransport` from `@modelcontextprotocol/sdk`. Communication happens over stdin/stdout using the JSON-RPC protocol.
+The client (`client.ts`) uses `StdioServerTransport` from `@modelcontextprotocol/sdk`. Communication with Claude Code happens over stdin/stdout using the JSON-RPC protocol. The client forwards all tool calls to the daemon via HTTP `POST /rpc`.
 
 **Critical constraint**: `console.log` is forbidden. Any stdout output corrupts the JSON-RPC stream. All logging uses `console.error` via the `log()` wrapper from `types.ts`.
 
@@ -16,18 +16,25 @@ Uses `StdioServerTransport` from `@modelcontextprotocol/sdk`. Communication happ
 
 ## Tool Registration
 
-Each tool is registered with `server.tool(name, description, zodSchema, handler)`:
+Tools are registered in `client.ts` using a `proxyTool()` helper that wraps each tool as an HTTP proxy to the daemon:
 
 ```typescript
-server.tool(
-  'knowledge_query',                    // tool name
-  'Search knowledge base...',            // description
-  { query: z.string(), filters: ... },   // zod schema for validation
-  async ({ query, filters }) => { ... }  // handler
-);
+function proxyTool(name, description, schema, methodName) {
+  server.tool(name, description, schema, async (params) => {
+    try {
+      const result = await rpcCall(daemonUrl, methodName, params);
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    } catch (e) {
+      return {
+        content: [{ type: 'text', text: `Error: ${e.message}` }],
+        isError: true,
+      };
+    }
+  });
+}
 ```
 
-The MCP SDK validates input against the zod schema before calling the handler. Zod schemas use config values for limits (e.g., `z.string().max(limits.maxContentLength)`).
+Zod schemas in `client.ts` validate input before forwarding. The daemon dispatches to the actual handler via `dispatchRpc()` in `daemon.ts`.
 
 ---
 
@@ -35,51 +42,123 @@ The MCP SDK validates input against the zod schema before calling the handler. Z
 
 | Command | Action |
 |---------|--------|
-| `serve` (default) | Load config → start MCP server |
-| `setup` | Create `knowledge.json` + write MCP config to `~/.claude/settings.json` |
-| `doctor` | Check Node version, Ollama, model, DB path, dashboard port |
+| `serve` | Discover project → ensure daemon → start MCP client proxy |
+| `stop` | Stop the running daemon for the current project |
+| `init [--force]` | Initialize `.knowledge-graph/` in current directory |
+| `serve-standalone` | Start daemon + dashboard without MCP (standalone browsing mode) |
+| `setup` | Write default config + print MCP registration instructions |
+| `doctor` | Check Node version, Ollama, model, DB path, daemon, port |
+| `reset-db` | Delete the database (all chunks, edges, embeddings) |
+| `uninstall [--keep-data]` | Remove installed files, config, and MCP registration |
+
+Note: Running `knowledge-graph` with no command prints help text.
+
+### CLI Options
+
+| Option | Description |
+|--------|-------------|
+| `--db-path <path>` | Override database path |
+| `--ollama-url <url>` | Ollama API endpoint |
+| `--ollama-model <name>` | Embedding model name |
+| `--force, -f` | Force init even if parent has `.knowledge-graph/` |
+| `--keep-data` | Keep database on uninstall |
+| `-h, --help` | Print help text |
+| `-v, --version` | Print version |
+
+### Environment Variables
+
+| Variable | Maps To | Purpose |
+|----------|---------|---------|
+| `KNOWLEDGE_DB_PATH` | `db.path` | Database directory path |
+| `OLLAMA_URL` | `ollama.url` | Ollama API endpoint |
+| `OLLAMA_MODEL` | `ollama.model` | Embedding model name |
+
+Priority: CLI flags > env vars > `knowledge.json` > hard defaults.
 
 ---
 
 ## Startup Lifecycle
 
+### Client startup (`serve` command)
+
 ```
 1. CLI parses args and resolves config:
-   knowledge.json → env vars → CLI flags (highest priority)
-2. main(config) called with resolved KnowledgeConfig
-3. Instantiate: KuzuStorage(db.path), Embedder(ollama.url, ollama.model, cache.embeddingCacheSize),
-   Retriever(storage, embedder, search.defaultLimit), Linker(storage, embedder, search.similarityThreshold, search.autoLinkTopK)
-4. Create McpServer instance
-5. Register all 8 tools (with config-driven zod limits)
-6. Health check Ollama (GET /api/tags, verify configured model)
-   └─ If fails: log warning, continue (embedding will fail until Ollama ready)
-7. Initialize storage (create dirs, load vector extension, create schema/indices)
-   └─ If fails: log error, process.exit(1)
-8. Start dashboard HTTP server (if dashboard.enabled)
-9. Connect StdioServerTransport
-10. Register SIGINT/SIGTERM handlers
+   CLI flags → env vars → knowledge.json → hard defaults (highest priority first)
+2. discoverProject(cwd) → find .knowledge-graph/config.json
+   └─ If not found: log error, exit with "run kg init first"
+3. ensureDaemon(project, config):
+   ├─ Check daemon.port file → health check existing daemon (verifies `status === 'ok'` AND `project_id` matches current project)
+   ├─ Check daemon.pid file → detect zombie processes
+   └─ If no valid daemon → fork() new daemon, poll for daemon.port file (15s timeout)
+4. clientMain(daemonUrl, projectId):
+   ├─ POST /rpc/connect to register with daemon
+   ├─ Create McpServer instance
+   ├─ Register all 8 tools via proxyTool() (with Zod schemas)
+   ├─ Connect StdioServerTransport
+   └─ Register SIGINT/SIGTERM handlers
+```
+
+### Daemon startup (spawned by `daemon-manager.ts`)
+
+```
+1. Parse 3 required env vars: KG_DAEMON_CONFIG (JSON config), KG_PROJECT_DIR (.knowledge-graph/ path), KG_PROJECT_ID (project identifier). Also reads KG_IDLE_TIMEOUT_MS (default 300000) and KG_PORT_RANGE_START (default 0).
+2. createCore(config):
+   ├─ Instantiate: KuzuStorage, Embedder, Retriever, Linker, EventBus
+   ├─ Health check Ollama (GET /api/tags, verify configured model)
+   │   └─ If fails: log warning, continue (embedding will fail until Ollama ready)
+   └─ Initialize storage (create dirs, load vector extension, create schema/indices)
+       └─ If fails: log error, process.exit(1)
+3. Create DashboardServer (hosts API routes + SSE)
+4. Register dashboard triggers for query, store, evolve, validate, promote
+5. Create HTTP server on 127.0.0.1 (port 0 = OS auto-assign, or set `daemon.port_range_start` in `.knowledge-graph/config.json`)
+   Endpoints: POST /rpc (tool dispatch), POST /rpc/connect, POST /rpc/disconnect, POST /rpc/shutdown, GET /health (returns { status, project_id, clients, uptime_ms }), all other routes → dashboard
+6. Write daemon.port and daemon.pid files
+7. Start idle timer (auto-shutdown after configurable timeout, default 300s)
 ```
 
 ---
 
 ## Graceful Shutdown
 
-On `SIGINT` or `SIGTERM`:
-1. Close KuzuStorage (connection + database)
-2. Close MCP server
-3. `process.exit(0)`
+### Client shutdown
+
+- **SIGINT** (Ctrl+C): User explicitly wants to stop everything
+  1. Send `POST /rpc/shutdown` to kill the daemon
+  2. Close MCP server
+  3. `process.exit(0)`
+
+- **SIGTERM** (Claude Code exiting): Preserve daemon for other sessions
+  1. Send `POST /rpc/disconnect` to decrement client count
+  2. Close MCP server
+  3. `process.exit(0)`
+
+### Daemon shutdown
+
+Triggered by `/rpc/shutdown`, SIGTERM, SIGINT, or idle timeout:
+
+1. Close DashboardServer (stop SSE connections)
+2. Close KuzuStorage (connection + database)
+3. Close HTTP server
+4. Remove `daemon.port` and `daemon.pid` files
+5. `process.exit(0)`
+
+### Idle auto-shutdown
+
+The daemon starts an idle timer immediately on startup (before any client connects). On `/rpc/connect`, the timer is reset (cleared). On `/rpc/disconnect`, if no clients remain (`clientCount <= 0`), the timer restarts. If no client connects or reconnects before the timer expires (default 300s, configurable via `daemon.idle_timeout_ms` in `.knowledge-graph/config.json`), the daemon shuts itself down.
 
 ---
 
 ## Error Handling
 
-### Error Wrapping
+### Two-Layer Error Wrapping
 
-Every tool handler wraps its logic in try-catch:
+Errors are caught at two levels:
 
+**Layer 1 — Client proxy** (`client.ts`):
 ```typescript
+// proxyTool wraps each forwarded call
 try {
-  const result = await handler(...);
+  const result = await rpcCall(daemonUrl, methodName, params);
   return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
 } catch (e) {
   return {
@@ -89,17 +168,28 @@ try {
 }
 ```
 
-This ensures tool errors are returned as error responses rather than crashing the server.
+**Layer 2 — Daemon RPC dispatch** (`daemon.ts`):
+```typescript
+// dispatchRpc catches handler errors and returns JSON-RPC error responses
+try {
+  const result = await dispatchRpc(rpcReq.method, rpcReq.params);
+  sendJson(res, formatResult(rpcReq.id, result));
+} catch (e) {
+  sendJson(res, formatError(rpcReq.id, -32603, e.message));
+}
+```
+
+This ensures tool errors are returned as error responses rather than crashing either process.
 
 ### Startup Health Check
 
 ```
-Ollama check:
+Ollama check (in createCore):
 ├─ GET /api/tags → not responding? → log warning, continue
 ├─ Response OK but no bge-m3? → log "run ollama pull bge-m3", continue
 └─ bge-m3 found? → log "health check passed"
 
-Storage init:
+Storage init (in createCore):
 ├─ mkdirSync parent directory
 ├─ new Database(path) + init()
 ├─ new Connection(db) + init()
@@ -111,6 +201,7 @@ Storage init:
 
 ### Error Patterns
 
-- Every tool handler: try-catch → `{ isError: true, text: "Error: ..." }`
+- Client proxy errors: `{ isError: true, text: "Error: ..." }` (MCP error response)
+- Daemon RPC errors: JSON-RPC error format `{ error: { code: -32603, message: "..." } }`
 - Fatal startup errors: `process.exit(1)`
-- Unhandled promise: `runServe().catch()` in `cli.ts` → log + `process.exit(1)`
+- Daemon spawn timeout: throws `Error("Daemon startup timed out after 15s")`

@@ -1,4 +1,4 @@
-import { KuzuStorage } from '../storage/kuzu.js';
+import { IStorage } from '../storage/interface.js';
 import { Embedder } from './embedder.js';
 import {
   SuggestedRelation,
@@ -10,7 +10,7 @@ import { DEFAULT_CONFIG } from '../config.js';
 
 export class Linker {
   constructor(
-    private storage: KuzuStorage,
+    private storage: IStorage,
     private embedder: Embedder,
     private similarityThreshold = DEFAULT_CONFIG.search.similarityThreshold,
     private autoLinkTopK = DEFAULT_CONFIG.search.autoLinkTopK,
@@ -44,8 +44,6 @@ export class Linker {
               chunkId,
               hit.chunk.id,
               'RELATES_TO',
-              'Chunk',
-              'Chunk',
               { auto_created: 'true' }
             );
             links.push({
@@ -73,8 +71,6 @@ export class Linker {
               chunkId,
               match.id,
               relTable,
-              'Chunk',
-              'Chunk'
             );
             links.push({
               target_id: match.id,
