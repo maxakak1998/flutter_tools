@@ -321,7 +321,7 @@ Every tool call emits step events in real-time to the dashboard.
  ┌──────────────────────────────────────────────────────────┐
  │  GET  /              → Dashboard SPA (index.html)        │
  │  GET  /api/events    → SSE subscription (EventSource)    │
- │  GET  /api/graph     → All chunks + edges for vis-network │
+ │  GET  /api/graph     → Chunk nodes + relation edges for D3 force graph │
  │  GET  /api/stats     → Chunk/edge counts, cache stats    │
  │  GET  /api/chunks/:id→ Single chunk detail               │
  │  GET  /api/search    → Semantic search from dashboard    │
@@ -331,6 +331,8 @@ Every tool call emits step events in real-time to the dashboard.
  └──────────────────────────────────────────────────────────────────┘
 ```
 
+Dashboard HTTP and SSE endpoints accept browser origins only from `127.0.0.1`, `localhost`, or `::1`. `POST /api/trigger/:name` also uses the shared 1 MB request-body limit from `src/http-utils.ts`.
+
 ---
 
 ## Daemon Lifecycle
@@ -339,7 +341,7 @@ How the daemon is started, discovered, and managed.
 
 ```
  ┌─────────────────────────────────────────────────────────────────────┐
- │ ensureDaemon() — called by client.ts on startup                    │
+ │ ensureDaemon() — called by cli.ts during serve/serve-standalone    │
  │                                                                    │
  │  Step 1: Check daemon.port file                                    │
  │  ┌─────────────────────────────────────────────────────┐           │
@@ -399,10 +401,11 @@ How the daemon is started, discovered, and managed.
  │  1. Parse env vars (KG_DAEMON_CONFIG, KG_PROJECT_DIR, ...)         │
  │  2. createCore(config) → storage, embedder, retriever, linker      │
  │  3. Initialize KuzuDB (run schema migrations)                      │
- │  4. Start HTTP server on auto-assigned port                        │
- │  5. Write daemon.port and daemon.pid files                         │
- │  6. Start idle timer (300s default)                                │
- │  7. Ready: accept /rpc POST requests                               │
+ │  4. Start shared HTTP server for RPC + dashboard on 127.0.0.1      │
+ │  5. Apply localhost-only origin checks and 1 MB POST body limit    │
+ │  6. Write daemon.port and daemon.pid files                         │
+ │  7. Start idle timer (300s default)                                │
+ │  8. Ready: accept /rpc POST requests + dashboard traffic           │
  └─────────────────────────────────────────────────────────────────────┘
 ```
 

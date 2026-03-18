@@ -10,6 +10,8 @@ The system uses a daemon+client architecture. The CLI (`cli.ts`) handles arg par
 
 The client (`client.ts`) uses `StdioServerTransport` from `@modelcontextprotocol/sdk`. Communication with Claude Code happens over stdin/stdout using the JSON-RPC protocol. The client forwards all tool calls to the daemon via HTTP `POST /rpc`.
 
+HTTP request parsing and localhost-only origin checks are shared in `src/http-utils.ts`. The daemon listens on `127.0.0.1`, accepts browser origins only from `127.0.0.1`, `localhost`, or `::1`, and caps POST request bodies at 1 MB. Disallowed origins receive `403 {"error":"Origin not allowed"}` and oversized bodies receive HTTP 413.
+
 **Critical constraint**: `console.log` is forbidden. Any stdout output corrupts the JSON-RPC stream. All logging uses `console.error` via the `log()` wrapper from `types.ts`.
 
 ---
@@ -57,13 +59,14 @@ Note: Running `knowledge-graph` with no command prints help text.
 
 | Option | Description |
 |--------|-------------|
+| `--storage <backend>` | Storage backend: `kuzu` or `surreal` |
 | `--db-path <path>` | Override database path |
 | `--ollama-url <url>` | Ollama API endpoint |
 | `--ollama-model <name>` | Embedding model name |
 | `--force, -f` | Force init even if parent has `.knowledge-graph/` |
 | `--keep-data` | Keep database on uninstall |
 | `-h, --help` | Print help text |
-| `-v, --version` | Print version |
+| `-v, --version` | Print runtime version from `package.json` via `src/version.ts` |
 
 ### Environment Variables
 
@@ -110,11 +113,19 @@ Priority: CLI flags > env vars > `knowledge.json` > hard defaults.
        └─ If fails: log error, process.exit(1)
 3. Create DashboardServer (hosts API routes + SSE)
 4. Register dashboard triggers for query, store, evolve, validate, promote
-5. Create HTTP server on 127.0.0.1 (port 0 = OS auto-assign, or set `daemon.port_range_start` in `.knowledge-graph/config.json`)
+5. Create HTTP server on `127.0.0.1` (port 0 = OS auto-assign, or set `daemon.port_range_start` in `.knowledge-graph/config.json`)
    Endpoints: POST /rpc (tool dispatch), POST /rpc/connect, POST /rpc/disconnect, POST /rpc/shutdown, GET /health (returns { status, project_id, clients, uptime_ms }), all other routes → dashboard
+   All HTTP routes apply localhost-only origin checks (`127.0.0.1`, `localhost`, `::1`). POST routes use the shared request body reader in `src/http-utils.ts` with a 1 MB limit.
 6. Write daemon.port and daemon.pid files
 7. Start idle timer (auto-shutdown after configurable timeout, default 300s)
 ```
+
+---
+
+## Verification Scripts
+
+- `scripts/daemon-integration-test.ts` runs against built `dist/` files and verifies daemon startup on a localhost URL, health responses, connect/disconnect refcounting, shutdown cleanup, and stale PID recovery.
+- `scripts/build-artifact-test.ts` verifies `dist/` contains the expected compiled outputs for `src/` plus copied assets, including `http-utils.js`, `version.js`, and `dashboard/index.html`.
 
 ---
 
@@ -203,5 +214,7 @@ Storage init (in createCore):
 
 - Client proxy errors: `{ isError: true, text: "Error: ..." }` (MCP error response)
 - Daemon RPC errors: JSON-RPC error format `{ error: { code: -32603, message: "..." } }`
+- HTTP origin errors: `403 {"error":"Origin not allowed"}` for non-local browser origins
+- HTTP body-size errors: `413` when a POST body exceeds 1 MB
 - Fatal startup errors: `process.exit(1)`
 - Daemon spawn timeout: throws `Error("Daemon startup timed out after 15s")`

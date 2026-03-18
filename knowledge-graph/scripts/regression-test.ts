@@ -491,9 +491,7 @@ async function main() {
   console.error('═'.repeat(50));
   console.error(`\n📊 Results: ${passed} passed, ${failed} failed\n`);
 
-  if (failed > 0) {
-    process.exit(1);
-  }
+  process.exit(failed > 0 ? 1 : 0);
 }
 
 main().catch(e => {

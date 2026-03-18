@@ -8,6 +8,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import { makeRpcRequest } from './rpc.js';
 import { log } from './types.js';
+import { getRuntimeVersion } from './version.js';
 
 // ============================================================
 // RPC call to daemon
@@ -32,8 +33,8 @@ async function rpcCall(daemonUrl: string, method: string, params: unknown): Prom
 const categoryEnum = z.enum(['fact', 'rule', 'insight', 'question', 'workflow']);
 const importanceEnum = z.enum(['critical', 'high', 'medium', 'low']);
 const lifecycleEnum = z.enum(['hypothesis', 'validated', 'promoted', 'canonical', 'refuted', 'active']);
-const relationEnum = z.enum(['relates_to', 'depends_on', 'contradicts', 'supersedes', 'triggers', 'requires', 'produces', 'is_part_of', 'constrains', 'precedes', 'is_true', 'is_false', 'transitions_to', 'mutates', 'governed_by']);
-const suggestedRelationEnum = z.enum(['relates_to', 'depends_on', 'contradicts', 'triggers', 'requires', 'produces', 'is_part_of', 'constrains', 'precedes', 'is_true', 'is_false', 'transitions_to', 'mutates', 'governed_by']);
+const relationEnum = z.enum(['relates_to', 'depends_on', 'contradicts', 'supersedes', 'triggers', 'requires', 'produces', 'is_part_of', 'constrains', 'precedes', 'transitions_to', 'governed_by']);
+const suggestedRelationEnum = z.enum(['relates_to', 'depends_on', 'contradicts', 'triggers', 'requires', 'produces', 'is_part_of', 'constrains', 'precedes', 'transitions_to', 'governed_by']);
 
 const metadataSchema = z.object({
   summary: z.string().min(1).max(200),
@@ -59,7 +60,7 @@ export async function clientMain(daemonUrl: string, projectId: string): Promise<
   // Register with daemon
   await fetch(`${daemonUrl}/rpc/connect`, { method: 'POST' });
 
-  const server = new McpServer({ name: 'knowledge-graph', version: '1.0.0' });
+  const server = new McpServer({ name: 'knowledge-graph', version: getRuntimeVersion() });
 
   // Helper: proxy tool call to daemon
   function proxyTool(
@@ -106,7 +107,7 @@ export async function clientMain(daemonUrl: string, projectId: string): Promise<
 
   proxyTool(
     'knowledge_store',
-    'Store a new knowledge chunk with metadata.',
+    'Store a business logic insight as a knowledge chunk. Content should be natural language describing domain rules, business constraints, workflow rationale, or cross-feature relationships — NOT code patterns, class names, or technical implementation details. Ask the user to confirm uncertain inferences before storing.',
     { content: z.string().min(1).max(5000), metadata: metadataSchema },
     'knowledge_store',
   );
@@ -188,7 +189,7 @@ export async function clientMain(daemonUrl: string, projectId: string): Promise<
 
   proxyTool(
     'knowledge_promote',
-    'Promote a knowledge chunk to higher status. Requires all 4 golden evidence sources verified. See CLAUDE.md Validation Policy.',
+    'Promote a knowledge chunk to higher status. Caller should verify golden evidence sources. See CLAUDE.md Validation Policy.',
     {
       id: z.string(),
       new_category: categoryEnum.optional(),

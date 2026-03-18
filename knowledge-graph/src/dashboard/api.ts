@@ -1,23 +1,24 @@
 import { IStorage } from '../storage/interface.js';
 import { Embedder } from '../engine/embedder.js';
 import { Retriever } from '../engine/retriever.js';
-import { StorageStats, QueryFilters, log } from '../types.js';
+import { StorageStats, QueryFilters } from '../types.js';
 
 /**
- * Get full graph data for vis-network visualization.
- * Returns nodes (chunks) and edges.
+ * Get full graph data for the dashboard force-layout visualization.
+ * Returns graph nodes (chunks) and edges.
  */
-export async function handleGraphData(storage: IStorage, embedder: Embedder) {
+export async function handleGraphData(storage: IStorage) {
   const [chunks, edges] = await Promise.all([
     storage.listChunks({}, 500),
     storage.getAllEdges(),
   ]);
 
-  // Map chunks to vis-network nodes (exclude embedding for bandwidth)
+  // Map chunks to lightweight graph nodes (exclude embedding for bandwidth)
   const chunkNodes = chunks.map(c => ({
     id: c.id,
     label: c.summary,
     title: c.summary,
+    summary: c.summary,
     type: 'chunk',
     category: c.category,
     importance: c.importance,
@@ -26,6 +27,13 @@ export async function handleGraphData(storage: IStorage, embedder: Embedder) {
     version: c.version,
     confidence: c.confidence,
     lifecycle: c.lifecycle,
+    keywords: c.keywords,
+    validation_count: c.validation_count,
+    refutation_count: c.refutation_count,
+    access_count: c.access_count,
+    created_at: c.created_at,
+    updated_at: c.updated_at,
+    last_validated_at: c.last_validated_at,
   }));
 
   const visEdges = edges.map((e, i) => ({

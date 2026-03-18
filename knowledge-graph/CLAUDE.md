@@ -4,13 +4,31 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Is
 
-A continuous learning knowledge graph MCP server for Claude Code. Stores natural language knowledge as atomic nodes with semantic embeddings (Ollama/bge-m3) in a graph database. Supports two storage backends: **KuzuDB** (default) and **SurrealDB** (embedded mode). Features confidence scoring, lifecycle management, temporal decay, validation/refutation, and proactive surfacing. Exposes 8 tools via JSON-RPC.
+A **domain knowledge** graph MCP server for Claude Code. Stores **business logic, domain rules, and workflow rationale** as atomic nodes with semantic embeddings (Ollama/bge-m3) in a graph database. This is NOT a code index — it captures the "why" behind code (business constraints, domain decisions, cross-feature relationships) that Claude infers by reasoning across code, docs, and user context. Supports two storage backends: **KuzuDB** (default) and **SurrealDB** (embedded mode). Features confidence scoring, lifecycle management, temporal decay, validation/refutation, and proactive surfacing. Exposes 8 tools via JSON-RPC.
+
+### Content Boundary: Domain Knowledge vs Code Knowledge
+
+**STORE** (domain knowledge — not derivable from a single file):
+- Business rules and constraints (e.g., "Withdrawals require 3-step verification because the payment gateway rejects single-step flows over $500")
+- Domain rationale / the "why" behind code decisions
+- Cross-feature relationships and dependencies with business context
+- User-confirmed workflow logic and edge cases
+- Regulatory or compliance requirements that drive code structure
+
+**NEVER STORE** (code knowledge — derivable by reading code):
+- Class names, method signatures, inheritance hierarchies
+- DI patterns, state management patterns, folder structures
+- File paths, import relationships, API endpoint definitions
+- Framework behavior (Flutter, Bloc, GoRouter, Firestore)
+- Code syntax or technical implementation details
+
+**Interview Protocol**: When Claude infers business logic from code but isn't certain, it MUST ask the user to confirm before storing. See the knowledge-graph skill (`~/.claude/skills/knowledge-graph/SKILL.md`) for interview rules.
 
 ## Commands
 
 ```bash
 npm install          # Install dependencies
-npm run build        # TypeScript → dist/ + copy dashboard HTML
+npm run build        # Clean dist/, compile TypeScript, emit all TS artifacts (including http-utils/version), copy dashboard HTML
 npm run dev          # Dev mode via tsx (no build step)
 npm start            # Start MCP server (production, from dist/)
 npm run setup        # Write default config + print MCP registration instructions
@@ -27,7 +45,7 @@ bash install.sh      # Full install: copy source, build, pull model, register MC
 
 | Command | Description |
 |---------|-------------|
-| `serve` | Start MCP server (requires `.knowledge-graph/` — run `init` first) |
+| `serve[:PORT]` | Start MCP server (optionally on specific port, kills existing process if needed) |
 | `stop` | Stop the running daemon for the current project |
 | `init [--force]` | Initialize `.knowledge-graph/` in current directory |
 | `serve-standalone` | Start daemon + dashboard without MCP (standalone browsing mode) |
@@ -64,11 +82,13 @@ Claude Code ←stdio MCP→ client.ts ←HTTP JSON-RPC→ daemon.ts ←→ KuzuD
 ### Component Overview
 
 ```
-CLI (cli.ts) → discover project → daemon + client mode
+CLI (cli.ts) → discover project → ensureDaemon() → clientMain()
                                         ↓
   daemon-manager.ts  → ensures daemon is running, spawns if needed
   daemon.ts          → HTTP server, owns DB lock, hosts dashboard
   client.ts          → stdio MCP proxy, forwards tool calls to daemon via HTTP
+  http-utils.ts      → shared localhost CORS/origin checks, body reading, HTTP request errors
+  version.ts         → reads runtime version from package.json
   rpc.ts             → JSON-RPC 2.0 request/response utilities
   core.ts            → creates and wires engine components (used by daemon)
   project.ts         → per-project .knowledge-graph/ management, discovery, registry
@@ -86,14 +106,17 @@ CLI (cli.ts) → discover project → daemon + client mode
 ### Daemon Architecture (`daemon.ts`)
 
 - Spawned by `daemon-manager.ts` via `child_process.fork()` with `detached: true`
-- Requires 3 env vars: `KG_DAEMON_CONFIG` (JSON config), `KG_PROJECT_DIR` (`.knowledge-graph/` path), `KG_PROJECT_ID` (project identifier). Also reads `KG_IDLE_TIMEOUT_MS` (default 300000) and `KG_PORT_RANGE_START` (default 0 = auto-assign).
+- Requires 3 env vars: `KG_DAEMON_CONFIG` (JSON config), `KG_PROJECT_DIR` (`.knowledge-graph/` path), `KG_PROJECT_ID` (project identifier). Also reads `KG_IDLE_TIMEOUT_MS` (default 300000) and `KG_PORT_RANGE_START` (default 0 = auto-assign, or overridden by `kg serve:PORT`).
 - Owns the database lock — only one daemon per project
 - Serves JSON-RPC over HTTP on `127.0.0.1` (auto-assigned port)
+- Applies localhost-only browser origin checks (`127.0.0.1`, `localhost`, `::1`) across daemon and dashboard HTTP routes
+- Enforces a shared 1 MB POST body limit via `src/http-utils.ts`
 - Writes port to `.knowledge-graph/daemon.port`, PID to `daemon.pid`
 - Hosts dashboard on same HTTP server (delegates non-RPC routes)
 - Client tracking: `/rpc/connect` increments, `/rpc/disconnect` decrements
 - Idle timer starts immediately on startup (before any client connects); reset on `/rpc/connect`, restarted on `/rpc/disconnect` when no clients remain
 - Auto-shutdown after idle timeout (default 300s, configurable per project via `daemon.idle_timeout_ms`)
+- **Port Management**: When invoked with `kg serve:PORT`, the CLI automatically kills any existing process on that port using `lsof` before starting the daemon. This allows quick port reassignment without manual cleanup.
 - Health endpoint: `GET /health` returns `{ status, project_id, clients, uptime_ms }`
 - Graceful shutdown via `/rpc/shutdown` or SIGTERM/SIGINT
 
@@ -132,7 +155,7 @@ Per-project knowledge graphs via `.knowledge-graph/` directories:
 
 - **Never use `console.log`** — corrupts JSON-RPC stdio. Use `log()` from `types.ts` (writes to `console.error`).
 - **No batch store** — all stores are single-chunk to ensure dedup feedback is processed per-chunk.
-- **CLI auto-kills stale processes** during `reset-db` (checks via `ps`, only kills `node cli.js serve` processes). The `serve` command uses `ensureDaemon()` instead, which health-checks existing daemons and spawns a new one if needed.
+- **CLI auto-kills stale processes** during `reset-db` (checks via `ps`, only kills `node cli.js serve` processes). The `serve` and `serve-standalone` commands call `ensureDaemon()` from `cli.ts`; after the daemon URL is resolved, `client.ts` runs as the stdio proxy.
 - **Storage abstraction** — All storage access goes through `IStorage` interface (`storage/interface.ts`). Backend is selected by `createStorage(backend, dbPath)` factory. Tool handlers and engine components are backend-agnostic.
 
 ### Graph Schema
@@ -154,21 +177,38 @@ Per-project knowledge graphs via `.knowledge-graph/` directories:
 
 ### Categories (5)
 
-| Category | Meaning | Size Target | Initial Lifecycle | Initial Confidence |
-|---|---|---|---|---|
-| `fact` | A verifiable statement or piece of knowledge | 500 chars | `active` | 0.5 |
-| `rule` | A constraint, principle, or guideline | 800 chars | `active` | 0.5 |
-| `insight` | A discovered pattern, learning, or understanding | 600 chars | `hypothesis` | 0.3 |
-| `question` | An open question to investigate or resolve | 400 chars | `hypothesis` | 0.3 |
-| `workflow` | A process, sequence of steps, or procedure | 800 chars | `active` | 0.5 |
+| Category | Meaning | Example | Size Target | Initial Lifecycle | Initial Confidence |
+|---|---|---|---|---|---|
+| `fact` | A verified domain truth or business statement | "Geo-blocked users can still see the app but cannot place bets — this is a legal requirement in AU" | 500 chars | `active` | 0.5 |
+| `rule` | A business constraint or domain guideline | "Betslip odds must be re-validated within 3 seconds of submission because WebSocket odds can drift" | 800 chars | `active` | 0.5 |
+| `insight` | A business pattern Claude inferred from code (needs user confirmation) | "It seems withdrawal limits are tiered by verification level — unverified: $500, basic: $5000, full: unlimited" | 600 chars | `hypothesis` | 0.3 |
+| `question` | An open business question to ask the user | "Why does the product soft-delete flow skip the confirmation dialog for admin users?" | 400 chars | `hypothesis` | 0.3 |
+| `workflow` | A business process or user journey with rationale | "User onboarding: signup → email verify → ID upload → manual review (24h SLA) → account activated" | 800 chars | `active` | 0.5 |
 
-**Why categories matter**: Layer auto-inference, content size warnings, predictable filtering. Categories do NOT affect search scoring, auto-linking, or deduplication.
+**Why categories matter**: Layer auto-inference, content size warnings, predictable filtering. Categories do NOT affect search scoring, auto-linking, or deduplication. Note that `insight` and `question` start as hypotheses — Claude should interview the user to confirm before these can be promoted.
 
 ### Edges
 
-Chunk→Chunk only (15 relation types): `RELATES_TO` (has `auto_created`), `DEPENDS_ON` (has `auto_created` via migration), `CONTRADICTS` (has `auto_created` via migration), `SUPERSEDES` (has `reason`), `TRIGGERS` through `GOVERNED_BY` (each has `description` + `auto_created`). Full list: `RELATES_TO`, `DEPENDS_ON`, `CONTRADICTS`, `SUPERSEDES`, `TRIGGERS`, `REQUIRES`, `PRODUCES`, `IS_PART_OF`, `CONSTRAINS`, `PRECEDES`, `IS_TRUE`, `IS_FALSE`, `TRANSITIONS_TO`, `MUTATES`, `GOVERNED_BY`.
+Chunk→Chunk only (12 relation types, focused on domain/business relationships):
 
-All 15 relations are available via `knowledge_link`. However, `suggested_relations` in metadata accepts only 14 — `supersedes` is excluded because it is system-managed (created automatically by `knowledge_evolve` when archiving old versions).
+| Relation | Purpose | Example |
+|---|---|---|
+| `RELATES_TO` | General association (auto-linking) | "KYC policy relates to withdrawal limits" |
+| `DEPENDS_ON` | A requires B to function | "Bet placement depends on odds validation" |
+| `CONTRADICTS` | A conflicts with B | "Old refund policy contradicts new compliance rule" |
+| `SUPERSEDES` | A replaces B (system-managed by evolve) | "Updated withdrawal rule supersedes legacy rule" |
+| `TRIGGERS` | A causes B to happen | "Failed verification triggers account review" |
+| `REQUIRES` | A needs B as prerequisite | "Withdrawal requires completed KYC" |
+| `PRODUCES` | A creates/outputs B | "Signup flow produces user profile + wallet" |
+| `IS_PART_OF` | A is a component of B | "Email verify is part of onboarding workflow" |
+| `CONSTRAINS` | A limits/restricts B | "Geo-blocking constrains bet placement" |
+| `PRECEDES` | A happens before B | "ID upload precedes manual review in KYC" |
+| `TRANSITIONS_TO` | A changes state to B | "Pending bet transitions to settled after match" |
+| `GOVERNED_BY` | A is controlled by B | "Withdrawal limits governed by compliance regulation" |
+
+Properties: `RELATES_TO` has `auto_created`. `DEPENDS_ON`, `CONTRADICTS` have `auto_created`. `SUPERSEDES` has `reason`. All others have `description` + `auto_created`.
+
+All 12 relations are available via `knowledge_link`. However, `suggested_relations` in metadata accepts only 11 — `supersedes` is excluded because it is system-managed (created automatically by `knowledge_evolve` when archiving old versions).
 
 Relation mappings defined in `types.ts`: `RELATION_TABLE_MAP`.
 
@@ -349,7 +389,7 @@ Auto-promotes hypothesis → validated when `validation_count >= 3` AND `confide
 
 Lifecycle transitions: hypothesis → validated → promoted → canonical (requires conf ≥ 0.9). Also supports `active` → `promoted` directly. Guards: cannot promote chunks with confidence < 0.2 (typically refuted), cannot promote low-confidence chunks (confidence < 0.5), cannot promote already-canonical chunks. Note: The promote handler has no case for `refuted` lifecycle. In practice, `knowledge_validate` always revives refuted chunks to `hypothesis` before confidence can reach the 0.5 promotion threshold.
 
-**Golden evidence**: Requires ALL 4 golden evidence sources verified before calling. Use `reason` format: `Golden Evidence: [docs:path] [code:path:line] [tests:path] [task:issue-id]`. See [Validation Policy](#validation-policy-golden-evidence).
+**Golden evidence**: Caller should verify ALL 4 golden evidence sources before calling. This is a behavioral policy documented in CLAUDE.md, not a runtime check enforced by the handler. Use `reason` format: `Golden Evidence: [docs:path] [code:path:line] [tests:path] [task:issue-id]`. See [Validation Policy](#validation-policy-golden-evidence).
 
 ### knowledge_list (enhanced)
 
@@ -417,9 +457,22 @@ Normalization catches case/format variants automatically (`"DI"` → `"di"`), bu
 
 This is a knowledge network, not a RAG system. When Claude queries a topic, the goal is to return the full neighborhood of related knowledge — not just the top-N closest matches. The graph decides what's related through vector similarity, keyword matching, graph traversal, and confidence scoring. Everything connected comes back, sorted by relevance. Claude gets context, not snippets.
 
-## Content Philosophy: Atomic Nodes
+## Content Philosophy: Domain Knowledge, Not Code Index
 
-Each node should be small and focused — one idea, one fact, one rule. Think mind map, not wiki page. Content must be plain natural language — no markdown formatting inside nodes. The server warns when content exceeds category-specific size targets (fact: 500, rule: 800, insight: 600, question: 400, workflow: 800 chars). The Zod hard limit is 5000 chars (enforced in client.ts). Smaller nodes produce richer graphs with more edges and better search results.
+Each node should capture **one business rule, domain fact, or workflow rationale** — expressed in natural language. Think "domain expert's notebook", not "code documentation". Content must be plain natural language — no markdown formatting, no code snippets, no class names as primary content.
+
+**Litmus test**: If you can answer "is this true?" by reading a single source file — it does NOT belong in the knowledge graph. If you need to reason across multiple files, user context, and domain knowledge to understand it — it belongs here.
+
+The server warns when content exceeds category-specific size targets (fact: 500, rule: 800, insight: 600, question: 400, workflow: 800 chars). The Zod hard limit is 5000 chars (enforced in client.ts). Smaller nodes produce richer graphs with more edges and better search results.
+
+### Interview-First Approach
+
+When Claude encounters code that implies a business rule but the "why" is unclear, Claude MUST:
+1. **Hypothesize** — form a natural language inference about the business logic
+2. **Ask the user** — propose the hypothesis and let the user confirm, correct, or expand
+3. **Store the confirmed answer** — only after user confirmation, store as `fact` or `rule`
+
+If the user says "I don't know", store as `question` (hypothesis lifecycle, confidence 0.3) for future investigation.
 
 ## Configuration (`config.ts`)
 
@@ -493,7 +546,7 @@ File: `~/.knowledge-graph/knowledge.json` (created by `knowledge-graph setup`)
 | Embedding cache | 10,000 LRU | `config.ts` |
 | List default limit | 50 | `daemon.ts` |
 
-| Chunk→Chunk relation types | 15 | `types.ts` |
+| Chunk→Chunk relation types | 12 | `types.ts` |
 | Confirmation boost | 0.25 (diminishing) | `config.ts` |
 | Refutation penalty | 0.15 (amplifying) | `config.ts` |
 | Auto-promote threshold | conf ≥ 0.85, validations ≥ 3 | `config.ts` |
@@ -536,6 +589,8 @@ Both backends implement the `IStorage` interface (`storage/interface.ts`). Backe
 | `src/daemon.ts` | Daemon process — HTTP server, DB lock owner, dashboard host |
 | `src/daemon-manager.ts` | Ensures daemon is running, spawns new one if needed |
 | `src/client.ts` | MCP stdio-to-HTTP proxy (forwards tool calls to daemon) |
+| `src/http-utils.ts` | Shared localhost CORS/origin checks, request body reader, HTTP request error helpers |
+| `src/version.ts` | Runtime version lookup from `package.json` |
 | `src/project.ts` | Per-project `.knowledge-graph/` management, discovery, registry |
 | `src/rpc.ts` | JSON-RPC 2.0 request/response utilities |
 | `src/types.ts` | All shared types, relation maps, constants |
@@ -558,9 +613,11 @@ Both backends implement the `IStorage` interface (`storage/interface.ts`). Backe
 
 | `src/dashboard/server.ts` | Dashboard HTTP server + SSE event streaming |
 | `src/dashboard/events.ts` | EventBus for pipeline step events |
-| `src/dashboard/api.ts` | Dashboard REST API (stats, graph, chunks) |
+| `src/dashboard/api.ts` | Dashboard REST API (stats, chunk-node graph, chunk detail, search) |
 | `src/dashboard/index.html` | Dashboard SPA (graph viz, event timeline, detail panel) |
-| `scripts/regression-test.ts` | 19-test regression suite covering all features |
+| `scripts/regression-test.ts` | Regression suite covering all tool features |
+| `scripts/daemon-integration-test.ts` | Verifies daemon startup, localhost health/connect/disconnect/shutdown flow, and stale PID recovery against built `dist/` files |
+| `scripts/build-artifact-test.ts` | Verifies `dist/` contains expected compiled outputs and copied assets, including `http-utils.js`, `version.js`, and `dashboard/index.html` |
 
 ## Documentation Consistency
 

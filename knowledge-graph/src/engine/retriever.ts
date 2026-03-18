@@ -155,7 +155,7 @@ export class Retriever {
       postFiltered = postFiltered.filter(s => s.chunk.updated_at >= filters.since!);
     }
 
-    onStep?.('mmr_rerank', `Returning ${postFiltered.length} results`, {
+    onStep?.('final_rank', `Returning ${postFiltered.length} results`, {
       selected: postFiltered.map(s => ({ id: s.chunk.id, summary: s.chunk.summary, score: Math.round(s.score * 1000) / 1000 }))
     });
 

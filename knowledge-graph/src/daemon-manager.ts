@@ -11,10 +11,12 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 /**
  * Ensure a daemon is running for the given project.
  * Returns the daemon's base URL (e.g., "http://127.0.0.1:54321").
+ * If port is specified, override the configured port range start.
  */
 export async function ensureDaemon(
   project: ProjectInfo,
   config: KnowledgeConfig,
+  port?: number,
 ): Promise<string> {
   // 1. Check for existing daemon via port file
   if (existsSync(project.daemonPortFile)) {
@@ -45,10 +47,10 @@ export async function ensureDaemon(
   }
 
   // 3. Spawn new daemon
-  return spawnDaemon(project, config);
+  return spawnDaemon(project, config, port);
 }
 
-function spawnDaemon(project: ProjectInfo, config: KnowledgeConfig): Promise<string> {
+function spawnDaemon(project: ProjectInfo, config: KnowledgeConfig, port?: number): Promise<string> {
   return new Promise((resolve, reject) => {
     const daemonScript = join(__dirname, 'daemon.js');
 
@@ -57,6 +59,9 @@ function spawnDaemon(project: ProjectInfo, config: KnowledgeConfig): Promise<str
       ...config,
       db: { path: project.dbPath },
     };
+
+    // Determine port to use: explicit port > project config > default
+    const portToUse = port ?? project.config.daemon.port_range_start;
 
     const child = fork(daemonScript, [], {
       detached: true,
@@ -67,7 +72,7 @@ function spawnDaemon(project: ProjectInfo, config: KnowledgeConfig): Promise<str
         KG_PROJECT_DIR: project.kgDir,
         KG_PROJECT_ID: project.projectId,
         KG_IDLE_TIMEOUT_MS: String(project.config.daemon.idle_timeout_ms),
-        KG_PORT_RANGE_START: String(project.config.daemon.port_range_start),
+        KG_PORT_RANGE_START: String(portToUse),
       },
     });
 

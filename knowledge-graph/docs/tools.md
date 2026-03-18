@@ -15,7 +15,7 @@
 | 5 | `knowledge_evolve` | Update chunk | New content, re-embed, version bump, re-link |
 | 6 | `knowledge_delete` | Delete chunk | Remove chunk and all its relationships |
 | 7 | `knowledge_validate` | Confirm/refute | Drive lifecycle via evidence-backed validation |
-| 8 | `knowledge_promote` | Graduate chunk | Promote lifecycle status (requires golden evidence) |
+| 8 | `knowledge_promote` | Graduate chunk | Promote lifecycle status (caller should verify golden evidence) |
 
 ---
 
@@ -123,7 +123,7 @@ Create a manual relationship between two knowledge chunks.
 |-------|------|----------|-------------|
 | `source_id` | string | yes | Source chunk ID |
 | `target_id` | string | yes | Target chunk ID |
-| `relation` | enum | yes | `relates_to` `depends_on` `contradicts` `supersedes` `triggers` `requires` `produces` `is_part_of` `constrains` `precedes` `is_true` `is_false` `transitions_to` `mutates` `governed_by` |
+| `relation` | enum | yes | `relates_to` `depends_on` `contradicts` `supersedes` `triggers` `requires` `produces` `is_part_of` `constrains` `precedes` `transitions_to` `governed_by` |
 
 **Returns**: `{ created, source_id, target_id, relation }`
 
@@ -207,7 +207,7 @@ Note: The `action` field in the response returns the past tense form: `'confirme
 
 ## 8. knowledge_promote
 
-Promote a knowledge chunk to a higher lifecycle status. Requires all 4 golden evidence sources verified.
+Promote a knowledge chunk to a higher lifecycle status. Caller should verify all 4 golden evidence sources before use.
 
 **Parameters**:
 
@@ -227,7 +227,7 @@ Promote a knowledge chunk to a higher lifecycle status. Requires all 4 golden ev
 - Cannot promote low-confidence chunks (confidence < 0.5)
 - Cannot promote already-canonical chunks
 
-**Golden evidence requirement**: Before calling, verify ALL 4 golden evidence sources:
+**Golden evidence guidance**: Before calling, verify ALL 4 golden evidence sources. This is caller-side policy; the handler itself only enforces lifecycle and confidence guards:
 1. Documentation — `docs/` or `CLAUDE.md` confirms the knowledge
 2. Code — `src/` or `lib/` proves it
 3. Tests — `test/` or `scripts/` verifies it

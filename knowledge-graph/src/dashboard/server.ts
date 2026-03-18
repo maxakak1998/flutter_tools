@@ -8,6 +8,7 @@ import { Retriever } from '../engine/retriever.js';
 import { EventBus } from './events.js';
 import { handleGraphData, handleStats, handleChunkDetail, handleSearch } from './api.js';
 import { log } from '../types.js';
+import { applyLocalhostCors, isHttpRequestError, readRequestBody } from '../http-utils.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -47,10 +48,9 @@ export class DashboardServer {
     const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
     const path = url.pathname;
 
-    // CORS headers for all responses
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    if (!applyLocalhostCors(req, res)) {
+      return;
+    }
 
     if (req.method === 'OPTIONS') {
       res.writeHead(204);
@@ -63,7 +63,7 @@ export class DashboardServer {
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
         res.end(this.html);
       } else if (path === '/api/graph') {
-        const data = await handleGraphData(this.storage, this.embedder);
+        const data = await handleGraphData(this.storage);
         this.sendJson(res, data);
       } else if (path === '/api/stats') {
         const data = await handleStats(this.storage, this.embedder);
@@ -96,7 +96,7 @@ export class DashboardServer {
           res.end(JSON.stringify({ error: 'Chunk not found' }));
         }
       } else if (path === '/api/events') {
-        this.eventBus.subscribe(res);
+        this.eventBus.subscribe(req.headers.origin, res);
       } else if (path === '/api/health') {
         this.sendJson(res, {
           status: 'ok',
@@ -112,7 +112,7 @@ export class DashboardServer {
           res.end(JSON.stringify({ error: `Unknown trigger: ${name}` }));
           return;
         }
-        const body = await this.readBody(req);
+        const body = await readRequestBody(req);
         const params = JSON.parse(body || '{}');
         const result = await handler(params);
         this.sendJson(res, result);
@@ -122,18 +122,14 @@ export class DashboardServer {
       }
     } catch (e) {
       log('Dashboard request error:', path, e);
+      if (isHttpRequestError(e)) {
+        res.writeHead(e.statusCode, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: e.message }));
+        return;
+      }
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: String(e) }));
     }
-  }
-
-  private readBody(req: IncomingMessage): Promise<string> {
-    return new Promise((resolve, reject) => {
-      let data = '';
-      req.on('data', (chunk: Buffer) => { data += chunk.toString(); });
-      req.on('end', () => resolve(data));
-      req.on('error', reject);
-    });
   }
 
   private sendJson(res: ServerResponse, data: unknown): void {

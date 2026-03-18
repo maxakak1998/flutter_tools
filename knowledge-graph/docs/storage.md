@@ -79,10 +79,7 @@ The `store` handler emits warnings when content exceeds category-specific size t
 | `IS_PART_OF` | `description STRING, auto_created STRING` | Source is part of target |
 | `CONSTRAINS` | `description STRING, auto_created STRING` | Source constrains target |
 | `PRECEDES` | `description STRING, auto_created STRING` | Source precedes target |
-| `IS_TRUE` | `description STRING, auto_created STRING` | Source confirms target |
-| `IS_FALSE` | `description STRING, auto_created STRING` | Source contradicts target |
 | `TRANSITIONS_TO` | `description STRING, auto_created STRING` | Source transitions to target |
-| `MUTATES` | `description STRING, auto_created STRING` | Source mutates target |
 | `GOVERNED_BY` | `description STRING, auto_created STRING` | Source is governed by target |
 
 ---
@@ -95,8 +92,7 @@ The `store` handler emits warnings when content exceeds category-specific size t
           RELATES_TO│   DEPENDS_ON   CONTRADICTS   SUPERSEDES     │
         (auto_created)  TRIGGERS     REQUIRES      (reason)       │
                     │   PRODUCES     IS_PART_OF    CONSTRAINS     │
-                    │   PRECEDES     IS_TRUE       IS_FALSE       │
-                    │   TRANSITIONS_TO  MUTATES    GOVERNED_BY    │
+                    │   PRECEDES     TRANSITIONS_TO GOVERNED_BY   │
                     │                                              │
                  ┌──┴──┐                                    ┌──┴──┐
                  │Chunk│────────────────────────────────────│Chunk│
@@ -138,7 +134,7 @@ All relationships (both auto-created and manual) are preserved across this cycle
 
 ## CRUD Operations
 
-**createChunk**: Accepts `Omit<StoredChunk, 'created_at' | 'updated_at'>` — timestamps are auto-generated. Parameterized `CREATE` with `cast($embedding, 'DOUBLE[1024]')` for the vector column.
+**createChunk**: Accepts the normal chunk payload plus optional `created_at` and `updated_at` overrides. If omitted, timestamps are auto-generated. This lets Kuzu's delete-and-recreate evolve path preserve the original `created_at`. Parameterized `CREATE` with `cast($embedding, 'DOUBLE[1024]')` for the vector column.
 
 **getChunk**: `MATCH (c:Chunk) WHERE c.id = $id RETURN c.*`
 
@@ -156,10 +152,10 @@ All relationships (both auto-created and manual) are preserved across this cycle
 
 **vectorSearch**: `CALL QUERY_VECTOR_INDEX(...)` with post-filtering by domain/category/importance/layer/tags/min_confidence/lifecycle/since. Returns chunks sorted by cosine distance. Note: The embedding column is not selected in vectorSearch results (for performance). Returned chunks have an empty embedding array (`flatRowToChunk` defaults to `[]`).
 
-**getRelatedChunks**: Variable-length path traversal across all 15 Chunk→Chunk relationship types. Configurable depth (function signature default 2, but the retriever always calls with depth 1).
+**getRelatedChunks**: Variable-length path traversal across all 12 Chunk→Chunk relationship types. Configurable depth (function signature default 2, but the retriever always calls with depth 1).
 
 ```cypher
-MATCH (c:Chunk {id: $id})-[r:RELATES_TO|DEPENDS_ON|CONTRADICTS|SUPERSEDES|TRIGGERS|REQUIRES|PRODUCES|IS_PART_OF|CONSTRAINS|PRECEDES|IS_TRUE|IS_FALSE|TRANSITIONS_TO|MUTATES|GOVERNED_BY*1..N]-(related:Chunk)
+MATCH (c:Chunk {id: $id})-[r:RELATES_TO|DEPENDS_ON|CONTRADICTS|SUPERSEDES|TRIGGERS|REQUIRES|PRODUCES|IS_PART_OF|CONSTRAINS|PRECEDES|TRANSITIONS_TO|GOVERNED_BY*1..N]-(related:Chunk)
 RETURN DISTINCT related.*
 ```
 
@@ -208,10 +204,7 @@ The `run()` helper catches "already exists" errors silently. This makes `initial
 | `is_part_of` | `IS_PART_OF` |
 | `constrains` | `CONSTRAINS` |
 | `precedes` | `PRECEDES` |
-| `is_true` | `IS_TRUE` |
-| `is_false` | `IS_FALSE` |
 | `transitions_to` | `TRANSITIONS_TO` |
-| `mutates` | `MUTATES` |
 | `governed_by` | `GOVERNED_BY` |
 
 ---

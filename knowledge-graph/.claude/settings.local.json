@@ -1,23 +1,8 @@
 {
   "permissions": {
-    "allow": [
-      "Bash(wc:*)",
-      "Bash(npm run build:*)",
-      "mcp__knowledge-graph__knowledge_query",
-      "mcp__knowledge-graph__knowledge_list",
-      "Bash(npx tsc:*)",
-      "mcp__knowledge-graph__knowledge_link",
-      "mcp__knowledge-graph__knowledge_store",
-      "Bash(python3:*)",
-      "WebFetch(domain:neo4j.com)",
-      "WebFetch(domain:dribbble.com)",
-      "WebFetch(domain:www.yworks.com)",
-      "WebFetch(domain:www.lucidchart.com)"
-    ],
+    "allow": [],
     "defaultMode": "bypassPermissions"
   },
   "enableAllProjectMcpServers": true,
-  "enabledMcpjsonServers": [
-    "knowledge-graph"
-  ]
+  "outputStyle": "Explanatory"
 }

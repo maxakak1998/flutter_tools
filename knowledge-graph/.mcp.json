@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "knowledge-graph": {
+      "command": "kg",
+      "args": [
+        "serve"
+      ]
+    }
+  }
+}

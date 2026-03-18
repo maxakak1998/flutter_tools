@@ -7,17 +7,18 @@
  * Spawned by daemon-manager.ts via child_process.fork() with detached: true.
  */
 
-import { createServer, IncomingMessage, ServerResponse, Server } from 'http';
-import { readFileSync, writeFileSync, unlinkSync, existsSync } from 'fs';
+import { createServer, IncomingMessage, ServerResponse } from 'http';
+import { writeFileSync, unlinkSync, existsSync } from 'fs';
 import { join } from 'path';
 import { createCore, CoreComponents } from './core.js';
-import { parseRpcRequest, formatResult, formatError, JsonRpcResponse } from './rpc.js';
+import { parseRpcRequest, formatResult, formatError } from './rpc.js';
 import { KnowledgeConfig } from './config.js';
 import { log } from './types.js';
 import { randomUUID } from 'crypto';
 import { DashboardServer } from './dashboard/server.js';
 import { handleQuery } from './tools/query.js';
 import { handleStore } from './tools/store.js';
+import { applyLocalhostCors, isHttpRequestError, readRequestBody } from './http-utils.js';
 
 import { handleLink } from './tools/link.js';
 import { handleList } from './tools/list.js';
@@ -176,10 +177,9 @@ async function daemonMain(): Promise<void> {
     const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
     const path = url.pathname;
 
-    // CORS
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    if (!applyLocalhostCors(req, res)) {
+      return;
+    }
 
     if (req.method === 'OPTIONS') {
       res.writeHead(204);
@@ -190,7 +190,7 @@ async function daemonMain(): Promise<void> {
     try {
       if (path === '/rpc' && req.method === 'POST') {
         // JSON-RPC dispatch
-        const body = await readBody(req);
+        const body = await readRequestBody(req);
         const rpcReq = parseRpcRequest(body);
         try {
           const result = await dispatchRpc(rpcReq.method, rpcReq.params);
@@ -226,6 +226,11 @@ async function daemonMain(): Promise<void> {
       }
     } catch (e) {
       log('Daemon: request error:', path, e);
+      if (isHttpRequestError(e)) {
+        res.writeHead(e.statusCode, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: e.message }));
+        return;
+      }
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: String(e) }));
     }
@@ -270,15 +275,6 @@ async function daemonMain(): Promise<void> {
 // ============================================================
 // Helpers
 // ============================================================
-
-function readBody(req: IncomingMessage): Promise<string> {
-  return new Promise((resolve, reject) => {
-    let data = '';
-    req.on('data', (chunk: Buffer) => { data += chunk.toString(); });
-    req.on('end', () => resolve(data));
-    req.on('error', reject);
-  });
-}
 
 function sendJson(res: ServerResponse, data: unknown): void {
   res.writeHead(200, { 'Content-Type': 'application/json' });

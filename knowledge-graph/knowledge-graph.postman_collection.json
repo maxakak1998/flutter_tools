@@ -35,7 +35,7 @@
 					"host": ["{{baseUrl}}"],
 					"path": ["api", "stats"]
 				},
-				"description": "Aggregate stats: chunk/edge/code entity counts, breakdowns by domain/category/importance, embedding cache info."
+				"description": "Aggregate stats: chunk and edge counts, breakdowns by domain/category/importance, embedding cache info."
 			}
 		},
 		{
@@ -48,7 +48,7 @@
 					"host": ["{{baseUrl}}"],
 					"path": ["api", "graph"]
 				},
-				"description": "Returns all nodes (chunks + code entities) and edges for vis-network rendering. Up to 500 chunks."
+				"description": "Returns chunk nodes and relation edges for the dashboard D3 force-graph visualization. Up to 500 chunks."
 			}
 		},
 		{
@@ -68,7 +68,7 @@
 						{ "key": "limit", "value": "10", "description": "Max results" }
 					]
 				},
-				"description": "Hybrid search: vector + keyword + graph traversal with MMR reranking."
+				"description": "Hybrid search: vector + keyword + graph traversal with final ranking."
 			}
 		},
 		{
@@ -84,7 +84,7 @@
 						{ "key": "chunkId", "value": "", "description": "UUID of the chunk" }
 					]
 				},
-				"description": "Full chunk detail including content, metadata, code links, and related chunks."
+				"description": "Full chunk detail including content, metadata, and related chunks."
 			}
 		},
 		{

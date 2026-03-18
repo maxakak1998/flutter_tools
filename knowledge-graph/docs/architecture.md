@@ -37,7 +37,7 @@ The project has ~78 markdown skill/rule files totaling ~46K tokens. Loading them
 
 ### Solution
 
-On-demand semantic + graph retrieval. Instead of blind-loading, Claude queries for what it needs, and the server returns only relevant chunks with their graph connections and code links.
+On-demand semantic + graph retrieval. Instead of blind-loading, Claude queries for what it needs, and the server returns only relevant chunks with their graph connections.
 
 ### Design Principle
 
@@ -68,6 +68,7 @@ The server handles:
 │         Layer 1: MCP Server (daemon + client)       │
 │  client.ts (stdio MCP) ↔ daemon.ts (HTTP JSON-RPC) │
 │  zod validation · startup lifecycle · shutdown     │
+│  http-utils.ts · version.ts                         │
 ├─────────────────────────────────────────────────┤
 │         Layer 2: Tool Handlers (src/tools/)        │
 │  store · query · evolve · link · validate · promote │
@@ -114,7 +115,7 @@ Layer 4 (Storage)
 
 | Layer | Owns | Does NOT own |
 |-------|------|-------------|
-| 1 — MCP Server | Transport, tool registration, startup/shutdown, config injection | Business logic, data access |
+| 1 — MCP Server | Transport, tool registration, startup/shutdown, config injection, localhost-only origin checks, request-size enforcement, runtime version reporting | Business logic, data access |
 | 2 — Tool Handlers | Orchestration logic per tool, input validation, result formatting | Embedding, search algorithms, DB queries |
 | 3 — Engine | Embedding, search pipeline, auto-linking, keyword scoring | Raw DB operations, schema management |
 | 4 — Storage | IStorage abstraction, backend-specific schema/CRUD/vector index | Business logic, tool semantics |
@@ -236,12 +237,17 @@ CLI flags  >  env vars  >  knowledge.json  >  DEFAULT_CONFIG (config.ts)
 | Constant | Value | File | Purpose |
 |----------|-------|------|---------|
 | `EMBEDDING_DIMENSIONS` | 1024 | `types.ts` | bge-m3 vector size, baked into both KuzuDB and SurrealDB schemas |
+| `MAX_REQUEST_BODY_BYTES` | 1048576 (1 MB) | `http-utils.ts` | Shared POST body size limit for daemon RPC and dashboard trigger routes |
 
 Changing `EMBEDDING_DIMENSIONS` requires a database migration.
 
 ---
 
 ## Known Limitations
+
+### Localhost-Only HTTP Surface
+
+The daemon binds to `127.0.0.1`. Browser-facing dashboard routes and SSE subscriptions accept origins only from `127.0.0.1`, `localhost`, or `::1`. Shared request parsing in `src/http-utils.ts` enforces a 1 MB limit on POST bodies for RPC and dashboard trigger routes.
 
 ### No Pagination for Large Result Sets
 
@@ -251,7 +257,7 @@ Changing `EMBEDDING_DIMENSIONS` requires a database migration.
 
 ### No TTL/Expiration for Chunks
 
-Chunks persist indefinitely. There is no automatic cleanup of stale knowledge, archived versions, or unused code entities.
+Chunks persist indefinitely. There is no automatic cleanup of stale knowledge or archived versions.
 
 **Impact**: Database grows monotonically. Old archived chunks (from evolve) accumulate.
 

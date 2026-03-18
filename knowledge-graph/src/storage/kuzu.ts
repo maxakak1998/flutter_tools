@@ -120,11 +120,7 @@ export class KuzuStorage implements IStorage {
     await this.run('CREATE REL TABLE CONSTRAINS (FROM Chunk TO Chunk, description STRING, auto_created STRING)');
     await this.run('CREATE REL TABLE PRECEDES (FROM Chunk TO Chunk, description STRING, auto_created STRING)');
 
-    // ECA edge types
-    await this.run('CREATE REL TABLE IS_TRUE (FROM Chunk TO Chunk, description STRING, auto_created STRING)');
-    await this.run('CREATE REL TABLE IS_FALSE (FROM Chunk TO Chunk, description STRING, auto_created STRING)');
     await this.run('CREATE REL TABLE TRANSITIONS_TO (FROM Chunk TO Chunk, description STRING, auto_created STRING)');
-    await this.run('CREATE REL TABLE MUTATES (FROM Chunk TO Chunk, description STRING, auto_created STRING)');
     await this.run('CREATE REL TABLE GOVERNED_BY (FROM Chunk TO Chunk, description STRING, auto_created STRING)');
 
     // Migration: add auto_created to DEPENDS_ON and CONTRADICTS for consistency
@@ -145,8 +141,10 @@ export class KuzuStorage implements IStorage {
 
   // === Chunk CRUD ===
 
-  async createChunk(chunk: Omit<StoredChunk, 'created_at' | 'updated_at'>): Promise<string> {
+  async createChunk(chunk: Omit<StoredChunk, 'created_at' | 'updated_at'> & Partial<Pick<StoredChunk, 'created_at' | 'updated_at'>>): Promise<string> {
     const now = new Date().toISOString();
+    const createdAt = chunk.created_at ?? now;
+    const updatedAt = chunk.updated_at ?? now;
     await this.queryParams(
       `CREATE (c:Chunk {
         id: $id,
@@ -184,8 +182,8 @@ export class KuzuStorage implements IStorage {
         keywords: chunk.keywords,
         entities: chunk.entities,
         tags: chunk.tags,
-        created_at: now,
-        updated_at: now,
+        created_at: createdAt,
+        updated_at: updatedAt,
         version: chunk.version,
         confidence: chunk.confidence ?? 0.5,
         validation_count: chunk.validation_count ?? 0,
@@ -243,6 +241,8 @@ export class KuzuStorage implements IStorage {
         keywords: merged.keywords,
         entities: merged.entities,
         tags: merged.tags,
+        created_at: existing.created_at,
+        updated_at: merged.updated_at,
         version: merged.version,
         confidence: merged.confidence,
         validation_count: merged.validation_count,
@@ -473,10 +473,7 @@ export class KuzuStorage implements IStorage {
       { type: 'IS_PART_OF', propCols: ['r.description AS description', 'r.auto_created AS auto_created'] },
       { type: 'CONSTRAINS', propCols: ['r.description AS description', 'r.auto_created AS auto_created'] },
       { type: 'PRECEDES', propCols: ['r.description AS description', 'r.auto_created AS auto_created'] },
-      { type: 'IS_TRUE', propCols: ['r.description AS description', 'r.auto_created AS auto_created'] },
-      { type: 'IS_FALSE', propCols: ['r.description AS description', 'r.auto_created AS auto_created'] },
       { type: 'TRANSITIONS_TO', propCols: ['r.description AS description', 'r.auto_created AS auto_created'] },
-      { type: 'MUTATES', propCols: ['r.description AS description', 'r.auto_created AS auto_created'] },
       { type: 'GOVERNED_BY', propCols: ['r.description AS description', 'r.auto_created AS auto_created'] },
     ];
 
@@ -647,7 +644,7 @@ export class KuzuStorage implements IStorage {
 
   async getRelatedChunks(chunkId: string, depth = 2): Promise<StoredChunk[]> {
     const rows = await this.queryParams(
-      `MATCH (c:Chunk {id: $id})-[r:RELATES_TO|DEPENDS_ON|CONTRADICTS|SUPERSEDES|TRIGGERS|REQUIRES|PRODUCES|IS_PART_OF|CONSTRAINS|PRECEDES|IS_TRUE|IS_FALSE|TRANSITIONS_TO|MUTATES|GOVERNED_BY*1..${depth}]-(related:Chunk)
+      `MATCH (c:Chunk {id: $id})-[r:RELATES_TO|DEPENDS_ON|CONTRADICTS|SUPERSEDES|TRIGGERS|REQUIRES|PRODUCES|IS_PART_OF|CONSTRAINS|PRECEDES|TRANSITIONS_TO|GOVERNED_BY*1..${depth}]-(related:Chunk)
        RETURN DISTINCT related.*`,
       { id: chunkId },
     );
@@ -690,10 +687,7 @@ export class KuzuStorage implements IStorage {
       { type: 'IS_PART_OF', hasAutoProp: true },
       { type: 'CONSTRAINS', hasAutoProp: true },
       { type: 'PRECEDES', hasAutoProp: true },
-      { type: 'IS_TRUE', hasAutoProp: true },
-      { type: 'IS_FALSE', hasAutoProp: true },
       { type: 'TRANSITIONS_TO', hasAutoProp: true },
-      { type: 'MUTATES', hasAutoProp: true },
       { type: 'GOVERNED_BY', hasAutoProp: true },
     ];
 
@@ -728,7 +722,7 @@ export class KuzuStorage implements IStorage {
 
     // Count all edges across all Chunk→Chunk relationship types
     let totalEdges = 0;
-    const relTypes = ['RELATES_TO', 'DEPENDS_ON', 'CONTRADICTS', 'SUPERSEDES', 'TRIGGERS', 'REQUIRES', 'PRODUCES', 'IS_PART_OF', 'CONSTRAINS', 'PRECEDES', 'IS_TRUE', 'IS_FALSE', 'TRANSITIONS_TO', 'MUTATES', 'GOVERNED_BY'];
+    const relTypes = ['RELATES_TO', 'DEPENDS_ON', 'CONTRADICTS', 'SUPERSEDES', 'TRIGGERS', 'REQUIRES', 'PRODUCES', 'IS_PART_OF', 'CONSTRAINS', 'PRECEDES', 'TRANSITIONS_TO', 'GOVERNED_BY'];
     for (const type of relTypes) {
       try {
         const [row] = await this.query(`MATCH (a:Chunk)-[r:${type}]->(b:Chunk) RETURN count(r) AS cnt`);

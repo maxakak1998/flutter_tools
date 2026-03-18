@@ -43,15 +43,12 @@ export type KnowledgeRelation =
   | 'is_part_of'
   | 'constrains'
   | 'precedes'
-  | 'is_true'
-  | 'is_false'
   | 'transitions_to'
-  | 'mutates'
   | 'governed_by';
 
 export interface SuggestedRelation {
   concept: string;
-  relation: 'relates_to' | 'depends_on' | 'contradicts' | 'triggers' | 'requires' | 'produces' | 'is_part_of' | 'constrains' | 'precedes' | 'is_true' | 'is_false' | 'transitions_to' | 'mutates' | 'governed_by';
+  relation: 'relates_to' | 'depends_on' | 'contradicts' | 'triggers' | 'requires' | 'produces' | 'is_part_of' | 'constrains' | 'precedes' | 'transitions_to' | 'governed_by';
 }
 
 // === Stored types (what lives in KuzuDB) ===
@@ -233,10 +230,7 @@ export const RELATION_TABLE_MAP: Record<string, string> = {
   is_part_of: 'IS_PART_OF',
   constrains: 'CONSTRAINS',
   precedes: 'PRECEDES',
-  is_true: 'IS_TRUE',
-  is_false: 'IS_FALSE',
   transitions_to: 'TRANSITIONS_TO',
-  mutates: 'MUTATES',
   governed_by: 'GOVERNED_BY',
 };
 
@@ -248,7 +242,7 @@ export interface DashboardEvent {
   timestamp: string;    // ISO 8601
   tool: string;         // 'store' | 'query' | 'evolve' | 'link' | ...
   step: string;         // store: embedding, embedding_done, dedup_check, dedup_hit, stored, auto_link, auto_link_done
-                        // query: embedding, embedding_done, vector_search, keyword_extract, graph_expand, graph_expand_done, score_merge, mmr_rerank
+                        // query: embedding, embedding_done, vector_search, keyword_extract, graph_expand, graph_expand_done, score_merge, final_rank
                         // evolve: fetch, archive, archive_done, re_embed, re_embed_done, update, update_done, re_link, re_link_done
   summary: string;      // Human-readable for this step
   data?: unknown;       // Step-specific payload for animation

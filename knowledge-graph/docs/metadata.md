@@ -75,7 +75,7 @@ Nested object within `metadata.suggested_relations[]`. Hints at connections to o
 | Field | Type | Required | Constraints |
 |-------|------|----------|-------------|
 | `concept` | string | YES | name or description of the related concept |
-| `relation` | enum | YES | `relates_to` \| `depends_on` \| `contradicts` \| `triggers` \| `requires` \| `produces` \| `is_part_of` \| `constrains` \| `precedes` \| `is_true` \| `is_false` \| `transitions_to` \| `mutates` \| `governed_by` |
+| `relation` | enum | YES | `relates_to` \| `depends_on` \| `contradicts` \| `triggers` \| `requires` \| `produces` \| `is_part_of` \| `constrains` \| `precedes` \| `transitions_to` \| `governed_by` |
 
 Note: `supersedes` is intentionally excluded from suggested relations. Supersedes edges are system-managed — created automatically by `knowledge_evolve` when archiving old versions. Use `knowledge_link` to create manual `supersedes` edges.
 

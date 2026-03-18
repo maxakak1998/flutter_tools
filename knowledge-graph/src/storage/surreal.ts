@@ -32,10 +32,7 @@ const SURREAL_REL_TABLE: Record<string, string> = {
   IS_PART_OF: 'is_part_of',
   CONSTRAINS: 'constrains',
   PRECEDES: 'precedes',
-  IS_TRUE: 'is_true',
-  IS_FALSE: 'is_false',
   TRANSITIONS_TO: 'transitions_to',
-  MUTATES: 'mutates',
   GOVERNED_BY: 'governed_by',
 };
 
@@ -127,10 +124,7 @@ export class SurrealStorage implements IStorage {
       { table: 'is_part_of', extraFields: ['description', 'auto_created'] },
       { table: 'constrains', extraFields: ['description', 'auto_created'] },
       { table: 'precedes', extraFields: ['description', 'auto_created'] },
-      { table: 'is_true', extraFields: ['description', 'auto_created'] },
-      { table: 'is_false', extraFields: ['description', 'auto_created'] },
       { table: 'transitions_to', extraFields: ['description', 'auto_created'] },
-      { table: 'mutates', extraFields: ['description', 'auto_created'] },
       { table: 'governed_by', extraFields: ['description', 'auto_created'] },
     ];
 
@@ -146,9 +140,11 @@ export class SurrealStorage implements IStorage {
   // Chunk CRUD
   // ============================================================
 
-  async createChunk(chunk: Omit<StoredChunk, 'created_at' | 'updated_at'>): Promise<string> {
+  async createChunk(chunk: Omit<StoredChunk, 'created_at' | 'updated_at'> & Partial<Pick<StoredChunk, 'created_at' | 'updated_at'>>): Promise<string> {
     const db = this.getDb();
     const now = new Date().toISOString();
+    const createdAt = chunk.created_at ?? now;
+    const updatedAt = chunk.updated_at ?? now;
 
     await db.query(
       `CREATE type::thing('chunk', $id) CONTENT {
@@ -186,8 +182,8 @@ export class SurrealStorage implements IStorage {
         keywords: chunk.keywords,
         entities: chunk.entities,
         tags: chunk.tags,
-        created_at: now,
-        updated_at: now,
+        created_at: createdAt,
+        updated_at: updatedAt,
         version: chunk.version,
         confidence: chunk.confidence ?? 0.5,
         validation_count: chunk.validation_count ?? 0,

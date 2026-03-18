@@ -1,5 +1,6 @@
 import { ServerResponse } from 'http';
 import { DashboardEvent, StepEmitter, log } from '../types.js';
+import { isAllowedLocalOrigin } from '../http-utils.js';
 
 const MAX_BUFFER = 200;
 
@@ -44,13 +45,25 @@ export class EventBus {
   }
 
   /** Subscribe an SSE client. Sends initial backfill of recent events. */
-  subscribe(res: ServerResponse): void {
-    res.writeHead(200, {
+  subscribe(reqOrigin: string | undefined, res: ServerResponse): void {
+    if (reqOrigin && !isAllowedLocalOrigin(reqOrigin)) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Origin not allowed' }));
+      return;
+    }
+
+    const headers: Record<string, string> = {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
       'Connection': 'keep-alive',
-      'Access-Control-Allow-Origin': '*',
-    });
+    };
+
+    if (reqOrigin) {
+      headers['Access-Control-Allow-Origin'] = reqOrigin;
+      headers['Vary'] = 'Origin';
+    }
+
+    res.writeHead(200, headers);
 
     // Send recent events as backfill
     for (const event of this.buffer) {

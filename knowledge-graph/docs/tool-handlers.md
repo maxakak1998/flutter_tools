@@ -152,12 +152,13 @@ Note: The `action` field in the response returns the past tense form: `'confirme
 2. Guard: cannot promote refuted chunks (`confidence < 0.2`)
 3. Guard: cannot promote low-confidence chunks (`confidence < 0.5`)
 4. Guard: cannot promote already-canonical chunks
-5. Determine next lifecycle: hypothesis → validated → promoted → canonical. Also supports `active` → `promoted` directly.
+5. Caller-side policy: Claude should verify golden evidence before calling; the handler does not inspect evidence sources itself.
+6. Determine next lifecycle: hypothesis → validated → promoted → canonical. Also supports `active` → `promoted` directly.
 
 Note: The "cannot promote refuted" guard checks confidence (< 0.2), not lifecycle. A chunk with lifecycle `refuted` but confidence >= 0.5 (partially revived via confirmations) passes all guards, but the lifecycle switch has no `refuted` case — so the lifecycle remains unchanged.
-6. Guard: canonical requires `confidence >= 0.9`
-7. Update lifecycle, optionally update category and importance
-8. Return `{ id, previous_category, new_category, previous_lifecycle, new_lifecycle, confidence, reason }`
+7. Guard: canonical requires `confidence >= 0.9`
+8. Update lifecycle, optionally update category and importance
+9. Return `{ id, previous_category, new_category, previous_lifecycle, new_lifecycle, confidence, reason }`
 
 **Result type**: `PromoteResult` — `{ id, previous_category, new_category, previous_lifecycle, new_lifecycle, confidence, reason }`
 

@@ -14,6 +14,7 @@ import { fileURLToPath } from 'url';
 import { execSync } from 'child_process';
 import { discoverProject, initProject, listProjects, updateLastAccessed, type ProjectInfo } from './project.js';
 import { ensureDaemon } from './daemon-manager.js';
+import { getRuntimeVersion } from './version.js';
 import {
   loadConfig,
   applyOverrides,
@@ -34,6 +35,7 @@ const rawArgs = process.argv.slice(2);
 
 interface ParsedArgs {
   command: string;
+  port?: number;
   storageBackend?: string;
   dbPath?: string;
   ollamaUrl?: string;
@@ -46,6 +48,7 @@ interface ParsedArgs {
 
 function parseArgs(): ParsedArgs {
   let command = '';
+  let port: number | undefined;
   let storageBackend: string | undefined;
   let dbPath: string | undefined;
   let ollamaUrl: string | undefined;
@@ -87,13 +90,26 @@ function parseArgs(): ParsedArgs {
         break;
       default:
         if (!arg.startsWith('-')) {
-          command = arg;
+          // Parse serve:PORT syntax
+          if (arg.includes(':')) {
+            const [cmd, portStr] = arg.split(':');
+            command = cmd;
+            const parsedPort = parseInt(portStr, 10);
+            if (!isNaN(parsedPort) && parsedPort > 0 && parsedPort < 65536) {
+              port = parsedPort;
+            } else {
+              console.error(`Error: Invalid port number "${portStr}". Must be between 1 and 65535.`);
+              process.exit(1);
+            }
+          } else {
+            command = arg;
+          }
         }
         break;
     }
   }
 
-  return { command, storageBackend, dbPath, ollamaUrl, ollamaModel, keepData, force, help, version };
+  return { command, port, storageBackend, dbPath, ollamaUrl, ollamaModel, keepData, force, help, version };
 }
 
 // ============================================================
@@ -108,7 +124,8 @@ USAGE
   knowledge-graph [command] [options]
 
 COMMANDS
-  serve              Start MCP server (auto-detects project, uses daemon)
+  serve[:PORT]       Start MCP server (auto-detects project, uses daemon)
+                     Optionally specify port, kills existing process if needed
   stop               Stop the running daemon for the current project
   init [--force]     Initialize .knowledge-graph/ in current directory
   serve-standalone   Start daemon + dashboard (no MCP, standalone mode)
@@ -145,6 +162,7 @@ ENVIRONMENT VARIABLES
 EXAMPLES
   knowledge-graph                         # Show help text
   knowledge-graph serve                    # Start with auto-detected project
+  knowledge-graph serve:5000              # Start server on port 5000 (kill if in use)
   knowledge-graph setup                   # Create config + register MCP
   knowledge-graph doctor                  # Verify dependencies
   knowledge-graph reset-db                # Wipe database, keep config
@@ -158,12 +176,7 @@ EXAMPLES
 // ============================================================
 
 function printVersion(): void {
-  try {
-    const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf-8'));
-    console.log(`knowledge-graph v${pkg.version}`);
-  } catch {
-    console.log('knowledge-graph v1.0.0');
-  }
+  console.log(`knowledge-graph v${getRuntimeVersion()}`);
 }
 
 // ============================================================
@@ -440,6 +453,68 @@ async function runUninstall(parsed: ParsedArgs): Promise<void> {
 }
 
 // ============================================================
+// Kill process on specific port
+// ============================================================
+
+function killProcessOnPort(port: number): void {
+  try {
+    // Find process using the port
+    const lsofResult = execSync(
+      `lsof -i :${port} 2>/dev/null | grep LISTEN | awk '{print $2}' | head -1 || true`,
+      { encoding: 'utf-8', timeout: 3000 },
+    ).trim();
+
+    if (!lsofResult) {
+      log(`Port ${port} is available`);
+      return;
+    }
+
+    const pid = parseInt(lsofResult, 10);
+    if (!pid || pid === process.pid) {
+      return;
+    }
+
+    try {
+      // Get process info before killing
+      const cmdline = execSync(`ps -p ${pid} -o comm=,args= 2>/dev/null`, {
+        encoding: 'utf-8',
+        timeout: 3000,
+      }).trim();
+
+      log(`Killing existing process on port ${port} (PID: ${pid})`);
+      process.kill(pid, 'SIGTERM');
+
+      // Wait for process to terminate
+      let attempts = 0;
+      while (attempts < 10) {
+        try {
+          process.kill(pid, 0); // Check if process still exists
+          execSync('sleep 0.1');
+          attempts++;
+        } catch {
+          // Process no longer exists
+          break;
+        }
+      }
+
+      // Force kill if still alive
+      try {
+        process.kill(pid, 0);
+        log(`Force killing PID ${pid}`);
+        process.kill(pid, 'SIGKILL');
+        execSync('sleep 0.2');
+      } catch {
+        // Already dead
+      }
+    } catch {
+      // Failed to get process info or kill, continue anyway
+    }
+  } catch {
+    // lsof not available or port not in use, continue
+  }
+}
+
+// ============================================================
 // Kill existing servers (prevent KuzuDB lock conflicts)
 // ============================================================
 
@@ -505,7 +580,12 @@ async function runServe(parsed: ParsedArgs): Promise<void> {
   // Override DB path to project-local
   config.db.path = project.dbPath;
 
-  const daemonUrl = await ensureDaemon(project, config);
+  // Kill and restart if port specified
+  if (parsed.port) {
+    killProcessOnPort(parsed.port);
+  }
+
+  const daemonUrl = await ensureDaemon(project, config, parsed.port);
 
   const { clientMain } = await import('./client.js');
   await clientMain(daemonUrl, project.projectId);

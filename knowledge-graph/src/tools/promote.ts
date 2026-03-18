@@ -23,6 +23,8 @@ export async function handlePromote(
   const previousLifecycle = chunk.lifecycle;
   let newLifecycle = chunk.lifecycle;
 
+  // Golden evidence is a caller-side policy documented in CLAUDE.md.
+  // This handler applies lifecycle/confidence guards only and does not verify evidence sources itself.
   // Lifecycle promotion
   if (newLifecycle === 'canonical') {
     throw new Error('Chunk is already canonical — highest lifecycle state.');
