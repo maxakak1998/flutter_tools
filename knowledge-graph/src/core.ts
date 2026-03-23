@@ -4,6 +4,7 @@ import { Retriever } from './engine/retriever.js';
 import { Linker } from './engine/linker.js';
 import { EventBus } from './dashboard/events.js';
 import { KnowledgeConfig } from './config.js';
+import { EntityAliasRegistry } from './entity-registry.js';
 import { log } from './types.js';
 
 export interface CoreComponents {
@@ -13,13 +14,14 @@ export interface CoreComponents {
   linker: Linker;
   eventBus: EventBus;
   config: KnowledgeConfig;
+  entityRegistry: EntityAliasRegistry;
 }
 
 /**
  * Create and initialize all core engine components.
  * Used by the daemon process.
  */
-export async function createCore(config: KnowledgeConfig): Promise<CoreComponents> {
+export async function createCore(config: KnowledgeConfig, configPath?: string): Promise<CoreComponents> {
   const { db, ollama, search, cache } = config;
 
   const storage = await createStorage(config.storage.backend, db.path);
@@ -30,6 +32,10 @@ export async function createCore(config: KnowledgeConfig): Promise<CoreComponent
   });
   const linker = new Linker(storage, embedder, search.similarityThreshold, search.autoLinkTopK);
   const eventBus = new EventBus();
+  const entityRegistry = new EntityAliasRegistry(
+    config.entityAliases.registry,
+    configPath,
+  );
 
   log('Starting knowledge-graph MCP server...');
   log(`Storage backend: ${config.storage.backend}`);
@@ -44,5 +50,10 @@ export async function createCore(config: KnowledgeConfig): Promise<CoreComponent
     log('Ollama health check passed');
   }
 
-  return { storage, embedder, retriever, linker, eventBus, config };
+  const aliasCount = Object.keys(config.entityAliases.registry).length;
+  if (aliasCount > 0) {
+    log(`Entity alias registry loaded: ${aliasCount} aliases`);
+  }
+
+  return { storage, embedder, retriever, linker, eventBus, config, entityRegistry };
 }

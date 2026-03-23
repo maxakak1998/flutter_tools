@@ -135,7 +135,15 @@ export class Retriever {
 
     // Filter out refuted chunks unless explicitly requested
     const includeRefuted = filters?.lifecycle === 'refuted';
-    const filtered = selected.filter(s => includeRefuted || s.chunk.lifecycle !== 'refuted');
+    // Exclude operational/entity-index layers unless explicitly querying them (cross-layer isolation)
+    const includeOperational = filters?.layer === 'operational';
+    const includeEntityIndex = filters?.layer === 'entity-index';
+    const filtered = selected.filter(s => {
+      if (!includeRefuted && s.chunk.lifecycle === 'refuted') return false;
+      if (!includeOperational && s.chunk.layer === 'operational') return false;
+      if (!includeEntityIndex && s.chunk.layer === 'entity-index') return false;
+      return true;
+    });
 
     // Post-filters for new filter types
     let postFiltered = filtered;
@@ -237,7 +245,14 @@ export class Retriever {
 
     // Filter out refuted chunks unless explicitly requested
     const includeRefuted = filters?.lifecycle === 'refuted';
-    sorted = sorted.filter(s => includeRefuted || s.chunk.lifecycle !== 'refuted');
+    const includeOperational = filters?.layer === 'operational';
+    const includeEntityIndex = filters?.layer === 'entity-index';
+    sorted = sorted.filter(s => {
+      if (!includeRefuted && s.chunk.lifecycle === 'refuted') return false;
+      if (!includeOperational && s.chunk.layer === 'operational') return false;
+      if (!includeEntityIndex && s.chunk.layer === 'entity-index') return false;
+      return true;
+    });
 
     // Post-filters — use effective (decayed) confidence, consistent with knowledge_list
     if (filters?.min_confidence !== undefined) {

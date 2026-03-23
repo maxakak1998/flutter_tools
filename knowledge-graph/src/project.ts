@@ -127,6 +127,8 @@ export function initProject(targetDir: string, name?: string, force?: boolean): 
   const projectName = name || basename(targetDir);
 
   mkdirSync(join(kgDir, 'data'), { recursive: true });
+  mkdirSync(join(kgDir, 'cache'), { recursive: true });
+  mkdirSync(join(kgDir, 'logs'), { recursive: true });
 
   const config: ProjectConfig = {
     version: 1,
@@ -149,7 +151,7 @@ export function initProject(targetDir: string, name?: string, force?: boolean): 
   const gitignorePath = join(targetDir, '.gitignore');
   const gitDir = join(targetDir, '.git');
   if (existsSync(gitDir)) {
-    const ignoreLines = '.knowledge-graph/data/\n.knowledge-graph/daemon.*\n';
+    const ignoreLines = '.knowledge-graph/data/\n.knowledge-graph/cache/\n.knowledge-graph/logs/\n.knowledge-graph/daemon.*\n';
     if (existsSync(gitignorePath)) {
       const existing = readFileSync(gitignorePath, 'utf-8');
       if (!existing.includes('.knowledge-graph/data/')) {

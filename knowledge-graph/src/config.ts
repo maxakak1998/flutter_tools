@@ -38,6 +38,27 @@ export interface KnowledgeConfig {
     hypothesisInitialConfidence: number;
     decayRates: Record<string, number>;
   };
+  domains: {
+    canonical: string[];
+    aliases: Record<string, string>;
+  };
+  briefing: {
+    topDomains: number;
+    recentDays: number;
+  };
+  logging: {
+    level: string;
+    maxFileSize: number;
+    maxFiles: number;
+  };
+  operational: {
+    initialScore: number;
+    refutedTtlDays: number;
+    draftSkillMinEntries: number;
+  };
+  entityAliases: {
+    registry: Record<string, string>;  // alias (lowercase) → canonical name
+  };
 }
 
 // ============================================================
@@ -88,6 +109,11 @@ export const DEFAULT_CONFIG: KnowledgeConfig = {
       workflow: 0.98,
     },
   },
+  domains: { canonical: [], aliases: {} },
+  briefing: { topDomains: 10, recentDays: 7 },
+  logging: { level: 'info', maxFileSize: 5 * 1024 * 1024, maxFiles: 3 },
+  operational: { initialScore: 5, refutedTtlDays: 14, draftSkillMinEntries: 10 },
+  entityAliases: { registry: {} },
 };
 
 // ============================================================
@@ -161,6 +187,30 @@ function mergeWithDefaults(
         }).filter((entry): entry is [string, number] => entry[1] !== undefined),
       ),
     },
+    domains: {
+      canonical: (overrides.domains?.canonical?.filter((value): value is string => value !== undefined) ?? defaults.domains.canonical),
+      aliases: { ...defaults.domains.aliases, ...(overrides.domains?.aliases as Record<string, string> | undefined) },
+    },
+    briefing: {
+      topDomains: overrides.briefing?.topDomains ?? defaults.briefing.topDomains,
+      recentDays: overrides.briefing?.recentDays ?? defaults.briefing.recentDays,
+    },
+    logging: {
+      level: overrides.logging?.level ?? defaults.logging.level,
+      maxFileSize: overrides.logging?.maxFileSize ?? defaults.logging.maxFileSize,
+      maxFiles: overrides.logging?.maxFiles ?? defaults.logging.maxFiles,
+    },
+    operational: {
+      initialScore: overrides.operational?.initialScore ?? defaults.operational.initialScore,
+      refutedTtlDays: overrides.operational?.refutedTtlDays ?? defaults.operational.refutedTtlDays,
+      draftSkillMinEntries: overrides.operational?.draftSkillMinEntries ?? defaults.operational.draftSkillMinEntries,
+    },
+    entityAliases: {
+      registry: {
+        ...defaults.entityAliases.registry,
+        ...(overrides.entityAliases?.registry as Record<string, string> | undefined),
+      },
+    },
   };
 }
 
@@ -225,6 +275,11 @@ export function saveDefaultConfig(): string {
       hypothesisInitialConfidence: DEFAULT_CONFIG.learning.hypothesisInitialConfidence,
       decayRates: DEFAULT_CONFIG.learning.decayRates,
     },
+    domains: DEFAULT_CONFIG.domains,
+    briefing: DEFAULT_CONFIG.briefing,
+    logging: DEFAULT_CONFIG.logging,
+    operational: DEFAULT_CONFIG.operational,
+    entityAliases: DEFAULT_CONFIG.entityAliases,
   };
 
   writeFileSync(CONFIG_PATH, JSON.stringify(readableConfig, null, 2) + '\n');
@@ -262,5 +317,10 @@ export function applyOverrides(
     cache: config.cache,
     dedup: config.dedup,
     learning: config.learning,
+    domains: config.domains,
+    briefing: config.briefing,
+    logging: config.logging,
+    operational: config.operational,
+    entityAliases: config.entityAliases,
   };
 }

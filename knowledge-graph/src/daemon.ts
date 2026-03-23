@@ -13,8 +13,10 @@ import { join } from 'path';
 import { createCore, CoreComponents } from './core.js';
 import { parseRpcRequest, formatResult, formatError } from './rpc.js';
 import { KnowledgeConfig } from './config.js';
-import { log } from './types.js';
+import { log, setFileLogger, type DomainStatsCache } from './types.js';
+import { FileLogger, parseLogLevel } from './logger.js';
 import { randomUUID } from 'crypto';
+import { createCacheManager } from './cache.js';
 import { DashboardServer } from './dashboard/server.js';
 import { handleQuery } from './tools/query.js';
 import { handleStore } from './tools/store.js';
@@ -26,6 +28,12 @@ import { handleDelete } from './tools/delete.js';
 import { handleEvolve } from './tools/evolve.js';
 import { handleValidate } from './tools/validate.js';
 import { handlePromote } from './tools/promote.js';
+import { handleBriefing } from './tools/briefing.js';
+import { handleExport } from './tools/export.js';
+import { handleIngest } from './tools/ingest.js';
+import { handleLifeStore } from './tools/life-store.js';
+import { handleLifeFeedback } from './tools/life-feedback.js';
+import { handleLifeDraftSkill } from './tools/life-draft-skill.js';
 
 // ============================================================
 // Main daemon entry point
@@ -48,13 +56,115 @@ async function daemonMain(): Promise<void> {
 
   let core: CoreComponents;
   try {
-    core = await createCore(config);
+    core = await createCore(config, process.env.KG_CONFIG_PATH);
   } catch (e) {
     log('Daemon: failed to initialize core:', e);
     process.exit(1);
   }
 
-  const { storage, embedder, retriever, linker, eventBus } = core;
+  const { storage, embedder, retriever, linker, eventBus, entityRegistry } = core;
+  const cacheManager = createCacheManager(kgDir);
+  cacheManager.ensureDir();
+
+  // Startup purge: delete expired refuted operational chunks (TTL-based garbage collection)
+  try {
+    const ttlMs = config.operational.refutedTtlDays * 24 * 60 * 60 * 1000;
+    const cutoff = new Date(Date.now() - ttlMs).toISOString();
+    const candidates = await storage.listChunks({ layer: 'operational', lifecycle: 'refuted' }, 1000);
+    let purged = 0;
+    for (const chunk of candidates) {
+      const lastTouched = chunk.last_validated_at || chunk.updated_at;
+      if (lastTouched && lastTouched <= cutoff) {
+        await storage.deleteChunk(chunk.id);
+        purged++;
+      }
+    }
+    if (purged > 0) log(`Startup purge: deleted ${purged} expired operational chunks`);
+  } catch (e) {
+    log('Startup purge failed (non-fatal):', e);
+  }
+
+  // Initialize file logger
+  const fileLogger = new FileLogger(join(kgDir, 'logs'), {
+    maxBytes: config.logging.maxFileSize,
+    maxFiles: config.logging.maxFiles,
+    minLevel: parseLogLevel(config.logging.level),
+  });
+  fileLogger.init();
+  setFileLogger(fileLogger);
+  fileLogger.info('daemon', `Starting — project=${projectId}, port_range=${process.env.KG_PORT_RANGE_START || '0'}, idle=${idleTimeoutMs}ms`);
+
+  const lifecycleOrder: Record<string, number> = {
+    refuted: 0,
+    hypothesis: 1,
+    active: 2,
+    validated: 3,
+    promoted: 4,
+    canonical: 5,
+  };
+
+  let cacheRegenTimer: ReturnType<typeof setTimeout> | null = null;
+
+  async function regenerateDomainStatsCache(): Promise<void> {
+    try {
+      const [stats, allChunks] = await Promise.all([
+        storage.getStats(),
+        storage.listChunks({}, 5000),
+      ]);
+      // Exclude operational/entity-index layers from domain stats cache
+      const chunks = allChunks.filter(c => c.layer !== 'operational' && c.layer !== 'entity-index');
+
+      const domains = new Map<string, {
+        name: string;
+        chunk_count: number;
+        top_lifecycle: string;
+        confidence_sum: number;
+      }>();
+
+      for (const chunk of chunks) {
+        const key = chunk.domain || 'unknown';
+        const existing = domains.get(key) ?? {
+          name: key,
+          chunk_count: 0,
+          top_lifecycle: chunk.lifecycle,
+          confidence_sum: 0,
+        };
+        existing.chunk_count += 1;
+        existing.confidence_sum += chunk.confidence;
+        if ((lifecycleOrder[chunk.lifecycle] ?? -1) > (lifecycleOrder[existing.top_lifecycle] ?? -1)) {
+          existing.top_lifecycle = chunk.lifecycle;
+        }
+        domains.set(key, existing);
+      }
+
+      const payload: DomainStatsCache = {
+        domains: Array.from(domains.values())
+          .map((domain) => ({
+            name: domain.name,
+            chunk_count: domain.chunk_count,
+            top_lifecycle: domain.top_lifecycle,
+            avg_confidence: domain.chunk_count > 0
+              ? Math.round((domain.confidence_sum / domain.chunk_count) * 1000) / 1000
+              : 0,
+          }))
+          .sort((a, b) => b.chunk_count - a.chunk_count || a.name.localeCompare(b.name)),
+        total_chunks: stats.total_chunks,
+        total_edges: stats.total_edges,
+        generated_at: new Date().toISOString(),
+      };
+
+      cacheManager.write('domain-stats.json', payload);
+    } catch (e) {
+      log('Daemon: domain stats cache regen failed:', e);
+    }
+  }
+
+  function scheduleCacheRegen(): void {
+    if (cacheRegenTimer) clearTimeout(cacheRegenTimer);
+    cacheRegenTimer = setTimeout(() => {
+      void regenerateDomainStatsCache();
+    }, 300);
+  }
 
   // Dashboard (reuse existing DashboardServer for API routes)
   const dashboard = new DashboardServer(storage, embedder, retriever, eventBus);
@@ -77,7 +187,8 @@ async function daemonMain(): Promise<void> {
     const onStep = eventBus.makeStepEmitter(requestId, 'store');
     onStep('start', `Store: "${(metadata.summary as string || '').slice(0, 50)}"`);
     const t0 = performance.now();
-    const result = await handleStore(storage, embedder, linker, content, metadata as any, onStep, config.dedup.similarityThreshold, config.learning.hypothesisInitialConfidence);
+    const result = await handleStore(storage, embedder, linker, content, metadata as any, onStep, config.dedup.similarityThreshold, config.learning.hypothesisInitialConfidence, config.domains.aliases, config.domains.canonical, entityRegistry);
+    scheduleCacheRegen();
     onStep('complete', `Stored ${result.id}`, { duration_ms: Math.round(performance.now() - t0), id: result.id, auto_links: result.auto_links.length });
     return result;
   });
@@ -88,19 +199,45 @@ async function daemonMain(): Promise<void> {
     const onStep = eventBus.makeStepEmitter(requestId, 'evolve');
     onStep('start', `Evolve: ${id.slice(0, 8)}...`);
     const t0 = performance.now();
-    const result = await handleEvolve(storage, embedder, linker, id, new_content, new_metadata as any, reason, onStep);
+    const result = await handleEvolve(storage, embedder, linker, id, new_content, new_metadata as any, reason, onStep, config.domains.aliases, entityRegistry);
+    scheduleCacheRegen();
     onStep('complete', `Evolved to v${result.version}`, { duration_ms: Math.round(performance.now() - t0), version: result.version });
     return result;
   });
 
   dashboard.registerTrigger('validate', async (params) => {
     const { id, action, evidence, context } = params as { id: string; action: 'confirm' | 'refute'; evidence?: string; context?: string };
-    return await handleValidate(storage, id, action, config.learning, evidence, context);
+    const result = await handleValidate(storage, id, action, config.learning, evidence, context);
+    scheduleCacheRegen();
+    return result;
   });
 
   dashboard.registerTrigger('promote', async (params) => {
     const { id, reason, new_category, new_importance } = params as { id: string; reason: string; new_category?: any; new_importance?: any };
-    return await handlePromote(storage, id, reason, new_category, new_importance);
+    const result = await handlePromote(storage, id, reason, new_category, new_importance);
+    scheduleCacheRegen();
+    return result;
+  });
+
+  dashboard.registerTrigger('briefing', async (params) => {
+    const topDomains = typeof params.top_domains === 'number' ? params.top_domains : config.briefing.topDomains;
+    const recentDays = typeof params.recent_days === 'number' ? params.recent_days : config.briefing.recentDays;
+    return await handleBriefing(storage, config.learning.decayRates, topDomains, recentDays, cacheManager);
+  });
+
+  dashboard.registerTrigger('ingest', async (params) => {
+    const { content, source, domain_hint } = params as { content: string; source?: string; domain_hint?: string };
+    const requestId = randomUUID();
+    const onStep = eventBus.makeStepEmitter(requestId, 'ingest');
+    onStep('start', `Ingest: ${content.slice(0, 60)}`);
+    const t0 = performance.now();
+    const result = await handleIngest(storage, embedder, content, source, domain_hint, config.dedup.similarityThreshold);
+    onStep('complete', `${result.stats.total_segments} segments`, {
+      duration_ms: Math.round(performance.now() - t0),
+      total_segments: result.stats.total_segments,
+      duplicates: result.stats.duplicates,
+    });
+    return result;
   });
 
   // Client tracking + idle shutdown
@@ -131,41 +268,125 @@ async function daemonMain(): Promise<void> {
   async function dispatchRpc(method: string, params: any): Promise<unknown> {
     const requestId = randomUUID();
     const onStep = eventBus.makeStepEmitter(requestId, method);
+    const t0 = performance.now();
 
-    switch (method) {
-      case 'knowledge_query': {
-        onStep('start', `Query: "${(params.query || '').slice(0, 60)}"`);
-        const t0 = performance.now();
-        const result = await handleQuery(retriever, params.query, params.filters, onStep);
-        onStep('complete', `${result.total} results`, { duration_ms: Math.round(performance.now() - t0), result_count: result.total });
-        return result;
+    try {
+      let result: unknown;
+
+      switch (method) {
+        case 'knowledge_query': {
+          onStep('start', `Query: "${(params.query || '').slice(0, 60)}"`);
+          const qResult = await handleQuery(retriever, params.query, params.filters, onStep);
+          onStep('complete', `${qResult.total} results`, { duration_ms: Math.round(performance.now() - t0), result_count: qResult.total });
+          result = qResult;
+          break;
+        }
+        case 'knowledge_store': {
+          onStep('start', `Store: "${(params.metadata?.summary || '').slice(0, 50)}"`);
+          const sResult = await handleStore(storage, embedder, linker, params.content, params.metadata, onStep, config.dedup.similarityThreshold, config.learning.hypothesisInitialConfidence, config.domains.aliases, config.domains.canonical, entityRegistry);
+          scheduleCacheRegen();
+          onStep('complete', `Stored ${sResult.id}`, { duration_ms: Math.round(performance.now() - t0), id: sResult.id, auto_links: sResult.auto_links.length });
+          result = sResult;
+          break;
+        }
+        case 'knowledge_link':
+          result = await handleLink(storage, params.source_id, params.target_id, params.relation);
+          break;
+        case 'knowledge_list':
+          result = await handleList(storage, params.filters ?? {}, params.limit ?? 50, config.learning.decayRates);
+          break;
+        case 'knowledge_delete': {
+          result = await handleDelete(storage, params.id, params.reason);
+          scheduleCacheRegen();
+          break;
+        }
+        case 'knowledge_evolve': {
+          onStep('start', `Evolve: ${(params.id || '').slice(0, 8)}...`);
+          const eResult = await handleEvolve(storage, embedder, linker, params.id, params.new_content, params.new_metadata, params.reason, onStep, config.domains.aliases, entityRegistry);
+          scheduleCacheRegen();
+          onStep('complete', `Evolved to v${eResult.version}`, { duration_ms: Math.round(performance.now() - t0), version: eResult.version });
+          result = eResult;
+          break;
+        }
+        case 'knowledge_validate': {
+          result = await handleValidate(storage, params.id, params.action, config.learning, params.evidence, params.context);
+          scheduleCacheRegen();
+          break;
+        }
+        case 'knowledge_promote': {
+          result = await handlePromote(storage, params.id, params.reason, params.new_category, params.new_importance);
+          scheduleCacheRegen();
+          break;
+        }
+        case 'knowledge_briefing':
+          result = await handleBriefing(
+            storage,
+            config.learning.decayRates,
+            params.top_domains ?? config.briefing.topDomains,
+            params.recent_days ?? config.briefing.recentDays,
+            cacheManager,
+          );
+          break;
+        case 'knowledge_export':
+          result = await handleExport(
+            storage,
+            params.group_by ?? 'domain',
+            params.min_lifecycle,
+            params.format ?? 'markdown',
+            params.include_content ?? true,
+            config.learning.decayRates,
+          );
+          break;
+        case 'knowledge_ingest': {
+          onStep('start', `Ingest: ${(params.content || '').slice(0, 60)}`);
+          const iResult = await handleIngest(
+            storage,
+            embedder,
+            params.content,
+            params.source,
+            params.domain_hint,
+            config.dedup.similarityThreshold,
+          );
+          onStep('complete', `${iResult.stats.total_segments} segments`, {
+            duration_ms: Math.round(performance.now() - t0),
+            total_segments: iResult.stats.total_segments,
+            duplicates: iResult.stats.duplicates,
+          });
+          result = iResult;
+          break;
+        }
+        // Life Knowledge tools (operational layer)
+        case 'life_store': {
+          onStep('start', `Life store: "${(params.metadata?.summary || '').slice(0, 50)}"`);
+          const lsResult = await handleLifeStore(storage, embedder, linker, config, params.content, params.metadata, onStep);
+          scheduleCacheRegen();
+          onStep('complete', `Stored ${lsResult.id} (score ${lsResult.score})`, { duration_ms: Math.round(performance.now() - t0), id: lsResult.id });
+          result = lsResult;
+          break;
+        }
+        case 'life_feedback': {
+          result = await handleLifeFeedback(storage, params.id, params.outcome, params.context);
+          scheduleCacheRegen();
+          break;
+        }
+        case 'life_draft_skill': {
+          result = await handleLifeDraftSkill(storage, config, params.domain, params.target_skill_path, params.force);
+          scheduleCacheRegen();
+          break;
+        }
+        default:
+          throw new Error(`Unknown method: ${method}`);
       }
-      case 'knowledge_store': {
-        onStep('start', `Store: "${(params.metadata?.summary || '').slice(0, 50)}"`);
-        const t0 = performance.now();
-        const result = await handleStore(storage, embedder, linker, params.content, params.metadata, onStep, config.dedup.similarityThreshold, config.learning.hypothesisInitialConfidence);
-        onStep('complete', `Stored ${result.id}`, { duration_ms: Math.round(performance.now() - t0), id: result.id, auto_links: result.auto_links.length });
-        return result;
-      }
-      case 'knowledge_link':
-        return await handleLink(storage, params.source_id, params.target_id, params.relation);
-      case 'knowledge_list':
-        return await handleList(storage, params.filters ?? {}, params.limit ?? 50, config.learning.decayRates);
-      case 'knowledge_delete':
-        return await handleDelete(storage, params.id);
-      case 'knowledge_evolve': {
-        onStep('start', `Evolve: ${(params.id || '').slice(0, 8)}...`);
-        const t0 = performance.now();
-        const result = await handleEvolve(storage, embedder, linker, params.id, params.new_content, params.new_metadata, params.reason, onStep);
-        onStep('complete', `Evolved to v${result.version}`, { duration_ms: Math.round(performance.now() - t0), version: result.version });
-        return result;
-      }
-      case 'knowledge_validate':
-        return await handleValidate(storage, params.id, params.action, config.learning, params.evidence, params.context);
-      case 'knowledge_promote':
-        return await handlePromote(storage, params.id, params.reason, params.new_category, params.new_importance);
-      default:
-        throw new Error(`Unknown method: ${method}`);
+
+      const ms = Math.round(performance.now() - t0);
+      fileLogger.info('rpc', `${method} OK (${ms}ms)`);
+      return result;
+    } catch (e) {
+      const ms = Math.round(performance.now() - t0);
+      fileLogger.error('rpc', `${method} FAIL (${ms}ms): ${e instanceof Error ? e.message : String(e)}`, {
+        stack: e instanceof Error ? e.stack : undefined,
+      });
+      throw e;
     }
   }
 
@@ -254,6 +475,7 @@ async function daemonMain(): Promise<void> {
   async function shutdown() {
     if (shuttingDown) return;
     shuttingDown = true;
+    fileLogger.info('daemon', `Shutting down — uptime=${Math.round((Date.now() - startTime) / 1000)}s, clients=${clientCount}`);
     log('Daemon: shutting down...');
     try {
       await dashboard.close();

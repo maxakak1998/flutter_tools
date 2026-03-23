@@ -15,8 +15,14 @@ export async function handleList(
 
   const chunks = await storage.listChunks(storageFilters, limit);
 
+  // Exclude operational/entity-index layers by default (cross-layer isolation)
+  const isExplicitLayer = storageFilters.layer === 'operational' || storageFilters.layer === 'entity-index';
+  const layerFiltered = isExplicitLayer
+    ? chunks
+    : chunks.filter((c: StoredChunk) => c.layer !== 'operational' && c.layer !== 'entity-index');
+
   // Compute effective confidence (with temporal decay) and filter
-  const enriched = chunks.map((c: StoredChunk) => {
+  const enriched = layerFiltered.map((c: StoredChunk) => {
     const decayRate = decayRates?.[c.category] ?? decayRates?.['default'] ?? 0.95;
     const effectiveConfidence = computeDecay(c.confidence, c.last_validated_at, decayRate);
     return { chunk: c, effectiveConfidence: Math.round(effectiveConfidence * 1000) / 1000 };

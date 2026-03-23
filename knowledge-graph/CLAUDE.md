@@ -37,6 +37,21 @@ npm run doctor       # Health check: Ollama, DB, Node version, daemon
 bash install.sh      # Full install: copy source, build, pull model, register MCP
 ```
 
+### Testing
+
+```bash
+# Regression test — all tool handlers (store, query, validate, promote, evolve, list, delete)
+# Requires Ollama running with bge-m3. Uses a temp KuzuDB, cleans up after.
+npx tsx scripts/regression-test.ts
+
+# Daemon integration test — startup, health, connect/disconnect, shutdown, stale PID recovery
+# IMPORTANT: Runs against built dist/ files — run `npm run build` first
+npx tsx scripts/daemon-integration-test.ts
+
+# Build artifact test — verifies dist/ contains expected compiled outputs + copied assets
+npx tsx scripts/build-artifact-test.ts
+```
+
 **Prerequisites**: Node.js >= 18, Ollama running (`ollama serve`), bge-m3 model (`ollama pull bge-m3`)
 
 **IMPORTANT**: After making any code changes, run `bash install.sh` to sync the build to `~/.knowledge-graph/` (the user-scope install). The MCP server runs from `~/.knowledge-graph/src/dist/`, not from this project directory. Without syncing, Claude Code will still use the old code.
@@ -53,6 +68,9 @@ bash install.sh      # Full install: copy source, build, pull model, register MC
 | `doctor` | Check dependencies (Ollama, DB, Node, daemon, port) |
 | `reset-db` | Delete the database (all chunks, edges, embeddings) |
 | `uninstall` | Remove installed files, config, and MCP registration |
+| `prime` | Output skill context for hook injection (SessionStart/PreCompact) |
+| `setup-hooks` | Install KG enforcement hooks into current project (requires `jq`) |
+| `remove-hooks` | Remove KG enforcement hooks from current project (requires `jq`) |
 
 ### CLI Options
 
@@ -360,7 +378,7 @@ When a duplicate is detected (similarity >= 0.88), the store returns the existin
 | `knowledge_list` | Browse with lifecycle/confidence/time filters, effective confidence |
 | `knowledge_link` | Create chunk→chunk relationships |
 | `knowledge_evolve` | Update content with confidence preservation |
-| `knowledge_delete` | Delete chunk and all relations |
+| `knowledge_delete` | Delete chunk (lifecycle guard: validated/promoted/canonical require reason) |
 | `knowledge_validate` | Confirm or refute knowledge (drives lifecycle) |
 | `knowledge_promote` | Graduate knowledge to higher lifecycle status |
 
@@ -398,6 +416,17 @@ Returns `confidence`, `effective_confidence` (with temporal decay), `lifecycle`,
 ### knowledge_evolve (enhanced)
 
 Preserves confidence, validation_count, lifecycle, and other learning fields on content evolution. Always returns a `note` suggesting re-validation (unconditional). Archive chunks also copy all learning fields (confidence, validation_count, refutation_count, last_validated_at, lifecycle, access_count). Metadata provided to evolve is normalized using the same rules as store (domain→kebab-case, keywords→lowercased+deduplicated, tags→kebab-case+deduplicated, entities→deduplicated+filtered to 2+ chars). When category changes and no explicit layer is provided, the layer is automatically re-inferred from the new category. Zod constraints for evolve match store: domain max 50 chars, keywords 1–15 items with min 2 chars each, entities each min 2 chars. `source` is NOT available in evolve metadata.
+
+### knowledge_delete (lifecycle guard)
+
+```typescript
+// Input
+{ id: string, reason?: string }
+// Output
+{ deleted: true, id, snapshot: { domain, category, lifecycle, confidence, summary }, reason? }
+```
+
+**Lifecycle guard**: Chunks with lifecycle `validated`, `promoted`, or `canonical` require a `reason` field. Attempting to delete without reason returns an error: "Cannot delete {lifecycle} chunk without a reason." Chunks with lifecycle `hypothesis`, `active`, or `refuted` can be deleted without reason (low blast radius). The `snapshot` field in the result captures the chunk's metadata before deletion, enabling audit trail even after the chunk is removed.
 
 ## Metadata Schema
 
@@ -615,9 +644,20 @@ Both backends implement the `IStorage` interface (`storage/interface.ts`). Backe
 | `src/dashboard/events.ts` | EventBus for pipeline step events |
 | `src/dashboard/api.ts` | Dashboard REST API (stats, chunk-node graph, chunk detail, search) |
 | `src/dashboard/index.html` | Dashboard SPA (graph viz, event timeline, detail panel) |
+| `src/kuzu.d.ts` | Type declarations for the kuzu npm package |
 | `scripts/regression-test.ts` | Regression suite covering all tool features |
-| `scripts/daemon-integration-test.ts` | Verifies daemon startup, localhost health/connect/disconnect/shutdown flow, and stale PID recovery against built `dist/` files |
-| `scripts/build-artifact-test.ts` | Verifies `dist/` contains expected compiled outputs and copied assets, including `http-utils.js`, `version.js`, and `dashboard/index.html` |
+| `scripts/daemon-integration-test.ts` | Verifies daemon startup, health/connect/disconnect/shutdown against built `dist/` |
+| `scripts/build-artifact-test.ts` | Verifies `dist/` contains expected compiled outputs and copied assets |
+| `scripts/setup-hooks.sh` | Installs KG enforcement hooks into `.claude/hooks/` |
+| `scripts/remove-hooks.sh` | Removes KG enforcement hooks from `.claude/hooks/` |
+| `docs/architecture.md` | 4-layer architecture overview, data flows, config, limitations |
+| `docs/mcp-server.md` | Layer 1: CLI, transport, startup, shutdown lifecycle |
+| `docs/tool-handlers.md` | Layer 2: Each tool handler's internal flow and parameters |
+| `docs/engine.md` | Layer 3: Embedder, Retriever, Linker pipeline details |
+| `docs/storage.md` | Layer 4: KuzuDB/SurrealDB schema, CRUD, vector index |
+| `docs/tools.md` | MCP tool reference (user-facing parameter tables, return types) |
+| `docs/metadata.md` | Metadata schema reference (field constraints, normalization) |
+| `docs/claude-interaction.md` | ASCII diagrams of all system flows |
 
 ## Documentation Consistency
 

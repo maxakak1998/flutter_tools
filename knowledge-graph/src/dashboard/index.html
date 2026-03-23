@@ -653,7 +653,7 @@
   .detail-row { margin-bottom: 10px; }
   .detail-label { font-size: 10px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 3px; }
   .detail-value { font-size: 12px; line-height: 1.5; }
-  .detail-content { background: rgba(255,255,255,0.03); padding: 8px; border-radius: 4px; font-size: 11px; line-height: 1.5; max-height: 120px; overflow-y: auto; }
+  .detail-content { background: rgba(255,255,255,0.03); padding: 8px; border-radius: 4px; font-size: 11px; line-height: 1.5; max-height: 300px; overflow-y: auto; overflow-wrap: break-word; }
   .detail-link {
     display: block; padding: 4px 0; color: var(--accent);
     text-decoration: none; font-size: 11px; cursor: pointer;
@@ -1954,7 +1954,7 @@ async function showNodeDetail(nodeId) {
 
     $('detail-title').textContent = chunk.summary || nodeId;
     const keywords = (chunk.keywords || []).map(k => `<span class="pill">${esc(k)}</span>`).join('');
-    const contentPreview = (chunk.content || '').slice(0, 300);
+    const contentPreview = chunk.content || '';
     const related = (chunk.related_chunks || []).map(r => `
       <a class="detail-link" data-node-id="${esc(r.id)}">${esc(r.summary)}</a>
     `).join('');

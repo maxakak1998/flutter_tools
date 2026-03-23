@@ -2,12 +2,9 @@ import { randomUUID } from 'crypto';
 import { IStorage } from '../storage/interface.js';
 import { Embedder } from '../engine/embedder.js';
 import { Linker } from '../engine/linker.js';
-import { ChunkCategory, ChunkLayer, ChunkMetadata, EvolveResult, StepEmitter, log } from '../types.js';
-
-/** Convert a string to kebab-case: lowercase, replace spaces/underscores with hyphens, collapse multiple hyphens. */
-function toKebabCase(s: string): string {
-  return s.toLowerCase().replace(/[\s_]+/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
-}
+import { ChunkCategory, ChunkLayer, ChunkMetadata, EvolveResult, EntityObject, RELATION_TABLE_MAP, StepEmitter, log } from '../types.js';
+import { EntityAliasRegistry } from '../entity-registry.js';
+import { toKebabCase } from './store.js';
 
 /** Auto-infer layer from category when not explicitly provided. */
 function inferLayer(category: ChunkCategory): ChunkLayer {
@@ -23,6 +20,114 @@ function inferLayer(category: ChunkCategory): ChunkLayer {
   }
 }
 
+/**
+ * Resolve entities from mixed (string | EntityObject)[] input.
+ * Returns canonical names and registers any new aliases.
+ */
+function resolveEntities(
+  rawEntities: (string | EntityObject)[] | undefined,
+  registry?: EntityAliasRegistry,
+): { canonicalNames: string[]; newAliasesRegistered: boolean } {
+  if (!rawEntities || rawEntities.length === 0) {
+    return { canonicalNames: [], newAliasesRegistered: false };
+  }
+
+  let newAliasesRegistered = false;
+  const names: string[] = [];
+
+  for (const entry of rawEntities) {
+    if (typeof entry === 'string') {
+      const canonical = registry?.resolve(entry) ?? entry;
+      names.push(canonical);
+    } else {
+      const canonical = entry.name;
+      names.push(canonical);
+      if (entry.alias && registry) {
+        const added = registry.addAlias(entry.alias, canonical);
+        if (added) newAliasesRegistered = true;
+      }
+    }
+  }
+
+  const seen = new Set<string>();
+  const deduped: string[] = [];
+  for (const name of names) {
+    if (name.length >= 2 && !seen.has(name)) {
+      seen.add(name);
+      deduped.push(name);
+    }
+  }
+
+  return { canonicalNames: deduped, newAliasesRegistered };
+}
+
+/**
+ * Ensure an entity-index chunk exists for a given entity name.
+ * Returns the entity chunk's ID.
+ */
+async function ensureEntityChunk(
+  storage: IStorage,
+  embedder: Embedder,
+  entityName: string,
+  registry?: EntityAliasRegistry,
+): Promise<{ id: string; created: boolean }> {
+  const domain = toKebabCase(entityName);
+
+  const existing = await storage.listChunks({ layer: 'entity-index', domain }, 1);
+  if (existing.length > 0) {
+    return { id: existing[0].id, created: false };
+  }
+
+  const aliases: string[] = [];
+  if (registry) {
+    for (const [alias, canonical] of Object.entries(registry.allAliases())) {
+      if (canonical === entityName) aliases.push(alias);
+    }
+  }
+
+  const content = `Entity: ${entityName}`;
+  const embedding = await embedder.embed(content);
+  const id = randomUUID();
+
+  await storage.createChunk({
+    id,
+    content,
+    summary: `Entity index: ${entityName}`,
+    embedding,
+    source: null,
+    category: 'fact',
+    domain,
+    importance: 'medium',
+    layer: 'entity-index',
+    keywords: [entityName.toLowerCase(), ...aliases.map(a => a.toLowerCase())].filter((v, i, arr) => arr.indexOf(v) === i),
+    entities: [entityName],
+    tags: ['entity-index'],
+    version: 1,
+    confidence: 0.5,
+    validation_count: 0,
+    refutation_count: 0,
+    last_validated_at: '',
+    lifecycle: 'active',
+    access_count: 0,
+  });
+
+  return { id, created: true };
+}
+
+/**
+ * Find the entity-index chunk for a given entity name.
+ */
+async function findEntityChunk(
+  storage: IStorage,
+  entityName: string,
+  registry?: EntityAliasRegistry,
+): Promise<string | null> {
+  const canonical = registry?.resolve(entityName) ?? entityName;
+  const domain = toKebabCase(canonical);
+  const existing = await storage.listChunks({ layer: 'entity-index', domain }, 1);
+  return existing.length > 0 ? existing[0].id : null;
+}
+
 export async function handleEvolve(
   storage: IStorage,
   embedder: Embedder,
@@ -31,7 +136,9 @@ export async function handleEvolve(
   newContent: string,
   newMetadata: Partial<ChunkMetadata> | undefined,
   reason: string,
-  onStep?: StepEmitter
+  onStep?: StepEmitter,
+  domainAliases?: Record<string, string>,
+  entityRegistry?: EntityAliasRegistry,
 ): Promise<EvolveResult> {
   // Fetch existing chunk
   const existing = await storage.getChunk(id);
@@ -83,7 +190,7 @@ export async function handleEvolve(
 
   // Normalize metadata — same rules as store.ts
   const resolvedDomain = newMetadata?.domain !== undefined
-    ? toKebabCase(newMetadata.domain)
+    ? toKebabCase(domainAliases?.[newMetadata.domain] ?? newMetadata.domain)
     : existing.domain;
   const resolvedKeywords = newMetadata?.keywords !== undefined
     ? [...new Set(newMetadata.keywords.map(k => k.toLowerCase()))]
@@ -91,9 +198,17 @@ export async function handleEvolve(
   const resolvedTags = newMetadata?.tags !== undefined
     ? [...new Set(newMetadata.tags.map(t => toKebabCase(t)))]
     : existing.tags;
-  const resolvedEntities = newMetadata?.entities !== undefined
-    ? [...new Set(newMetadata.entities)].filter(e => e.length >= 2)
-    : existing.entities;
+
+  // Resolve entities via alias registry (supports both string and EntityObject)
+  let resolvedEntities: string[];
+  let newAliasesRegistered = false;
+  if (newMetadata?.entities !== undefined) {
+    const result = resolveEntities(newMetadata.entities, entityRegistry);
+    resolvedEntities = result.canonicalNames;
+    newAliasesRegistered = result.newAliasesRegistered;
+  } else {
+    resolvedEntities = existing.entities;
+  }
 
   // Re-infer layer when category changes and no explicit layer provided
   const categoryChanged = newMetadata?.category !== undefined && newMetadata.category !== existing.category;
@@ -120,6 +235,45 @@ export async function handleEvolve(
   onStep?.('re_link', 'Re-running auto-linking');
   await linker.relinkChunk(id, newEmbedding, newMetadata?.suggested_relations);
   onStep?.('re_link_done', 'Re-linking complete');
+
+  // Entity-index chunk creation and linking for new entities
+  if (newMetadata?.entities !== undefined && resolvedEntities.length > 0) {
+    for (const entityName of resolvedEntities) {
+      try {
+        const { id: entityChunkId } = await ensureEntityChunk(
+          storage, embedder, entityName, entityRegistry,
+        );
+        // Create IS_PART_OF edge: knowledge chunk → entity chunk
+        // (existing edges are preserved — createRelation is idempotent or additive)
+        await storage.createRelation(id, entityChunkId, 'IS_PART_OF');
+      } catch (e) {
+        log('Entity chunk creation failed during evolve for', entityName, ':', e);
+      }
+    }
+
+    // Create inter-entity relations from metadata.relations
+    if (newMetadata?.relations && newMetadata.relations.length > 0) {
+      for (const rel of newMetadata.relations) {
+        try {
+          const fromEntityId = await findEntityChunk(storage, rel.from_entity, entityRegistry);
+          const toEntityId = await findEntityChunk(storage, rel.to_entity, entityRegistry);
+          if (fromEntityId && toEntityId) {
+            const relTable = RELATION_TABLE_MAP[rel.relation];
+            if (relTable) {
+              await storage.createRelation(fromEntityId, toEntityId, relTable, { description: `${rel.from_entity} ${rel.relation} ${rel.to_entity}` });
+            }
+          }
+        } catch (e) {
+          log('Inter-entity relation creation failed during evolve:', rel, e);
+        }
+      }
+    }
+  }
+
+  // Persist alias registry if new aliases were registered
+  if (newAliasesRegistered && entityRegistry) {
+    entityRegistry.save();
+  }
 
   log('Evolved chunk:', id, 'to v' + newVersion, '| reason:', reason);
   return {

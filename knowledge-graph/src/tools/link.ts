@@ -21,6 +21,14 @@ export async function handleLink(
   const target = await storage.getChunk(targetId);
   if (!target) throw new Error(`Target chunk not found: ${targetId}`);
 
+  // Cross-layer guard: prevent operational ↔ non-operational links
+  // Entity-index chunks CAN link to any non-operational layer (they bridge knowledge ↔ entity)
+  const sourceIsOp = source.layer === 'operational';
+  const targetIsOp = target.layer === 'operational';
+  if (sourceIsOp !== targetIsOp) {
+    throw new Error('Cannot link across layers: operational ↔ non-operational. Both chunks must be in the same layer.');
+  }
+
   await storage.createRelation(sourceId, targetId, relTable);
 
   log('Linked', sourceId, '-[', relation, ']->', targetId);

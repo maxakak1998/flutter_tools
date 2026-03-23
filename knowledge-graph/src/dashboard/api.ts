@@ -8,10 +8,14 @@ import { StorageStats, QueryFilters } from '../types.js';
  * Returns graph nodes (chunks) and edges.
  */
 export async function handleGraphData(storage: IStorage) {
-  const [chunks, edges] = await Promise.all([
+  const [allChunks, allEdges] = await Promise.all([
     storage.listChunks({}, 500),
     storage.getAllEdges(),
   ]);
+  // Exclude operational/entity-index layers from domain dashboard (cross-layer isolation)
+  const chunks = allChunks.filter(c => c.layer !== 'operational' && c.layer !== 'entity-index');
+  const chunkIds = new Set(chunks.map(c => c.id));
+  const edges = allEdges.filter(e => chunkIds.has(e.from) && chunkIds.has(e.to));
 
   // Map chunks to lightweight graph nodes (exclude embedding for bandwidth)
   const chunkNodes = chunks.map(c => ({

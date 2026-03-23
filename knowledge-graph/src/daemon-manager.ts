@@ -3,7 +3,7 @@ import { join, dirname } from 'path';
 import { existsSync, readFileSync, unlinkSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { ProjectInfo } from './project.js';
-import { KnowledgeConfig } from './config.js';
+import { KnowledgeConfig, CONFIG_PATH } from './config.js';
 import { log } from './types.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -73,6 +73,7 @@ function spawnDaemon(project: ProjectInfo, config: KnowledgeConfig, port?: numbe
         KG_PROJECT_ID: project.projectId,
         KG_IDLE_TIMEOUT_MS: String(project.config.daemon.idle_timeout_ms),
         KG_PORT_RANGE_START: String(portToUse),
+        KG_CONFIG_PATH: CONFIG_PATH,
       },
     });
 
@@ -81,7 +82,9 @@ function spawnDaemon(project: ProjectInfo, config: KnowledgeConfig, port?: numbe
     // Poll for daemon.port file
     const timeout = setTimeout(() => {
       clearInterval(interval);
-      reject(new Error('Daemon startup timed out after 15s'));
+      const logFile = join(project.kgDir, 'logs', 'daemon.log');
+      const hint = existsSync(logFile) ? '\nCheck logs: kg logs' : '';
+      reject(new Error(`Daemon startup timed out after 15s${hint}`));
     }, 15_000);
 
     const interval = setInterval(() => {

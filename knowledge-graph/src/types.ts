@@ -1,3 +1,16 @@
+// === Entity-centric decomposition types ===
+
+export interface EntityObject {
+  name: string;       // canonical name
+  alias?: string;     // abbreviation — auto-registered in alias registry
+}
+
+export interface StoreRelation {
+  from_entity: string;
+  to_entity: string;
+  relation: Exclude<KnowledgeRelation, 'supersedes'>; // supersedes is system-managed
+}
+
 // === Chunk Metadata — what Claude provides when storing knowledge ===
 
 export interface ChunkMetadata {
@@ -7,7 +20,8 @@ export interface ChunkMetadata {
   category: ChunkCategory;
   importance: Importance;
   layer?: ChunkLayer;
-  entities?: string[];
+  entities?: (string | EntityObject)[];
+  relations?: StoreRelation[];
   suggested_relations?: SuggestedRelation[];
   tags?: string[];
   source?: string;
@@ -116,6 +130,7 @@ export interface StoreResult {
     similarity: number;
     relation_hint: 'similar' | 'loosely_related';
   }>;
+  entity_chunks_created?: string[];
 }
 
 export interface AutoLink {
@@ -153,6 +168,14 @@ export interface ValidateResult {
 export interface DeleteResult {
   deleted: boolean;
   id: string;
+  snapshot?: {
+    domain: string;
+    category: string;
+    lifecycle: string;
+    confidence: number;
+    summary: string;
+  };
+  reason?: string;
 }
 
 export interface ListResult {
@@ -185,6 +208,114 @@ export interface PromoteResult {
   new_lifecycle: string;
   confidence: number;
   reason: string;
+}
+
+export interface BriefingResult {
+  domains: Array<{
+    name: string;
+    chunk_count: number;
+    top_lifecycle: string;
+    avg_confidence: number;
+    open_questions: number;
+    categories: Record<string, number>;
+  }>;
+  stats: {
+    total_chunks: number;
+    total_edges: number;
+    by_category: Record<string, number>;
+    by_lifecycle: Record<string, number>;
+  };
+  recent_changes: Array<{
+    id: string;
+    summary: string;
+    domain: string;
+    category: string;
+    updated_at: string;
+  }>;
+  open_questions: Array<{
+    id: string;
+    summary: string;
+    domain: string;
+    confidence: number;
+  }>;
+  stale_knowledge: Array<{
+    id: string;
+    summary: string;
+    domain: string;
+    effective_confidence: number;
+    last_validated_at: string;
+  }>;
+  generated_at: string;
+}
+
+// === Life Knowledge result types (operational layer) ===
+
+export interface LifeStoreResult {
+  id: string;
+  score: number;
+  lifecycle: string;
+  auto_links: AutoLink[];
+  warnings: string[];
+  duplicate_of?: string;
+  similarity?: number;
+  existing_summary?: string;
+  existing_content?: string;
+}
+
+export interface LifeFeedbackResult {
+  id: string;
+  previous_score: number;
+  score: number;
+  lifecycle: string;
+  success_count: number;
+  failure_count: number;
+  auto_quarantined: boolean;
+  eligible_for_skill_promotion: boolean;
+}
+
+export interface LifeDraftSkillResult {
+  promoted_count: number;
+  skill_path: string;
+  skill_content: string;
+  entries: Array<{
+    id: string;
+    summary: string;
+    score: number;
+    tags: string[];
+    source?: string;
+  }>;
+  draft_ready: boolean;
+}
+
+export interface ExportResult {
+  content: string;
+  stats: {
+    total_exported: number;
+    by_group: Record<string, number>;
+    excluded_refuted: number;
+  };
+  format: string;
+}
+
+export interface IngestCandidate {
+  segment_index: number;
+  content: string;
+  suggested_category: ChunkCategory;
+  suggested_domain: string;
+  suggested_summary: string;
+  duplicate_of?: string;
+  duplicate_similarity?: number;
+  duplicate_summary?: string;
+}
+
+export interface IngestResult {
+  candidates: IngestCandidate[];
+  stats: {
+    total_segments: number;
+    duplicates: number;
+    new_candidates: number;
+  };
+  source?: string;
 }
 
 // === Filter types ===
@@ -270,6 +401,18 @@ export interface StorageStats {
   cache_max: number;
 }
 
+export interface DomainStatsCache {
+  domains: Array<{
+    name: string;
+    chunk_count: number;
+    top_lifecycle: string;
+    avg_confidence: number;
+  }>;
+  total_chunks: number;
+  total_edges: number;
+  generated_at: string;
+}
+
 /**
  * Callback type — engine layer accepts this WITHOUT importing dashboard code.
  * Avoids engine→dashboard circular dependency.
@@ -278,6 +421,19 @@ export type StepEmitter = (step: string, summary: string, data?: unknown) => voi
 
 // === Logging (never use console.log in MCP — corrupts JSON-RPC stdio) ===
 
+// File logger injection — avoids circular dep (logger.ts does not import types.ts)
+let _fileLogger: { write(level: number, source: string, msg: string, data?: unknown): void } | null = null;
+
+export function setFileLogger(logger: typeof _fileLogger): void {
+  _fileLogger = logger;
+}
+
 export function log(...args: unknown[]): void {
   console.error('[knowledge-graph]', ...args);
+  if (_fileLogger) {
+    const msg = args.map(a =>
+      typeof a === 'string' ? a : (a instanceof Error ? a.stack ?? a.message : JSON.stringify(a))
+    ).join(' ');
+    _fileLogger.write(1, 'general', msg);
+  }
 }

@@ -102,14 +102,20 @@ Note: Manual links created via `knowledge_link` do not set any edge properties (
 
 ## knowledge_delete (`delete.ts`)
 
-**Purpose**: Delete a chunk and all its relationships.
+**Purpose**: Delete a chunk and all its relationships. Lifecycle guard protects validated/promoted/canonical chunks.
 
-**Parameters**: `id`
+**Parameters**: `id`, optional `reason`
 
 **Flow**:
 1. Verify chunk exists — throw if not found
-2. `storage.deleteChunk()` (uses `DETACH DELETE` to remove all relationships)
-3. Return `{ deleted: true, id }`
+2. **Lifecycle guard**: If chunk lifecycle is `validated`, `promoted`, or `canonical` and no `reason` provided — throw error: "Cannot delete {lifecycle} chunk without a reason."
+3. Capture snapshot: `{ domain, category, lifecycle, confidence, summary }`
+4. `storage.deleteChunk()` (uses `DETACH DELETE` to remove all relationships)
+5. Return `{ deleted: true, id, snapshot, reason? }`
+
+Note: `hypothesis`, `active`, and `refuted` chunks can be deleted without a reason (low blast radius — these are unvalidated or already discredited knowledge).
+
+**Result type**: `DeleteResult` — `{ deleted, id, snapshot?: { domain, category, lifecycle, confidence, summary }, reason? }`
 
 ---
 
@@ -184,6 +190,6 @@ Note: The "cannot promote refuted" guard checks confidence (< 0.2), not lifecycl
 | `ValidateResult` | Validate response: id, action, confidence, validation_count, refutation_count, lifecycle, auto_promoted |
 | `PromoteResult` | Promote response: id, previous/new category, previous/new lifecycle, confidence, reason |
 | `ListResult` | List response: chunks[] (summary view with effective_confidence), total |
-| `DeleteResult` | Delete response: { deleted, id } |
+| `DeleteResult` | Delete response: { deleted, id, snapshot?, reason? } |
 
 All interfaces defined in `src/types.ts`.

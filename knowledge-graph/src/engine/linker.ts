@@ -24,7 +24,8 @@ export class Linker {
   async autoLink(
     chunkId: string,
     embedding: number[],
-    suggestedRelations?: SuggestedRelation[]
+    suggestedRelations?: SuggestedRelation[],
+    sourceLayer?: string,
   ): Promise<AutoLink[]> {
     const links: AutoLink[] = [];
 
@@ -37,6 +38,8 @@ export class Linker {
 
       for (const hit of similar) {
         if (hit.chunk.id === chunkId) continue;
+        // Cross-layer isolation: only link within same layer when sourceLayer is specified
+        if (sourceLayer && hit.chunk.layer !== sourceLayer) continue;
         const similarity = 1 - hit.distance;
         if (similarity >= this.similarityThreshold) {
           try {
@@ -141,10 +144,11 @@ export class Linker {
   async relinkChunk(
     chunkId: string,
     newEmbedding: number[],
-    suggestedRelations?: SuggestedRelation[]
+    suggestedRelations?: SuggestedRelation[],
+    sourceLayer?: string,
   ): Promise<AutoLink[]> {
     // Delete only auto-created RELATES_TO edges — manual links are preserved
     await this.storage.deleteAutoRelations(chunkId);
-    return this.autoLink(chunkId, newEmbedding, suggestedRelations);
+    return this.autoLink(chunkId, newEmbedding, suggestedRelations, sourceLayer);
   }
 }

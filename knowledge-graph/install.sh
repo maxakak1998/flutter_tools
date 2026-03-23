@@ -78,6 +78,25 @@ npm run build
 
 chmod +x "$KG_HOME/src/dist/cli.js"
 
+# ── Copy scripts ─────────────────────────────────────────────
+
+mkdir -p "$KG_HOME/scripts"
+if [ -d "$KG_HOME/src/scripts" ]; then
+  cp "$KG_HOME/src/scripts/setup-hooks.sh" "$KG_HOME/scripts/setup-hooks.sh"
+  cp "$KG_HOME/src/scripts/remove-hooks.sh" "$KG_HOME/scripts/remove-hooks.sh"
+  chmod +x "$KG_HOME/scripts/setup-hooks.sh" "$KG_HOME/scripts/remove-hooks.sh"
+  info "Copied hook scripts to $KG_HOME/scripts/"
+fi
+
+# ── Copy skills ──────────────────────────────────────────────
+
+if [ -d "$KG_HOME/src/.claude/skills/knowledge-graph" ]; then
+  rm -rf "$KG_HOME/skills"
+  mkdir -p "$KG_HOME/skills"
+  cp -r "$KG_HOME/src/.claude/skills/knowledge-graph/"* "$KG_HOME/skills/"
+  info "Copied KG skills to $KG_HOME/skills/"
+fi
+
 # ── Create symlink in PATH ────────────────────────────────────
 
 LINK_TARGET="$KG_HOME/src/dist/cli.js"

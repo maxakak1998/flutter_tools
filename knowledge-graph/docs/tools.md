@@ -161,17 +161,21 @@ Update an existing chunk with new content. Re-embeds, bumps version, re-links. P
 
 ## 6. knowledge_delete
 
-Delete a chunk and all its relationships.
+Delete a chunk and all its relationships. Validated/promoted/canonical chunks require a reason.
 
 **Parameters**:
 
 | Param | Type | Required | Description |
 |-------|------|----------|-------------|
 | `id` | string | yes | Chunk ID to delete |
+| `reason` | string | no | Why this chunk should be removed. **Required** for `validated`, `promoted`, or `canonical` chunks. |
 
-**Returns**: `{ deleted, id }`
+**Returns**: `{ deleted, id, snapshot, reason? }`
+
+The `snapshot` field captures the chunk's state before deletion: `{ domain, category, lifecycle, confidence, summary }`. This enables audit logging even though the chunk no longer exists.
 
 **Behavior**:
+- **Lifecycle guard**: If chunk lifecycle is `validated`, `promoted`, or `canonical`, the `reason` field is required. Rejects with error if missing. For `hypothesis`, `active`, or `refuted` chunks, reason is optional (low blast radius).
 - Uses `DETACH DELETE` — removes the node and every edge touching it
 - Irreversible
 
