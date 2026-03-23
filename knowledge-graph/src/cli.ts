@@ -160,6 +160,7 @@ COMMANDS
   list               List knowledge chunks (--domain, --category, --lifecycle)
   query <topic>      Search knowledge by topic (--domain)
   prime              Output skill context for hook injection (SessionStart/PreCompact)
+  context            Auto-query KG with user prompt (UserPromptSubmit hook)
   logs               View recent daemon logs (last 100 entries)
   reset-db           Delete the database (all chunks, edges, embeddings)
   uninstall          Remove installed files, config, and MCP registration
@@ -407,7 +408,35 @@ async function runDoctor(parsed: ParsedArgs): Promise<void> {
     checks.push({ name: 'Life tools', status: 'warn', detail: 'settings.local.json not found — run: kg setup-hooks' });
   }
 
-  // 6c. KG usage skills (existence + staleness via content comparison)
+  // 6c. CLI hook registrations (kg prime on SessionStart/PreCompact, kg context on UserPromptSubmit)
+  if (existsSync(settingsFile)) {
+    try {
+      const settings = JSON.parse(readFileSync(settingsFile, 'utf-8'));
+      const expectedCliHooks: { event: string; command: string }[] = [
+        { event: 'SessionStart', command: 'kg prime' },
+        { event: 'PreCompact', command: 'kg prime' },
+        { event: 'UserPromptSubmit', command: 'kg context' },
+      ];
+      const registered = expectedCliHooks.filter(({ event, command }) => {
+        const entries = settings?.hooks?.[event] ?? [];
+        return entries.some((entry: { hooks?: { command?: string }[] }) =>
+          entry.hooks?.some((h: { command?: string }) => h.command === command)
+        );
+      });
+      if (registered.length === expectedCliHooks.length) {
+        checks.push({ name: 'CLI hooks', status: 'ok', detail: `${registered.length}/${expectedCliHooks.length} registered (prime, context)` });
+      } else if (registered.length === 0) {
+        checks.push({ name: 'CLI hooks', status: 'warn', detail: `not registered — run: kg setup-hooks` });
+      } else {
+        const missing = expectedCliHooks
+          .filter(({ event, command }) => !registered.some(r => r.event === event && r.command === command))
+          .map(({ event, command }) => `${command}@${event}`);
+        checks.push({ name: 'CLI hooks', status: 'warn', detail: `${registered.length}/${expectedCliHooks.length} — missing: ${missing.join(', ')}. Run: kg setup-hooks` });
+      }
+    } catch { /* ignore parse errors — already caught in 6b */ }
+  }
+
+  // 6d. KG usage skills (existence + staleness via content comparison)
   const skillsDir = join(process.cwd(), '.claude', 'skills', 'knowledge-graph');
   const skillsSourceDir = join(homedir(), '.knowledge-graph', 'skills');
   const expectedSkills = [
@@ -1413,6 +1442,152 @@ If working on domain tasks:
 }
 
 // ============================================================
+// Context command (UserPromptSubmit auto-query hook)
+// ============================================================
+
+function shouldSkipPrompt(prompt: string): boolean {
+  const trimmed = prompt.trim();
+  if (trimmed.length < 15) return true;
+  if (trimmed.startsWith('/')) return true;
+  const trivial = new Set([
+    'yes', 'no', 'ok', 'sure', 'thanks', 'done', 'continue',
+    'y', 'n', 'lgtm', 'looks good', 'go ahead', 'proceed',
+    'correct', 'right', 'nope', 'yep', 'yeah', 'please',
+    'thank you', 'thx', 'ty', 'ok thanks',
+  ]);
+  return trivial.has(trimmed.toLowerCase());
+}
+
+interface ContextChunkResult {
+  id: string;
+  content: string;
+  metadata: {
+    summary: string;
+    domain: string;
+    category: string;
+    importance: string;
+    confidence: number;
+    lifecycle: string;
+    keywords: string[];
+  };
+  score: number;
+}
+
+function formatContextResults(chunks: ContextChunkResult[], prompt: string): string {
+  const top = chunks.slice(0, 5);
+  if (top.length === 0) return '';
+
+  const relevant = top.filter(c => c.score >= 0.3);
+  if (relevant.length === 0) return '';
+
+  const lines: string[] = [];
+  const promptExcerpt = prompt.slice(0, 60).replace(/\n/g, ' ');
+
+  lines.push(`## Domain Knowledge (auto-retrieved for: "${promptExcerpt}")`);
+  lines.push('');
+
+  for (const c of relevant) {
+    const conf = c.metadata.confidence.toFixed(2);
+    const domain = c.metadata.domain || 'unknown';
+    const category = c.metadata.category;
+    const lifecycle = c.metadata.lifecycle;
+
+    lines.push(`- **[${domain}]** (${category}, conf:${conf}, ${lifecycle}) ${c.metadata.summary}`);
+
+    if (c.metadata.confidence >= 0.5) {
+      const content = c.content.slice(0, 200).replace(/\n/g, ' ');
+      lines.push(`  ${content}`);
+    }
+  }
+
+  lines.push('');
+  lines.push('_Use knowledge_query for deeper exploration. Above results are auto-surfaced from the knowledge graph._');
+
+  return lines.join('\n');
+}
+
+async function runContext(): Promise<void> {
+  // 1. Read stdin for hook input JSON
+  let promptText = '';
+  try {
+    const chunks: Buffer[] = [];
+    for await (const chunk of process.stdin) {
+      chunks.push(chunk);
+    }
+    const input = Buffer.concat(chunks).toString('utf-8').trim();
+    if (input) {
+      const parsed = JSON.parse(input);
+      promptText = parsed.prompt || '';
+    }
+  } catch {
+    // No stdin or invalid JSON — exit silently
+  }
+
+  // 2. Skip trivial prompts
+  if (shouldSkipPrompt(promptText)) {
+    process.exit(0);
+    return;
+  }
+
+  // 3. Discover project + daemon
+  const project = discoverProject(process.cwd());
+  if (!project) {
+    process.exit(0);
+    return;
+  }
+  const daemonUrl = await getDaemonUrl(project);
+  if (!daemonUrl) {
+    process.exit(0);
+    return;
+  }
+
+  // 4. Query KG via JSON-RPC
+  try {
+    const res = await fetch(`${daemonUrl}/rpc`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'knowledge_query',
+        params: {
+          query: promptText.slice(0, 500),
+          filters: { min_confidence: 0.3 },
+        },
+        id: 1,
+      }),
+      signal: AbortSignal.timeout(2500),
+    });
+
+    const body = await res.json() as {
+      result?: { chunks: ContextChunkResult[]; total: number };
+      error?: { message: string };
+    };
+
+    if (!body.result || body.result.total === 0) {
+      process.exit(0);
+      return;
+    }
+
+    // 5. Format + output
+    const ctx = formatContextResults(body.result.chunks, promptText);
+    if (!ctx) {
+      process.exit(0);
+      return;
+    }
+
+    console.log(JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: 'UserPromptSubmit',
+        additionalContext: ctx,
+      },
+    }));
+  } catch {
+    // Timeout, connection error — exit silently
+    process.exit(0);
+  }
+}
+
+// ============================================================
 // Setup/Remove skills commands
 // ============================================================
 
@@ -1843,6 +2018,10 @@ switch (parsed.command) {
       console.error('Query failed:', e);
       process.exit(1);
     });
+    break;
+
+  case 'context':
+    runContext().catch(() => process.exit(0));
     break;
 
   case '':

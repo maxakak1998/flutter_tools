@@ -174,6 +174,10 @@ echo "  Removed kg-mark-consulted-bash.sh from PostToolUse"
 remove_hook_command "PostToolUseFailure" ".claude/hooks/kg-activity-tracker.sh"
 echo "  Removed kg-activity-tracker.sh from PostToolUseFailure"
 
+# Remove kg context from UserPromptSubmit
+remove_hook_command "UserPromptSubmit" "kg context"
+echo "  Removed kg context from UserPromptSubmit"
+
 # Remove kg-session-query-reminder.sh from UserPromptSubmit (legacy)
 remove_hook_command "UserPromptSubmit" ".claude/hooks/kg-session-query-reminder.sh"
 echo "  Removed kg-session-query-reminder.sh from UserPromptSubmit (legacy)"

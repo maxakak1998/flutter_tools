@@ -90,10 +90,10 @@ fi
 
 # ── Copy skills ──────────────────────────────────────────────
 
-if [ -d "$KG_HOME/src/.claude/skills/knowledge-graph" ]; then
+if [ -d "$KG_HOME/src/skills" ]; then
   rm -rf "$KG_HOME/skills"
   mkdir -p "$KG_HOME/skills"
-  cp -r "$KG_HOME/src/.claude/skills/knowledge-graph/"* "$KG_HOME/skills/"
+  cp -r "$KG_HOME/src/skills/"* "$KG_HOME/skills/"
   info "Copied KG skills to $KG_HOME/skills/"
 fi
 

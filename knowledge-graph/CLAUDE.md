@@ -69,6 +69,7 @@ npx tsx scripts/build-artifact-test.ts
 | `reset-db` | Delete the database (all chunks, edges, embeddings) |
 | `uninstall` | Remove installed files, config, and MCP registration |
 | `prime` | Output skill context for hook injection (SessionStart/PreCompact) |
+| `context` | Auto-query KG with user prompt (UserPromptSubmit hook) |
 | `setup-hooks` | Install KG enforcement hooks into current project (requires `jq`) |
 | `remove-hooks` | Remove KG enforcement hooks from current project (requires `jq`) |
 

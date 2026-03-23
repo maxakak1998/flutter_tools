@@ -896,6 +896,9 @@ add_hook "SessionStart" "" "kg prime"
 # --- PreCompact (kg prime restores KG context after compaction) ---
 add_hook "PreCompact" "" "kg prime"
 
+# --- UserPromptSubmit (auto-query KG with user prompt) ---
+add_hook "UserPromptSubmit" "" "kg context"
+
 # --- SessionEnd ---
 add_hook "SessionEnd" "" ".claude/hooks/kg-session-end-cleanup.sh"
 
@@ -904,7 +907,7 @@ add_hook "Stop" "" ".claude/hooks/kg-learning-capture-check.sh"
 
 # --- Legacy cleanup: remove old hooks from settings ---
 SETTINGS=$(echo "$SETTINGS" | jq '
-  # Remove old UserPromptSubmit reminder
+  # Remove old UserPromptSubmit reminder (legacy, replaced by kg context)
   if .hooks.UserPromptSubmit then
     .hooks.UserPromptSubmit |= map(
       .hooks |= map(select(.command != ".claude/hooks/kg-session-query-reminder.sh"))
@@ -938,7 +941,7 @@ echo "$SETTINGS" | jq '.' > "$SETTINGS_FILE"
 info "Hooks installed to $HOOKS_DIR"
 info "Settings merged into $SETTINGS_FILE"
 echo ""
-echo "Hooks installed (15 scripts + kg prime, 7 events):"
+echo "Hooks installed (15 scripts + kg prime + kg context, 8 events):"
 echo "  [PreToolUse]          kg-require-domain-check.sh"
 echo "  [PreToolUse]          kg-source-category-check.sh (evolve: category only, no source)"
 echo "  [PreToolUse]          kg-entity-decomposition-check.sh (2+ entities → require relations)"
@@ -954,6 +957,7 @@ echo "  [PostToolUse]         kg-mark-tool-used.sh"
 echo "  [PostToolUseFailure]  kg-tool-failure.sh"
 echo "  [SessionStart]        kg prime (injects full skill context)"
 echo "  [PreCompact]          kg prime (restores KG context after compaction)"
+echo "  [UserPromptSubmit]    kg context (auto-query KG with user prompt)"
 echo "  [SessionEnd]          kg-session-end-cleanup.sh"
 echo "  [Stop]                kg-learning-capture-check.sh"
 echo ""
