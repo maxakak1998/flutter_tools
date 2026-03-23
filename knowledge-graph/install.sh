@@ -121,13 +121,38 @@ fi
 
 # ── Check Ollama ──────────────────────────────────────────────
 
-if command -v ollama &>/dev/null; then
-  info "Ollama found. Pulling bge-m3 model..."
-  ollama pull bge-m3 || warn "Failed to pull bge-m3. Run 'ollama pull bge-m3' manually."
-else
-  warn "Ollama not found. Install from https://ollama.ai"
-  echo "  After installing: ollama pull bge-m3"
+if ! command -v ollama &>/dev/null; then
+  info "Ollama not found. Installing..."
+  if [ "$(uname)" = "Darwin" ]; then
+    if command -v brew &>/dev/null; then
+      brew install --cask ollama || error "Failed to install Ollama via Homebrew"
+    else
+      curl -fsSL https://ollama.com/install.sh | sh || error "Failed to install Ollama"
+    fi
+  else
+    curl -fsSL https://ollama.com/install.sh | sh || error "Failed to install Ollama"
+  fi
+  info "Ollama installed"
 fi
+
+# Ensure Ollama is running before pulling model
+if ! curl -sf http://localhost:11434/api/tags &>/dev/null; then
+  info "Starting Ollama..."
+  if [ "$(uname)" = "Darwin" ]; then
+    open -a Ollama 2>/dev/null || ollama serve &>/dev/null &
+  else
+    ollama serve &>/dev/null &
+  fi
+  # Wait up to 15s for Ollama to start
+  for i in $(seq 1 15); do
+    curl -sf http://localhost:11434/api/tags &>/dev/null && break
+    sleep 1
+  done
+  curl -sf http://localhost:11434/api/tags &>/dev/null || warn "Ollama not responding. Run 'ollama serve' manually."
+fi
+
+info "Pulling bge-m3 model..."
+ollama pull bge-m3 || warn "Failed to pull bge-m3. Run 'ollama pull bge-m3' manually."
 
 # ── Setup MCP config ──────────────────────────────────────────
 
