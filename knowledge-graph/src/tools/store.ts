@@ -360,7 +360,12 @@ export async function handleStore(
           if (fromEntityId && toEntityId) {
             const relTable = RELATION_TABLE_MAP[rel.relation];
             if (relTable) {
-              await storage.createRelation(fromEntityId, toEntityId, relTable, { description: `${rel.from_entity} ${rel.relation} ${rel.to_entity}` });
+              // DEPENDS_ON, CONTRADICTS, RELATES_TO, SUPERSEDES have no description column
+              const NO_DESC = ['DEPENDS_ON', 'CONTRADICTS', 'RELATES_TO', 'SUPERSEDES'];
+              const props = NO_DESC.includes(relTable)
+                ? undefined
+                : { description: `${rel.from_entity} ${rel.relation} ${rel.to_entity}` };
+              await storage.createRelation(fromEntityId, toEntityId, relTable, props);
             }
           }
         } catch (e) {

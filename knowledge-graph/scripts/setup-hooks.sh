@@ -337,8 +337,8 @@ case "$TOOL" in
     CAT=$(echo "$INPUT" | jq -r '.tool_input.metadata.category // ""')
     SRC=$(echo "$INPUT" | jq -r '.tool_input.metadata.source // ""')
     SUM=$(echo "$INPUT" | jq -r '.tool_input.metadata.summary // ""' | head -c 100 | tr '\n\t' '  ')
-    CID=$(echo "$INPUT" | jq -r '.tool_result.id // .tool_result.duplicate_of // ""')
-    IS_DEDUP=$(echo "$INPUT" | jq -r '.tool_result.duplicate_of // empty')
+    CID=$(echo "$INPUT" | jq -r '.tool_response.id // .tool_response.duplicate_of // ""')
+    IS_DEDUP=$(echo "$INPUT" | jq -r '.tool_response.duplicate_of // empty')
     EVT="tool"
     [ -n "$IS_DEDUP" ] && EVT="dedup"
     jq -n -c --arg ts "$TS" --arg sid "$SID" --arg tool "$TOOL" --arg evt "$EVT" \
@@ -348,16 +348,16 @@ case "$TOOL" in
 
   *knowledge_query)
     Q=$(echo "$INPUT" | jq -r '.tool_input.query // ""' | head -c 100)
-    HITS=$(echo "$INPUT" | jq -r '.tool_result.results // [] | length')
+    HITS=$(echo "$INPUT" | jq -r '.tool_response.results // [] | length')
     jq -n -c --arg ts "$TS" --arg sid "$SID" --arg tool "$TOOL" --arg query "$Q" --arg hits "$HITS" \
       '{ts:$ts,session:$sid,event:"tool",tool:$tool,query:$query,hits:($hits|tonumber)}' >> "$ACTIVITY_LOG"
     ;;
 
   *knowledge_validate|*life_feedback)
     CID=$(echo "$INPUT" | jq -r '.tool_input.id // ""')
-    ACT=$(echo "$INPUT" | jq -r '.tool_result.action // .tool_input.outcome // ""')
-    CONF=$(echo "$INPUT" | jq -r '.tool_result.confidence // .tool_result.score // ""')
-    LC=$(echo "$INPUT" | jq -r '.tool_result.lifecycle // ""')
+    ACT=$(echo "$INPUT" | jq -r '.tool_response.action // .tool_input.outcome // ""')
+    CONF=$(echo "$INPUT" | jq -r '.tool_response.confidence // .tool_response.score // ""')
+    LC=$(echo "$INPUT" | jq -r '.tool_response.lifecycle // ""')
     EV=$(echo "$INPUT" | jq -r '.tool_input.evidence // ""' | head -c 100 | tr '\n\t' '  ')
     jq -n -c --arg ts "$TS" --arg sid "$SID" --arg tool "$TOOL" \
       --arg id "$CID" --arg action "$ACT" --arg confidence "$CONF" --arg lifecycle "$LC" --arg evidence "$EV" \
@@ -367,16 +367,16 @@ case "$TOOL" in
   *knowledge_promote)
     CID=$(echo "$INPUT" | jq -r '.tool_input.id // ""')
     REASON=$(echo "$INPUT" | jq -r '.tool_input.reason // ""' | head -c 120 | tr '\n\t' '  ')
-    PREV_LC=$(echo "$INPUT" | jq -r '.tool_result.previous_lifecycle // ""')
-    NEW_LC=$(echo "$INPUT" | jq -r '.tool_result.new_lifecycle // ""')
-    CONF=$(echo "$INPUT" | jq -r '.tool_result.confidence // ""')
+    PREV_LC=$(echo "$INPUT" | jq -r '.tool_response.previous_lifecycle // ""')
+    NEW_LC=$(echo "$INPUT" | jq -r '.tool_response.new_lifecycle // ""')
+    CONF=$(echo "$INPUT" | jq -r '.tool_response.confidence // ""')
     jq -n -c --arg ts "$TS" --arg sid "$SID" --arg tool "$TOOL" \
       --arg id "$CID" --arg reason "$REASON" --arg prev "$PREV_LC" --arg new "$NEW_LC" --arg conf "$CONF" \
       '{ts:$ts,session:$sid,event:"tool",tool:$tool,id:$id,reason:$reason,prev_lifecycle:$prev,new_lifecycle:$new,confidence:$conf}' >> "$ACTIVITY_LOG"
     ;;
 
   *knowledge_evolve)
-    CID=$(echo "$INPUT" | jq -r '.tool_result.id // ""')
+    CID=$(echo "$INPUT" | jq -r '.tool_response.id // ""')
     DOM=$(echo "$INPUT" | jq -r '.tool_input.new_metadata.domain // ""')
     CAT=$(echo "$INPUT" | jq -r '.tool_input.new_metadata.category // ""')
     jq -n -c --arg ts "$TS" --arg sid "$SID" --arg tool "$TOOL" \
@@ -385,9 +385,9 @@ case "$TOOL" in
     ;;
 
   *knowledge_delete)
-    CID=$(echo "$INPUT" | jq -r '.tool_result.id // ""')
-    DOM=$(echo "$INPUT" | jq -r '.tool_result.snapshot.domain // ""')
-    LC=$(echo "$INPUT" | jq -r '.tool_result.snapshot.lifecycle // ""')
+    CID=$(echo "$INPUT" | jq -r '.tool_response.id // ""')
+    DOM=$(echo "$INPUT" | jq -r '.tool_response.snapshot.domain // ""')
+    LC=$(echo "$INPUT" | jq -r '.tool_response.snapshot.lifecycle // ""')
     REASON=$(echo "$INPUT" | jq -r '.tool_input.reason // ""' | head -c 100 | tr '\n\t' '  ')
     jq -n -c --arg ts "$TS" --arg sid "$SID" --arg tool "$TOOL" \
       --arg id "$CID" --arg domain "$DOM" --arg lifecycle "$LC" --arg reason "$REASON" \
@@ -409,7 +409,7 @@ case "$TOOL" in
 
   *life_draft_skill)
     DOM=$(echo "$INPUT" | jq -r '.tool_input.domain // ""')
-    SPATH=$(echo "$INPUT" | jq -r '.tool_result.skill_path // ""')
+    SPATH=$(echo "$INPUT" | jq -r '.tool_response.skill_path // ""')
     jq -n -c --arg ts "$TS" --arg sid "$SID" --arg tool "$TOOL" --arg domain "$DOM" --arg path "$SPATH" \
       '{ts:$ts,session:$sid,event:"tool",tool:$tool,domain:$domain,skill_path:$path}' >> "$ACTIVITY_LOG"
     ;;
@@ -768,6 +768,13 @@ if [ -f "$HOOKS_DIR/kg-audit-log.sh" ]; then
   rm -f "$HOOKS_DIR/kg-audit-log.sh"
   info "Removed legacy kg-audit-log.sh (merged into kg-activity-tracker.sh)"
 fi
+# Also clean kg-audit-log.sh references from settings (file deleted but JSON refs remained)
+if [ -f "$SETTINGS_FILE" ]; then
+  AUDIT_REFS=$(grep -c 'kg-audit-log.sh' "$SETTINGS_FILE" 2>/dev/null || true)
+  if [ "$AUDIT_REFS" -gt 0 ]; then
+    info "Cleaning $AUDIT_REFS stale kg-audit-log.sh references from settings..."
+  fi
+fi
 
 # ============================================================================
 # Part 2: Make all hook scripts executable
@@ -911,7 +918,14 @@ SETTINGS=$(echo "$SETTINGS" | jq '
       .hooks |= map(select(.command != ".claude/hooks/kg-session-start.sh"))
     ) |
     .hooks.SessionStart |= map(select(.hooks | length > 0))
-  else . end
+  else . end |
+  # Remove stale kg-audit-log.sh references from all hook events
+  .hooks |= (to_entries | map(
+    .value |= map(
+      .hooks |= map(select(.command != ".claude/hooks/kg-audit-log.sh"))
+    ) |
+    .value |= map(select(.hooks | length > 0))
+  ) | from_entries)
 ')
 
 # Write back (pretty-printed)
