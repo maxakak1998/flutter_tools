@@ -1,5 +1,17 @@
 #!/bin/bash
-# Install knowledge-graph MCP server
+# ╔══════════════════════════════════════════════════════════════╗
+# ║  Knowledge-Graph MCP Server — Installer                     ║
+# ║                                                              ║
+# ║  Steps:                                                      ║
+# ║    1. Check prerequisites (Node.js >= 18, npm)               ║
+# ║    2. Get source (local copy or git clone)                   ║
+# ║    3. Install npm dependencies & build TypeScript            ║
+# ║    4. Copy hook scripts to ~/.knowledge-graph/scripts/       ║
+# ║    5. Copy skill definitions to ~/.knowledge-graph/skills/   ║
+# ║    6. Create CLI symlinks (kg, knowledge-graph)              ║
+# ║    7. Install Ollama (if missing) & pull bge-m3 model        ║
+# ║    8. Configure Claude Code MCP server                       ║
+# ╚══════════════════════════════════════════════════════════════╝
 #
 # Usage:
 #   bash install.sh                          # Install from local directory
@@ -24,7 +36,10 @@ info()  { echo -e "${GREEN}==>${NC} ${BOLD}$1${NC}"; }
 warn()  { echo -e "${YELLOW}WARNING:${NC} $1"; }
 error() { echo -e "${RED}ERROR:${NC} $1"; exit 1; }
 
-# ── Check prerequisites ──────────────────────────────────────
+# ── Step 1: Check prerequisites ─────────────────────────────────
+# Require Node.js >= 18 and npm (needed for building TypeScript)
+
+info "Step 1/8: Checking prerequisites..."
 
 command -v node &>/dev/null || error "Node.js not found. Install from https://nodejs.org (>= 18 required)"
 
@@ -36,21 +51,20 @@ fi
 command -v npm &>/dev/null || error "npm not found. Install Node.js from https://nodejs.org"
 
 info "Installing knowledge-graph to $KG_HOME"
-
-# ── Create install directory ──────────────────────────────────
-
 mkdir -p "$KG_HOME"
 
-# ── Get source ────────────────────────────────────────────────
+# ── Step 2: Get source ──────────────────────────────────────────
+# Local: rsync from current dir (excludes node_modules, dist)
+# Remote: git clone or git pull from REPO_URL
 
-# Detect if running from within the source directory
+info "Step 2/8: Getting source..."
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 
 if [ -f "$SCRIPT_DIR/package.json" ] && grep -q '"knowledge-graph-mcp"' "$SCRIPT_DIR/package.json" 2>/dev/null; then
   info "Installing from local source: $SCRIPT_DIR"
   if [ "$SCRIPT_DIR" != "$KG_HOME/src" ]; then
     rm -rf "$KG_HOME/src"
-    # Copy source but exclude node_modules and dist (will be rebuilt)
     mkdir -p "$KG_HOME/src"
     rsync -a --exclude='node_modules' --exclude='dist' "$SCRIPT_DIR/" "$KG_HOME/src/"
   fi
@@ -64,40 +78,50 @@ else
   fi
 fi
 
-# ── Install dependencies and build ───────────────────────────
+# ── Step 3: Install dependencies & build ─────────────────────────
+# npm install → TypeScript compile → copy dashboard HTML
+
+info "Step 3/8: Installing dependencies & building..."
 
 cd "$KG_HOME/src"
 
-info "Installing dependencies..."
 npm install
-
-info "Building TypeScript..."
 npm run build
-
-# ── Make CLI executable ───────────────────────────────────────
 
 chmod +x "$KG_HOME/src/dist/cli.js"
 
-# ── Copy scripts ─────────────────────────────────────────────
+# ── Step 4: Copy hook scripts ────────────────────────────────────
+# setup-hooks.sh and remove-hooks.sh → ~/.knowledge-graph/scripts/
+# These are run by `kg setup-hooks` in target projects
+
+info "Step 4/8: Copying hook scripts..."
 
 mkdir -p "$KG_HOME/scripts"
 if [ -d "$KG_HOME/src/scripts" ]; then
   cp "$KG_HOME/src/scripts/setup-hooks.sh" "$KG_HOME/scripts/setup-hooks.sh"
   cp "$KG_HOME/src/scripts/remove-hooks.sh" "$KG_HOME/scripts/remove-hooks.sh"
   chmod +x "$KG_HOME/scripts/setup-hooks.sh" "$KG_HOME/scripts/remove-hooks.sh"
-  info "Copied hook scripts to $KG_HOME/scripts/"
+  info "Copied to $KG_HOME/scripts/"
 fi
 
-# ── Copy skills ──────────────────────────────────────────────
+# ── Step 5: Copy skill definitions ──────────────────────────────
+# skills/ (project source) → ~/.knowledge-graph/skills/ (runtime)
+# Then `kg setup-skills` copies to target project's .claude/skills/
+
+info "Step 5/8: Copying skill definitions..."
 
 if [ -d "$KG_HOME/src/skills" ]; then
   rm -rf "$KG_HOME/skills"
   mkdir -p "$KG_HOME/skills"
   cp -r "$KG_HOME/src/skills/"* "$KG_HOME/skills/"
-  info "Copied KG skills to $KG_HOME/skills/"
+  info "Copied to $KG_HOME/skills/"
 fi
 
-# ── Create symlink in PATH ────────────────────────────────────
+# ── Step 6: Create CLI symlinks ──────────────────────────────────
+# Symlink dist/cli.js → /usr/local/bin/kg (or ~/.local/bin/kg)
+# Creates both `knowledge-graph` and `kg` aliases
+
+info "Step 6/8: Creating CLI symlinks..."
 
 LINK_TARGET="$KG_HOME/src/dist/cli.js"
 
@@ -111,7 +135,6 @@ else
   ln -sf "$LINK_TARGET" "$HOME/.local/bin/kg"
   info "Symlinked to ~/.local/bin/knowledge-graph (alias: kg)"
 
-  # Check if ~/.local/bin is in PATH
   if ! echo "$PATH" | tr ':' '\n' | grep -q "$HOME/.local/bin"; then
     warn "~/.local/bin is not in your PATH. Add it:"
     echo "  export PATH=\"\$HOME/.local/bin:\$PATH\""
@@ -119,8 +142,14 @@ else
   fi
 fi
 
-# ── Check Ollama ──────────────────────────────────────────────
+# ── Step 7: Install Ollama & pull embedding model ────────────────
+# 7a. Install Ollama if not found (brew cask on macOS, curl on Linux)
+# 7b. Start Ollama server if not running (wait up to 15s)
+# 7c. Pull bge-m3 embedding model (1024 dimensions, used for vector search)
 
+info "Step 7/8: Setting up Ollama & bge-m3 model..."
+
+# 7a. Install Ollama
 if ! command -v ollama &>/dev/null; then
   info "Ollama not found. Installing..."
   if [ "$(uname)" = "Darwin" ]; then
@@ -133,33 +162,39 @@ if ! command -v ollama &>/dev/null; then
     curl -fsSL https://ollama.com/install.sh | sh || error "Failed to install Ollama"
   fi
   info "Ollama installed"
+else
+  info "Ollama found: $(ollama --version 2>/dev/null || echo 'unknown version')"
 fi
 
-# Ensure Ollama is running before pulling model
+# 7b. Start Ollama server if not running
 if ! curl -sf http://localhost:11434/api/tags &>/dev/null; then
-  info "Starting Ollama..."
+  info "Starting Ollama server..."
   if [ "$(uname)" = "Darwin" ]; then
     open -a Ollama 2>/dev/null || ollama serve &>/dev/null &
   else
     ollama serve &>/dev/null &
   fi
-  # Wait up to 15s for Ollama to start
   for i in $(seq 1 15); do
     curl -sf http://localhost:11434/api/tags &>/dev/null && break
     sleep 1
   done
-  curl -sf http://localhost:11434/api/tags &>/dev/null || warn "Ollama not responding. Run 'ollama serve' manually."
+  curl -sf http://localhost:11434/api/tags &>/dev/null || warn "Ollama not responding after 15s. Run 'ollama serve' manually."
+else
+  info "Ollama server already running"
 fi
 
+# 7c. Pull bge-m3 embedding model
 info "Pulling bge-m3 model..."
 ollama pull bge-m3 || warn "Failed to pull bge-m3. Run 'ollama pull bge-m3' manually."
 
-# ── Setup MCP config ──────────────────────────────────────────
+# ── Step 8: Configure Claude Code MCP server ─────────────────────
+# Writes knowledge.json config and prints MCP registration instructions
 
-info "Configuring Claude Code MCP server..."
+info "Step 8/8: Configuring Claude Code MCP server..."
+
 node "$KG_HOME/src/dist/cli.js" setup || warn "Auto-setup failed. Run 'knowledge-graph setup' manually."
 
-# ── Done ──────────────────────────────────────────────────────
+# ── Done ─────────────────────────────────────────────────────────
 
 echo ""
 echo -e "${GREEN}${BOLD}Installation complete!${NC}"
