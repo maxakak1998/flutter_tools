@@ -233,7 +233,7 @@ export async function handleEvolve(
 
   // Re-run auto-linking with new embedding
   onStep?.('re_link', 'Re-running auto-linking');
-  await linker.relinkChunk(id, newEmbedding, newMetadata?.suggested_relations);
+  await linker.relinkChunk(id, newEmbedding, newMetadata?.suggested_relations, undefined, resolvedDomain);
   onStep?.('re_link_done', 'Re-linking complete');
 
   // Entity-index chunk creation and linking for new entities

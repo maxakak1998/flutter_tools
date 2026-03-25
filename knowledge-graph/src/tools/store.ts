@@ -328,7 +328,9 @@ export async function handleStore(
   const autoLinks = await linker.autoLink(
     id,
     embedding,
-    metadata.suggested_relations
+    metadata.suggested_relations,
+    undefined,
+    normalizedDomain,
   );
   onStep?.('auto_link_done', `Found ${autoLinks.length} auto-links`, { links: autoLinks });
 

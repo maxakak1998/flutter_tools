@@ -22,6 +22,7 @@ export interface KnowledgeConfig {
   search: {
     similarityThreshold: number;
     autoLinkTopK: number;
+    crossDomainThreshold: number;
   };
   cache: {
     embeddingCacheSize: number;
@@ -86,6 +87,7 @@ export const DEFAULT_CONFIG: KnowledgeConfig = {
   search: {
     similarityThreshold: 0.82,
     autoLinkTopK: 5,
+    crossDomainThreshold: 0.68,
   },
   cache: {
     embeddingCacheSize: 10_000,
@@ -158,6 +160,8 @@ function mergeWithDefaults(
       similarityThreshold:
         overrides.search?.similarityThreshold ?? defaults.search.similarityThreshold,
       autoLinkTopK: overrides.search?.autoLinkTopK ?? defaults.search.autoLinkTopK,
+      crossDomainThreshold:
+        overrides.search?.crossDomainThreshold ?? defaults.search.crossDomainThreshold,
     },
     cache: {
       embeddingCacheSize:
@@ -259,6 +263,7 @@ export function saveDefaultConfig(): string {
     search: {
       similarityThreshold: DEFAULT_CONFIG.search.similarityThreshold,
       autoLinkTopK: DEFAULT_CONFIG.search.autoLinkTopK,
+      crossDomainThreshold: DEFAULT_CONFIG.search.crossDomainThreshold,
     },
     cache: {
       embeddingCacheSize: DEFAULT_CONFIG.cache.embeddingCacheSize,

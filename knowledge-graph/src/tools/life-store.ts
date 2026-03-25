@@ -143,6 +143,7 @@ export async function handleLifeStore(
     embedding,
     metadata.suggested_relations,
     'operational', // sourceLayer: only link within operational layer
+    normalizedDomain,
   );
   onStep?.('auto_link_done', `Found ${autoLinks.length} auto-links`, { links: autoLinks });
 

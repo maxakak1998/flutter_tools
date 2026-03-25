@@ -30,7 +30,7 @@ export async function createCore(config: KnowledgeConfig, configPath?: string): 
     confidenceSearchWeight: config.learning.confidenceSearchWeight,
     decayRates: config.learning.decayRates,
   });
-  const linker = new Linker(storage, embedder, search.similarityThreshold, search.autoLinkTopK);
+  const linker = new Linker(storage, embedder, search.similarityThreshold, search.autoLinkTopK, search.crossDomainThreshold);
   const eventBus = new EventBus();
   const entityRegistry = new EntityAliasRegistry(
     config.entityAliases.registry,

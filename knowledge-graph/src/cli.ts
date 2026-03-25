@@ -1485,6 +1485,8 @@ function formatContextResults(chunks: ContextChunkResult[], prompt: string): str
 
   lines.push(`## Domain Knowledge (auto-retrieved for: "${promptExcerpt}")`);
   lines.push('');
+  lines.push('**MANDATORY: Use this knowledge to answer FIRST. Only scan the codebase if these results do not address the question.**');
+  lines.push('');
 
   for (const c of relevant) {
     const conf = c.metadata.confidence.toFixed(2);
@@ -1499,9 +1501,6 @@ function formatContextResults(chunks: ContextChunkResult[], prompt: string): str
       lines.push(`  ${content}`);
     }
   }
-
-  lines.push('');
-  lines.push('_Use knowledge_query for deeper exploration. Above results are auto-surfaced from the knowledge graph._');
 
   return lines.join('\n');
 }
