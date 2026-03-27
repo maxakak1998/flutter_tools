@@ -83,6 +83,7 @@ export class SurrealStorage implements IStorage {
     await db.query(`DEFINE TABLE IF NOT EXISTS chunk SCHEMAFULL`);
 
     // Fields
+    await db.query(`DEFINE FIELD IF NOT EXISTS sync_id ON chunk TYPE string DEFAULT ''`);
     await db.query(`DEFINE FIELD IF NOT EXISTS content ON chunk TYPE string`);
     await db.query(`DEFINE FIELD IF NOT EXISTS summary ON chunk TYPE string`);
     await db.query(`DEFINE FIELD IF NOT EXISTS embedding ON chunk TYPE array<float>`);
@@ -148,6 +149,7 @@ export class SurrealStorage implements IStorage {
 
     await db.query(
       `CREATE type::thing('chunk', $id) CONTENT {
+        sync_id: $sync_id,
         content: $content,
         summary: $summary,
         embedding: $embedding,
@@ -171,6 +173,7 @@ export class SurrealStorage implements IStorage {
       }`,
       {
         id: chunk.id,
+        sync_id: chunk.sync_id ?? '',
         content: chunk.content,
         summary: chunk.summary,
         embedding: chunk.embedding,
@@ -215,6 +218,7 @@ export class SurrealStorage implements IStorage {
     };
 
     const fields: Array<[keyof StoredChunk, string]> = [
+      ['sync_id', 'sync_id'],
       ['content', 'content'], ['summary', 'summary'], ['embedding', 'embedding'],
       ['source', 'source'], ['category', 'category'], ['domain', 'domain'],
       ['importance', 'importance'], ['layer', 'layer'], ['keywords', 'keywords'],
@@ -347,6 +351,20 @@ export class SurrealStorage implements IStorage {
     } catch (e) {
       log('deleteAutoRelations failed:', e);
     }
+  }
+
+  // ============================================================
+  // Sync
+  // ============================================================
+
+  async findChunkBySyncId(syncId: string): Promise<StoredChunk | null> {
+    const db = this.getDb();
+    const [rows] = await db.query<[unknown[]]>(
+      `SELECT * FROM chunk WHERE sync_id = $syncId LIMIT 1`,
+      { syncId },
+    );
+    if (!rows || rows.length === 0) return null;
+    return this.rowToChunk(rows[0] as Record<string, unknown>);
   }
 
   // ============================================================
@@ -625,6 +643,7 @@ export class SurrealStorage implements IStorage {
   private rowToChunk(row: Record<string, unknown>): StoredChunk {
     return {
       id: extractId(row.id),
+      sync_id: (row.sync_id ?? '') as string,
       content: (row.content ?? '') as string,
       summary: (row.summary ?? '') as string,
       embedding: (row.embedding ?? []) as number[],

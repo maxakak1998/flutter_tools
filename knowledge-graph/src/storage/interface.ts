@@ -23,6 +23,9 @@ export interface IStorage {
   findChunksByDomain(domain: string): Promise<StoredChunk[]>;
   findChunksByKeyword(keyword: string): Promise<StoredChunk[]>;
 
+  // Sync
+  findChunkBySyncId(syncId: string): Promise<StoredChunk | null>;
+
   // Dashboard / Stats
   getAllEdges(): Promise<GraphEdge[]>;
   getStats(): Promise<{ total_chunks: number; total_edges: number; by_domain: Record<string, number>; by_category: Record<string, number>; by_importance: Record<string, number> }>;

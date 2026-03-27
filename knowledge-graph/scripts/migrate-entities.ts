@@ -157,6 +157,7 @@ async function main() {
       const content = `Entity: ${entityName}`;
       const embedding = await embedder.embed(content);
       const id = randomUUID();
+      const sync_id = randomUUID();
 
       const aliases: string[] = [];
       for (const [alias, canonical] of Object.entries(registry.allAliases())) {
@@ -165,6 +166,7 @@ async function main() {
 
       await storage.createChunk({
         id,
+        sync_id,
         content,
         summary: `Entity index: ${entityName}`,
         embedding,

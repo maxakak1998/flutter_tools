@@ -112,8 +112,10 @@ export async function handleLifeStore(
 
   // --- Create chunk ---
   const id = randomUUID();
+  const sync_id = randomUUID();
   await storage.createChunk({
     id,
+    sync_id,
     content,
     summary: metadata.summary,
     embedding,

@@ -10,6 +10,7 @@ import {
   existsSync,
   accessSync,
   statSync,
+  readdirSync,
   constants,
 } from 'fs';
 import { fileURLToPath } from 'url';
@@ -44,6 +45,7 @@ interface ParsedArgs {
   ollamaModel?: string;
   keepData: boolean;
   force: boolean;
+  dryRun: boolean;
   help: boolean;
   version: boolean;
   positionalArgs: string[];
@@ -61,6 +63,7 @@ function parseArgs(): ParsedArgs {
   let ollamaModel: string | undefined;
   let keepData = false;
   let force = false;
+  let dryRun = false;
   let help = false;
   let version = false;
   const positionalArgs: string[] = [];
@@ -94,6 +97,9 @@ function parseArgs(): ParsedArgs {
         break;
       case '--keep-data':
         keepData = true;
+        break;
+      case '--dry-run':
+        dryRun = true;
         break;
       case '--force':
       case '-f':
@@ -130,7 +136,7 @@ function parseArgs(): ParsedArgs {
     }
   }
 
-  return { command, port, storageBackend, dbPath, ollamaUrl, ollamaModel, keepData, force, help, version, positionalArgs, domain, category, lifecycle };
+  return { command, port, storageBackend, dbPath, ollamaUrl, ollamaModel, keepData, force, dryRun, help, version, positionalArgs, domain, category, lifecycle };
 }
 
 // ============================================================
@@ -159,6 +165,10 @@ COMMANDS
   doctor             Check dependencies (Ollama, DB, Node, daemon)
   list               List knowledge chunks (--domain, --category, --lifecycle)
   query <topic>      Search knowledge by topic (--domain)
+  sync status        Show sync state (chunks/edges tracked, last export/import)
+  sync export        Full export to sync/ (--dry-run to preview)
+  sync import        Delta import from sync/ files
+  sync resolve <id> <action>  Resolve lifecycle conflict (keep-local|accept-remote)
   prime              Output skill context for hook injection (SessionStart/PreCompact)
   context            Auto-query KG with user prompt (UserPromptSubmit hook)
   logs               View recent daemon logs (last 100 entries)
@@ -173,6 +183,7 @@ OPTIONS
   --domain <name>       Filter by domain
   --category <name>     Filter by category (fact, rule, insight, question, workflow)
   --lifecycle <name>    Filter by lifecycle (hypothesis, active, validated, promoted, canonical, refuted)
+  --dry-run             Preview sync export without writing files
   --keep-data           Keep database on uninstall
   --force, -f           Force init even if parent has .knowledge-graph/
   -h, --help            Show this help
@@ -199,6 +210,12 @@ EXAMPLES
   knowledge-graph serve:5000              # Start server on port 5000 (kill if in use)
   knowledge-graph setup                   # Create config + register MCP
   knowledge-graph doctor                  # Verify dependencies
+  knowledge-graph sync status             # Show sync state
+  knowledge-graph sync export             # Full export to sync/
+  knowledge-graph sync export --dry-run   # Preview export without writing
+  knowledge-graph sync import             # Delta import from sync files
+  knowledge-graph sync resolve abc12345 keep-local     # Keep local lifecycle
+  knowledge-graph sync resolve abc12345 accept-remote  # Accept remote lifecycle
   knowledge-graph reset-db                # Wipe database, keep config
   knowledge-graph uninstall               # Remove everything
   knowledge-graph uninstall --keep-data   # Remove but keep database
@@ -1884,6 +1901,265 @@ async function runQuery(parsed: ParsedArgs): Promise<void> {
 }
 
 // ============================================================
+// Sync commands
+// ============================================================
+
+async function runSyncStatus(): Promise<void> {
+  const project = discoverProject(process.cwd());
+  if (!project) {
+    console.error('No .knowledge-graph/ found. Run `kg init` first.');
+    process.exit(1);
+  }
+
+  const syncDir = join(project.kgDir, 'sync');
+  const manifestPath = join(syncDir, 'manifest.json');
+  const chunksDir = join(syncDir, 'chunks');
+  const edgesDir = join(syncDir, 'edges');
+
+  const bold = '\x1b[1m';
+  const dim = '\x1b[2m';
+  const reset = '\x1b[0m';
+
+  console.log(`\n${bold}KG Sync Status${reset}\n`);
+  console.log(`  Sync directory: ${syncDir}/`);
+
+  // Count chunk files
+  let chunkCount = 0;
+  if (existsSync(chunksDir)) {
+    chunkCount = readdirSync(chunksDir).filter(f => f.endsWith('.json')).length;
+  }
+  console.log(`  Chunks tracked: ${chunkCount}`);
+
+  // Count edge files
+  let edgeCount = 0;
+  if (existsSync(edgesDir)) {
+    edgeCount = readdirSync(edgesDir).filter(f => f.endsWith('.json')).length;
+  }
+  console.log(`  Edges tracked:  ${edgeCount}`);
+
+  // Read manifest for timestamps
+  if (existsSync(manifestPath)) {
+    try {
+      const manifest = JSON.parse(readFileSync(manifestPath, 'utf-8'));
+      const lastExport = manifest.last_export_at || '(never)';
+      const lastImport = manifest.last_import_at || '(never)';
+      console.log(`  Last export:    ${lastExport}`);
+      console.log(`  Last import:    ${lastImport}`);
+    } catch {
+      console.log(`  ${dim}Manifest unreadable${reset}`);
+    }
+  } else {
+    console.log(`  Last export:    (never)`);
+    console.log(`  Last import:    (never)`);
+  }
+
+  console.log('');
+}
+
+async function runSyncExport(parsed: ParsedArgs): Promise<void> {
+  const project = discoverProject(process.cwd());
+  if (!project) {
+    console.error('No .knowledge-graph/ found. Run `kg init` first.');
+    process.exit(1);
+  }
+
+  const daemonUrl = await getDaemonUrl(project);
+  if (!daemonUrl) {
+    console.error('Daemon not running. Start with: kg serve');
+    process.exit(1);
+  }
+
+  const bold = '\x1b[1m';
+  const dim = '\x1b[2m';
+  const reset = '\x1b[0m';
+
+  try {
+    const res = await fetch(`${daemonUrl}/rpc`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'sync_export',
+        params: { dry_run: parsed.dryRun },
+        id: 1,
+      }),
+      signal: AbortSignal.timeout(30000),
+    });
+    const body = await res.json() as {
+      result?: { chunks: number; edges: number; dry_run: boolean };
+      error?: { message: string };
+    };
+
+    if (body.error) {
+      console.error(`Error: ${body.error.message}`);
+      process.exit(1);
+    }
+
+    const r = body.result!;
+    if (r.dry_run) {
+      console.log(`\n${bold}Sync Export (dry run)${reset}\n`);
+      console.log(`  Would export ${r.chunks} chunks and ${r.edges} edges to sync/`);
+      console.log(`  ${dim}Run without --dry-run to write files.${reset}`);
+    } else {
+      console.log(`\n${bold}Sync Export${reset}\n`);
+      console.log(`  Exported ${r.chunks} chunks and ${r.edges} edges to sync/`);
+    }
+    console.log('');
+  } catch (e) {
+    console.error(`Failed to connect to daemon: ${e instanceof Error ? e.message : String(e)}`);
+    process.exit(1);
+  }
+}
+
+async function runSyncImport(): Promise<void> {
+  const project = discoverProject(process.cwd());
+  if (!project) {
+    console.error('No .knowledge-graph/ found. Run `kg init` first.');
+    process.exit(1);
+  }
+
+  const daemonUrl = await getDaemonUrl(project);
+  if (!daemonUrl) {
+    console.error('Daemon not running. Start with: kg serve');
+    process.exit(1);
+  }
+
+  const bold = '\x1b[1m';
+  const dim = '\x1b[2m';
+  const yellow = '\x1b[33m';
+  const reset = '\x1b[0m';
+
+  try {
+    const res = await fetch(`${daemonUrl}/rpc`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'sync_import',
+        params: {},
+        id: 1,
+      }),
+      signal: AbortSignal.timeout(120000), // Imports can be slow (embedding)
+    });
+    const body = await res.json() as {
+      result?: {
+        new_chunks: number;
+        updated_chunks: number;
+        deleted_chunks: number;
+        blocked_chunks: Array<{
+          sync_id: string;
+          summary: string;
+          local_lifecycle: string;
+          remote_lifecycle: string;
+          local_updated: string;
+          remote_updated: string;
+        }>;
+        new_edges: number;
+        removed_edges: number;
+        relinked_chunks: number;
+      };
+      error?: { message: string };
+    };
+
+    if (body.error) {
+      console.error(`Error: ${body.error.message}`);
+      process.exit(1);
+    }
+
+    const r = body.result!;
+    console.log(`\n${bold}Sync Import${reset}\n`);
+    console.log(`  New chunks:     ${r.new_chunks}`);
+    console.log(`  Updated chunks: ${r.updated_chunks}`);
+    console.log(`  Deleted chunks: ${r.deleted_chunks}`);
+    console.log(`  New edges:      ${r.new_edges}`);
+    console.log(`  Relinked:       ${r.relinked_chunks}`);
+
+    if (r.blocked_chunks.length > 0) {
+      console.log(`  ${yellow}Blocked:          ${r.blocked_chunks.length}${reset}`);
+      console.log('');
+
+      // Print conflict report
+      const { formatConflictReport } = await import('./sync/index.js');
+      const report = formatConflictReport(r.blocked_chunks);
+      console.log(report);
+      console.log(`${dim}Non-conflicting chunks imported successfully.${reset}`);
+    }
+    console.log('');
+  } catch (e) {
+    console.error(`Failed to connect to daemon: ${e instanceof Error ? e.message : String(e)}`);
+    process.exit(1);
+  }
+}
+
+async function runSyncResolve(parsed: ParsedArgs): Promise<void> {
+  const project = discoverProject(process.cwd());
+  if (!project) {
+    console.error('No .knowledge-graph/ found. Run `kg init` first.');
+    process.exit(1);
+  }
+
+  // Parse: kg sync resolve <sync_id> <keep-local|accept-remote>
+  // positionalArgs[0] = 'status'|'export'|'import'|'resolve' (subcommand already consumed)
+  // After command='sync', positionalArgs = ['resolve', '<sync_id>', '<action>']
+  // But the dispatcher already extracted subcommand. So remaining args are:
+  const syncId = parsed.positionalArgs[1]; // after subcommand
+  const action = parsed.positionalArgs[2];
+
+  if (!syncId || !action) {
+    console.error('Usage: kg sync resolve <sync_id> <keep-local|accept-remote>');
+    process.exit(1);
+  }
+
+  if (action !== 'keep-local' && action !== 'accept-remote') {
+    console.error(`Invalid action "${action}". Must be "keep-local" or "accept-remote".`);
+    process.exit(1);
+  }
+
+  const daemonUrl = await getDaemonUrl(project);
+  if (!daemonUrl) {
+    console.error('Daemon not running. Start with: kg serve');
+    process.exit(1);
+  }
+
+  const bold = '\x1b[1m';
+  const reset = '\x1b[0m';
+
+  try {
+    const res = await fetch(`${daemonUrl}/rpc`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'sync_resolve',
+        params: { sync_id: syncId, action },
+        id: 1,
+      }),
+      signal: AbortSignal.timeout(15000),
+    });
+    const body = await res.json() as {
+      result?: { sync_id: string; action: string; lifecycle: string; summary: string };
+      error?: { message: string };
+    };
+
+    if (body.error) {
+      console.error(`Error: ${body.error.message}`);
+      process.exit(1);
+    }
+
+    const r = body.result!;
+    console.log(`\n${bold}Sync Resolve${reset}\n`);
+    console.log(`  Chunk:     ${r.sync_id}`);
+    console.log(`  Summary:   ${r.summary}`);
+    console.log(`  Action:    ${r.action}`);
+    console.log(`  Lifecycle: ${r.lifecycle}`);
+    console.log('');
+  } catch (e) {
+    console.error(`Failed to connect to daemon: ${e instanceof Error ? e.message : String(e)}`);
+    process.exit(1);
+  }
+}
+
+// ============================================================
 // Main dispatcher
 // ============================================================
 
@@ -2022,6 +2298,45 @@ switch (parsed.command) {
   case 'context':
     runContext().catch(() => process.exit(0));
     break;
+
+  case 'sync': {
+    const subcommand = parsed.positionalArgs[0] || '';
+    switch (subcommand) {
+      case 'status':
+        runSyncStatus().catch((e) => {
+          console.error('Sync status failed:', e);
+          process.exit(1);
+        });
+        break;
+      case 'export':
+        runSyncExport(parsed).catch((e) => {
+          console.error('Sync export failed:', e);
+          process.exit(1);
+        });
+        break;
+      case 'import':
+        runSyncImport().catch((e) => {
+          console.error('Sync import failed:', e);
+          process.exit(1);
+        });
+        break;
+      case 'resolve':
+        runSyncResolve(parsed).catch((e) => {
+          console.error('Sync resolve failed:', e);
+          process.exit(1);
+        });
+        break;
+      default:
+        if (subcommand) {
+          console.error(`Unknown sync subcommand: "${subcommand}"`);
+        } else {
+          console.error('Missing sync subcommand.');
+        }
+        console.error('Available: sync status, sync export [--dry-run], sync import, sync resolve <id> <action>');
+        process.exit(1);
+    }
+    break;
+  }
 
   case '':
     printHelp();

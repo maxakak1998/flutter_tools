@@ -69,6 +69,7 @@ export interface SuggestedRelation {
 
 export interface StoredChunk {
   id: string;
+  sync_id: string;
   content: string;
   summary: string;
   embedding: number[];
@@ -169,6 +170,7 @@ export interface DeleteResult {
   deleted: boolean;
   id: string;
   snapshot?: {
+    sync_id: string;
     domain: string;
     category: string;
     lifecycle: string;

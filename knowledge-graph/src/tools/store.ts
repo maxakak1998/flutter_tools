@@ -149,9 +149,11 @@ async function ensureEntityChunk(
   const content = `Entity: ${entityName}`;
   const embedding = await embedder.embed(content);
   const id = randomUUID();
+  const sync_id = randomUUID();
 
   await storage.createChunk({
     id,
+    sync_id,
     content,
     summary: `Entity index: ${entityName}`,
     embedding,
@@ -291,8 +293,10 @@ export async function handleStore(
 
   // Create chunk
   const id = randomUUID();
+  const sync_id = randomUUID();
   await storage.createChunk({
     id,
+    sync_id,
     content,
     summary: metadata.summary,
     embedding,

@@ -8,7 +8,7 @@
  */
 
 import { createServer, IncomingMessage, ServerResponse } from 'http';
-import { writeFileSync, unlinkSync, existsSync } from 'fs';
+import { writeFileSync, unlinkSync, existsSync, readFileSync, readdirSync, statSync } from 'fs';
 import { join } from 'path';
 import { createCore, CoreComponents } from './core.js';
 import { parseRpcRequest, formatResult, formatError } from './rpc.js';
@@ -34,6 +34,11 @@ import { handleIngest } from './tools/ingest.js';
 import { handleLifeStore } from './tools/life-store.js';
 import { handleLifeFeedback } from './tools/life-feedback.js';
 import { handleLifeDraftSkill } from './tools/life-draft-skill.js';
+import { createAutoExporter } from './sync/auto-export.js';
+import { migrateV1toV2 } from './sync/migrate.js';
+import { importAll, removeConflict } from './sync/import.js';
+import { formatConflictReport } from './sync/merge.js';
+import type { SyncManifest } from './sync/format.js';
 
 // ============================================================
 // Main daemon entry point
@@ -93,6 +98,60 @@ async function daemonMain(): Promise<void> {
   fileLogger.init();
   setFileLogger(fileLogger);
   fileLogger.info('daemon', `Starting — project=${projectId}, port_range=${process.env.KG_PORT_RANGE_START || '0'}, idle=${idleTimeoutMs}ms`);
+
+  // ============================================================
+  // Sync: migration + delta import + auto-exporter
+  // ============================================================
+
+  const syncDir = join(kgDir, 'sync');
+  const projectConfigPath = join(kgDir, 'config.json');
+
+  // 1. Migration check: if config version is 1, migrate to v2 (backfill sync_ids, initial export)
+  try {
+    const projectConfig = JSON.parse(readFileSync(projectConfigPath, 'utf-8'));
+    if (!projectConfig.version || projectConfig.version === 1) {
+      const migrationResult = await migrateV1toV2(storage, syncDir, projectConfigPath);
+      log(`Sync migration v1->v2: backfilled ${migrationResult.backfilled_sync_ids} sync_ids, exported ${migrationResult.exported_chunks} chunks, ${migrationResult.exported_edges} edges`);
+      fileLogger.info('sync', `Migration v1->v2 complete: ${migrationResult.backfilled_sync_ids} sync_ids, ${migrationResult.exported_chunks} chunks, ${migrationResult.exported_edges} edges`);
+    }
+  } catch (e) {
+    log('Sync migration check failed (non-fatal):', e);
+  }
+
+  // 2. Delta import: if sync/ exists and has files newer than last_import_at, run import
+  try {
+    const manifestPath = join(syncDir, 'manifest.json');
+    if (existsSync(manifestPath)) {
+      const manifest: SyncManifest = JSON.parse(readFileSync(manifestPath, 'utf-8'));
+      const lastImportAt = manifest.last_import_at || '';
+
+      // Check if any sync files have been modified since last import
+      const hasNewerFiles = checkForNewerSyncFiles(syncDir, lastImportAt);
+
+      if (hasNewerFiles) {
+        log('Sync: detected newer sync files, running delta import...');
+        const importResult = await importAll(syncDir, storage, embedder, linker, config);
+        log(`Sync import: ${importResult.new_chunks} new, ${importResult.updated_chunks} updated, ${importResult.deleted_chunks} deleted, ${importResult.blocked_chunks.length} blocked, ${importResult.new_edges} edges, ${importResult.relinked_chunks} relinked`);
+        fileLogger.info('sync', `Delta import: ${importResult.new_chunks} new, ${importResult.updated_chunks} updated, ${importResult.deleted_chunks} deleted, ${importResult.blocked_chunks.length} blocked`);
+
+        // Print lifecycle conflict report (unsuppressible)
+        if (importResult.blocked_chunks.length > 0) {
+          const report = formatConflictReport(importResult.blocked_chunks);
+          log(`\nSYNC IMPORT: ${importResult.new_chunks} new, ${importResult.updated_chunks} updated, ${importResult.deleted_chunks} deleted, ${importResult.blocked_chunks.length} BLOCKED`);
+          log(report);
+          log('Non-conflicting chunks imported successfully.\n');
+          fileLogger.warn('sync', `Lifecycle conflicts detected: ${importResult.blocked_chunks.length} chunks blocked`);
+        }
+      } else {
+        log('Sync: no newer sync files detected, skipping import');
+      }
+    }
+  } catch (e) {
+    log('Sync delta import failed (non-fatal):', e);
+  }
+
+  // 3. Create auto-exporter for mutation-driven sync
+  const autoExporter = createAutoExporter(storage, syncDir);
 
   const lifecycleOrder: Record<string, number> = {
     refuted: 0,
@@ -286,18 +345,29 @@ async function daemonMain(): Promise<void> {
           const sResult = await handleStore(storage, embedder, linker, params.content, params.metadata, onStep, config.dedup.similarityThreshold, config.learning.hypothesisInitialConfidence, config.domains.aliases, config.domains.canonical, entityRegistry);
           scheduleCacheRegen();
           onStep('complete', `Stored ${sResult.id}`, { duration_ms: Math.round(performance.now() - t0), id: sResult.id, auto_links: sResult.auto_links.length });
+          // Auto-export: queue chunk if not a duplicate
+          if (!sResult.duplicate_of) {
+            autoExporter.queueChunkExport(sResult.id);
+          }
           result = sResult;
           break;
         }
         case 'knowledge_link':
           result = await handleLink(storage, params.source_id, params.target_id, params.relation);
+          // Auto-export: manual edge created, refresh edge files
+          autoExporter.queueEdgeRefresh();
           break;
         case 'knowledge_list':
           result = await handleList(storage, params.filters ?? {}, params.limit ?? 50, config.learning.decayRates);
           break;
         case 'knowledge_delete': {
-          result = await handleDelete(storage, params.id, params.reason);
+          const dResult = await handleDelete(storage, params.id, params.reason);
           scheduleCacheRegen();
+          // Auto-export: remove the sync file for the deleted chunk
+          if (dResult.snapshot?.sync_id) {
+            autoExporter.queueChunkRemoval(dResult.snapshot.sync_id);
+          }
+          result = dResult;
           break;
         }
         case 'knowledge_evolve': {
@@ -305,17 +375,25 @@ async function daemonMain(): Promise<void> {
           const eResult = await handleEvolve(storage, embedder, linker, params.id, params.new_content, params.new_metadata, params.reason, onStep, config.domains.aliases, entityRegistry);
           scheduleCacheRegen();
           onStep('complete', `Evolved to v${eResult.version}`, { duration_ms: Math.round(performance.now() - t0), version: eResult.version });
+          // Auto-export: the evolved chunk (id stays the same, content changed)
+          autoExporter.queueChunkExport(eResult.id);
           result = eResult;
           break;
         }
         case 'knowledge_validate': {
-          result = await handleValidate(storage, params.id, params.action, config.learning, params.evidence, params.context);
+          const vResult = await handleValidate(storage, params.id, params.action, config.learning, params.evidence, params.context);
           scheduleCacheRegen();
+          // Auto-export: lifecycle may have changed (e.g., hypothesis -> validated)
+          autoExporter.queueChunkExport(vResult.id);
+          result = vResult;
           break;
         }
         case 'knowledge_promote': {
-          result = await handlePromote(storage, params.id, params.reason, params.new_category, params.new_importance);
+          const pResult = await handlePromote(storage, params.id, params.reason, params.new_category, params.new_importance);
           scheduleCacheRegen();
+          // Auto-export: lifecycle changed (e.g., validated -> promoted)
+          autoExporter.queueChunkExport(pResult.id);
+          result = pResult;
           break;
         }
         case 'knowledge_briefing':
@@ -374,6 +452,101 @@ async function daemonMain(): Promise<void> {
           scheduleCacheRegen();
           break;
         }
+
+        // Sync operations (CLI-driven)
+        case 'sync_export': {
+          const isDryRun = params.dry_run === true;
+          if (isDryRun) {
+            // Dry run: count what would be exported without writing files
+            const allChunks = await storage.listChunks({}, 10000);
+            const excludedLayers = ['operational', 'entity-index'];
+            const syncableChunks = allChunks.filter(c =>
+              !excludedLayers.includes(c.layer ?? '') && !!c.sync_id
+            );
+            const allEdges = await storage.getAllEdges();
+            let manualEdgeCount = 0;
+            for (const edge of allEdges) {
+              if (edge.auto_created !== true && (edge.auto_created as unknown) !== 'true') {
+                manualEdgeCount++;
+              }
+            }
+            result = { chunks: syncableChunks.length, edges: manualEdgeCount, dry_run: true };
+          } else {
+            const { exportAll } = await import('./sync/export.js');
+            const counts = await exportAll(storage, syncDir);
+            result = { chunks: counts.chunks, edges: counts.edges, dry_run: false };
+          }
+          break;
+        }
+        case 'sync_import': {
+          const importResult = await importAll(syncDir, storage, embedder, linker, config);
+          result = importResult;
+          break;
+        }
+        case 'sync_resolve': {
+          const { sync_id: resolveSyncId, action: resolveAction } = params as { sync_id: string; action: string };
+          if (!resolveSyncId || !resolveAction) {
+            throw new Error('sync_resolve requires sync_id and action parameters');
+          }
+          if (resolveAction !== 'keep-local' && resolveAction !== 'accept-remote') {
+            throw new Error('action must be "keep-local" or "accept-remote"');
+          }
+
+          // Find the local chunk by sync_id
+          const localChunk = await storage.findChunkBySyncId(resolveSyncId);
+
+          // Read the sync file
+          const syncChunkPath = join(syncDir, 'chunks', `${resolveSyncId}.json`);
+          const syncFileExists = existsSync(syncChunkPath);
+          let remoteSyncChunk: { lifecycle: string; summary: string } | null = null;
+          if (syncFileExists) {
+            try {
+              remoteSyncChunk = JSON.parse(readFileSync(syncChunkPath, 'utf-8'));
+            } catch { /* ignore parse errors */ }
+          }
+
+          if (!localChunk && !remoteSyncChunk) {
+            throw new Error(`Chunk with sync_id "${resolveSyncId}" not found in local DB or sync files`);
+          }
+
+          let resolvedLifecycle: string;
+          let resolvedSummary: string;
+
+          if (resolveAction === 'keep-local') {
+            // Keep local lifecycle: re-export the chunk with local state
+            if (!localChunk) {
+              throw new Error(`Cannot keep-local: chunk with sync_id "${resolveSyncId}" not found in local DB`);
+            }
+            resolvedLifecycle = localChunk.lifecycle;
+            resolvedSummary = localChunk.summary;
+            // Re-export the chunk file with local lifecycle
+            const { exportChunkToFile } = await import('./sync/export.js');
+            await exportChunkToFile(localChunk, syncDir);
+          } else {
+            // Accept remote lifecycle: update local DB to match sync file
+            if (!remoteSyncChunk) {
+              throw new Error(`Cannot accept-remote: sync file for "${resolveSyncId}" not found`);
+            }
+            if (!localChunk) {
+              throw new Error(`Cannot accept-remote: chunk with sync_id "${resolveSyncId}" not found in local DB`);
+            }
+            resolvedLifecycle = remoteSyncChunk.lifecycle;
+            resolvedSummary = remoteSyncChunk.summary || localChunk.summary;
+            await storage.updateChunk(localChunk.id, { lifecycle: resolvedLifecycle });
+          }
+
+          // Remove this conflict from .conflicts.json
+          removeConflict(syncDir, resolveSyncId);
+
+          result = {
+            sync_id: resolveSyncId,
+            action: resolveAction,
+            lifecycle: resolvedLifecycle,
+            summary: resolvedSummary,
+          };
+          break;
+        }
+
         default:
           throw new Error(`Unknown method: ${method}`);
       }
@@ -478,6 +651,13 @@ async function daemonMain(): Promise<void> {
     fileLogger.info('daemon', `Shutting down — uptime=${Math.round((Date.now() - startTime) / 1000)}s, clients=${clientCount}`);
     log('Daemon: shutting down...');
     try {
+      // Flush pending sync exports before closing storage
+      await autoExporter.flush();
+      autoExporter.destroy();
+    } catch (e) {
+      log('Daemon: auto-exporter flush error:', e);
+    }
+    try {
       await dashboard.close();
       await storage.close();
       server.close();
@@ -501,6 +681,52 @@ async function daemonMain(): Promise<void> {
 function sendJson(res: ServerResponse, data: unknown): void {
   res.writeHead(200, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify(data));
+}
+
+/**
+ * Check if any sync files (chunks or edges) have been modified after lastImportAt.
+ * Returns true if there are newer files that need importing, or if lastImportAt is empty
+ * (meaning we've never imported before).
+ */
+function checkForNewerSyncFiles(syncDir: string, lastImportAt: string): boolean {
+  // If we've never imported, and there are sync files, we should import
+  if (!lastImportAt) {
+    const chunksDir = join(syncDir, 'chunks');
+    if (existsSync(chunksDir)) {
+      const files = readdirSync(chunksDir).filter(f => f.endsWith('.json'));
+      return files.length > 0;
+    }
+    return false;
+  }
+
+  const importTime = new Date(lastImportAt).getTime();
+  if (isNaN(importTime)) return true; // Invalid date, be safe and import
+
+  // Check chunk files
+  const chunksDir = join(syncDir, 'chunks');
+  if (existsSync(chunksDir)) {
+    const files = readdirSync(chunksDir).filter(f => f.endsWith('.json'));
+    for (const file of files) {
+      try {
+        const fileStat = statSync(join(chunksDir, file));
+        if (fileStat.mtimeMs > importTime) return true;
+      } catch { /* ignore individual file errors */ }
+    }
+  }
+
+  // Check edge files
+  const edgesDir = join(syncDir, 'edges');
+  if (existsSync(edgesDir)) {
+    const files = readdirSync(edgesDir).filter(f => f.endsWith('.json'));
+    for (const file of files) {
+      try {
+        const fileStat = statSync(join(edgesDir, file));
+        if (fileStat.mtimeMs > importTime) return true;
+      } catch { /* ignore individual file errors */ }
+    }
+  }
+
+  return false;
 }
 
 // ============================================================

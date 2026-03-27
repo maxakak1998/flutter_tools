@@ -130,6 +130,17 @@ export function initProject(targetDir: string, name?: string, force?: boolean): 
   mkdirSync(join(kgDir, 'cache'), { recursive: true });
   mkdirSync(join(kgDir, 'logs'), { recursive: true });
 
+  // Create sync directory structure for team sync via git
+  mkdirSync(join(kgDir, 'sync', 'chunks'), { recursive: true });
+  mkdirSync(join(kgDir, 'sync', 'edges'), { recursive: true });
+  writeFileSync(join(kgDir, 'sync', 'manifest.json'), JSON.stringify({
+    format_version: 1,
+    last_export_at: '',
+    last_import_at: '',
+    chunk_count: 0,
+    edge_count: 0,
+  }, null, 2) + '\n');
+
   const config: ProjectConfig = {
     version: 1,
     project_id: projectId,
@@ -151,11 +162,14 @@ export function initProject(targetDir: string, name?: string, force?: boolean): 
   const gitignorePath = join(targetDir, '.gitignore');
   const gitDir = join(targetDir, '.git');
   if (existsSync(gitDir)) {
-    const ignoreLines = '.knowledge-graph/data/\n.knowledge-graph/cache/\n.knowledge-graph/logs/\n.knowledge-graph/daemon.*\n';
+    const ignoreLines = '.knowledge-graph/data/\n.knowledge-graph/cache/\n.knowledge-graph/logs/\n.knowledge-graph/daemon.*\n.knowledge-graph/sync/.conflicts.json\n';
     if (existsSync(gitignorePath)) {
       const existing = readFileSync(gitignorePath, 'utf-8');
       if (!existing.includes('.knowledge-graph/data/')) {
         writeFileSync(gitignorePath, existing.trimEnd() + '\n' + ignoreLines);
+      } else if (!existing.includes('.knowledge-graph/sync/.conflicts.json')) {
+        // Existing KG gitignore but missing .conflicts.json entry — append it
+        writeFileSync(gitignorePath, existing.trimEnd() + '\n.knowledge-graph/sync/.conflicts.json\n');
       }
     } else {
       writeFileSync(gitignorePath, ignoreLines);

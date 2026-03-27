@@ -20,8 +20,9 @@ export async function handleDelete(
     );
   }
 
-  // Capture snapshot before deletion
+  // Capture snapshot before deletion (includes sync_id for sync file cleanup)
   const snapshot = {
+    sync_id: chunk.sync_id,
     domain: chunk.domain,
     category: chunk.category,
     lifecycle: chunk.lifecycle,

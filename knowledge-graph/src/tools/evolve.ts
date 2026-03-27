@@ -88,9 +88,11 @@ async function ensureEntityChunk(
   const content = `Entity: ${entityName}`;
   const embedding = await embedder.embed(content);
   const id = randomUUID();
+  const sync_id = randomUUID();
 
   await storage.createChunk({
     id,
+    sync_id,
     content,
     summary: `Entity index: ${entityName}`,
     embedding,
@@ -148,8 +150,10 @@ export async function handleEvolve(
   // Archive old version: create a snapshot chunk with SUPERSEDES edge
   onStep?.('archive', 'Archiving old version');
   const archiveId = `archive-${randomUUID().slice(0, 8)}`;
+  const archiveSyncId = randomUUID();
   await storage.createChunk({
     id: archiveId,
+    sync_id: archiveSyncId,
     content: existing.content,
     summary: `[ARCHIVED v${existing.version}] ${existing.summary}`,
     embedding: existing.embedding,

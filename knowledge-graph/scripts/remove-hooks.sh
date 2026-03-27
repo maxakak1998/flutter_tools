@@ -38,6 +38,7 @@ NEW_HOOKS=(
   "kg-require-consult-before-edit.sh"
   "kg-mark-consulted.sh"
   "kg-mark-consulted-bash.sh"
+  "kg-sync-conflict-check.sh"
 )
 
 info "Removing new hook scripts..."
@@ -173,6 +174,10 @@ echo "  Removed kg-mark-consulted-bash.sh from PostToolUse"
 # Remove activity tracker from PostToolUseFailure (broad matcher)
 remove_hook_command "PostToolUseFailure" ".claude/hooks/kg-activity-tracker.sh"
 echo "  Removed kg-activity-tracker.sh from PostToolUseFailure"
+
+# Remove kg-sync-conflict-check.sh from UserPromptSubmit
+remove_hook_command "UserPromptSubmit" ".claude/hooks/kg-sync-conflict-check.sh"
+echo "  Removed kg-sync-conflict-check.sh from UserPromptSubmit"
 
 # Remove kg context from UserPromptSubmit
 remove_hook_command "UserPromptSubmit" "kg context"

@@ -74,6 +74,7 @@ export class KuzuStorage implements IStorage {
     await this.run(`
       CREATE NODE TABLE Chunk (
         id STRING,
+        sync_id STRING DEFAULT '',
         content STRING,
         summary STRING,
         embedding DOUBLE[${EMBEDDING_DIMENSIONS}],
@@ -94,6 +95,9 @@ export class KuzuStorage implements IStorage {
 
     // Migration: add layer column to existing Chunk tables that lack it
     await this.run("ALTER TABLE Chunk ADD layer STRING DEFAULT 'core-knowledge'");
+
+    // Migration: add sync_id for team sync support
+    await this.run("ALTER TABLE Chunk ADD sync_id STRING DEFAULT ''");
 
     // Migration: add new fields for confidence/lifecycle tracking
     await this.run("ALTER TABLE Chunk ADD confidence DOUBLE DEFAULT 0.5");
@@ -148,6 +152,7 @@ export class KuzuStorage implements IStorage {
     await this.queryParams(
       `CREATE (c:Chunk {
         id: $id,
+        sync_id: $sync_id,
         content: $content,
         summary: $summary,
         embedding: cast($embedding, 'DOUBLE[${EMBEDDING_DIMENSIONS}]'),
@@ -171,6 +176,7 @@ export class KuzuStorage implements IStorage {
       })`,
       {
         id: chunk.id,
+        sync_id: chunk.sync_id ?? '',
         content: chunk.content,
         summary: chunk.summary,
         embedding: chunk.embedding,
@@ -230,6 +236,7 @@ export class KuzuStorage implements IStorage {
       // Re-insert with merged data
       await this.createChunk({
         id: merged.id,
+        sync_id: merged.sync_id,
         content: merged.content,
         summary: merged.summary,
         embedding: merged.embedding,
@@ -262,6 +269,10 @@ export class KuzuStorage implements IStorage {
         updated_at: new Date().toISOString(),
       };
 
+      if (updates.sync_id !== undefined) {
+        setClauses.push('c.sync_id = $sync_id');
+        params.sync_id = updates.sync_id;
+      }
       if (updates.content !== undefined) {
         setClauses.push('c.content = $content');
         params.content = updates.content;
@@ -395,6 +406,17 @@ export class KuzuStorage implements IStorage {
       return chunks.filter((c) => filterTags.some((t) => c.tags.includes(t)));
     }
     return rows.map((r) => this.rowToChunk(r));
+  }
+
+  // === Sync ===
+
+  async findChunkBySyncId(syncId: string): Promise<StoredChunk | null> {
+    const rows = await this.queryParams(
+      'MATCH (c:Chunk) WHERE c.sync_id = $syncId RETURN c.*',
+      { syncId },
+    );
+    if (rows.length === 0) return null;
+    return this.rowToChunk(rows[0]);
   }
 
   // === Relationships ===
@@ -568,7 +590,7 @@ export class KuzuStorage implements IStorage {
     // so we pass the embedding directly as a $emb parameter.
     const rows = await this.queryParams(
       `CALL QUERY_VECTOR_INDEX('Chunk', 'chunk_embedding_idx', $emb, $k)
-       RETURN node.id AS id, node.content AS content, node.summary AS summary,
+       RETURN node.id AS id, node.sync_id AS sync_id, node.content AS content, node.summary AS summary,
               node.source AS source, node.category AS category,
               node.domain AS domain, node.importance AS importance, node.layer AS layer,
               node.keywords AS keywords,
@@ -623,7 +645,7 @@ export class KuzuStorage implements IStorage {
   ): Promise<Array<{ chunk: StoredChunk; distance: number }>> {
     const rows = await this.queryParams(
       `CALL QUERY_VECTOR_INDEX('Chunk', 'chunk_embedding_idx', $emb, $k)
-       RETURN node.id AS id, node.content AS content, node.summary AS summary,
+       RETURN node.id AS id, node.sync_id AS sync_id, node.content AS content, node.summary AS summary,
               node.source AS source, node.category AS category,
               node.domain AS domain, node.importance AS importance, node.layer AS layer,
               node.keywords AS keywords,
@@ -775,6 +797,7 @@ export class KuzuStorage implements IStorage {
   private rowToChunk(row: Record<string, unknown>): StoredChunk {
     return {
       id: (row['c.id'] ?? row['related.id'] ?? '') as string,
+      sync_id: (row['c.sync_id'] ?? row['related.sync_id'] ?? '') as string,
       content: (row['c.content'] ?? row['related.content'] ?? '') as string,
       summary: (row['c.summary'] ?? row['related.summary'] ?? '') as string,
       embedding: (row['c.embedding'] ?? row['related.embedding'] ?? []) as number[],
@@ -802,6 +825,7 @@ export class KuzuStorage implements IStorage {
   private flatRowToChunk(row: Record<string, unknown>): StoredChunk {
     return {
       id: (row['id'] ?? '') as string,
+      sync_id: (row['sync_id'] ?? '') as string,
       content: (row['content'] ?? '') as string,
       summary: (row['summary'] ?? '') as string,
       embedding: (row['embedding'] ?? []) as number[],

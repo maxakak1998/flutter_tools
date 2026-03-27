@@ -97,6 +97,85 @@ esac
 HOOKEOF
 
 # --------------------------------------------------------------------------
+# Hook 1b-sync: kg-sync-conflict-check.sh (NEW)
+# UserPromptSubmit — checks for unresolved sync conflicts (filesystem only)
+# --------------------------------------------------------------------------
+cat > "$HOOKS_DIR/kg-sync-conflict-check.sh" <<'HOOKEOF'
+#!/bin/bash
+# UserPromptSubmit hook — checks for unresolved sync conflicts.
+# Fast filesystem-only check (no daemon calls). Silent exit if no conflicts.
+# Must run BEFORE kg context so conflicts are shown first.
+
+# 1. Find .knowledge-graph/sync/ directory (walk up from CWD)
+SYNC_DIR=""
+CHECK_DIR="$PWD"
+while [ "$CHECK_DIR" != "/" ]; do
+  if [ -d "$CHECK_DIR/.knowledge-graph/sync" ]; then
+    SYNC_DIR="$CHECK_DIR/.knowledge-graph/sync"
+    break
+  fi
+  CHECK_DIR=$(dirname "$CHECK_DIR")
+done
+
+# No sync directory — nothing to check
+[ -z "$SYNC_DIR" ] && exit 0
+
+CONTEXT_PARTS=""
+
+# 2. Check for git merge conflict markers in sync files
+GIT_CONFLICTS=""
+if [ -d "$SYNC_DIR/chunks" ] || [ -d "$SYNC_DIR/edges" ]; then
+  GIT_CONFLICTS=$(grep -rl '<<<<<<<' "$SYNC_DIR/chunks/" "$SYNC_DIR/edges/" 2>/dev/null || true)
+fi
+
+if [ -n "$GIT_CONFLICTS" ]; then
+  FILE_LIST=$(echo "$GIT_CONFLICTS" | head -10 | while IFS= read -r f; do
+    echo "  - $(basename "$f")"
+  done)
+  FILE_COUNT=$(echo "$GIT_CONFLICTS" | wc -l | tr -d ' ')
+  CONTEXT_PARTS="GIT MERGE CONFLICTS in knowledge-graph sync files ($FILE_COUNT file(s)):\n$FILE_LIST\n\nThese files have unresolved git merge conflict markers (<<<<<<< / ======= / >>>>>>>).\nRead each conflicting file, show the user both versions, and ask which to keep.\nAfter resolving, the user should stage and commit the fixed files.\n"
+fi
+
+# 3. Check for lifecycle conflicts (.conflicts.json)
+CONFLICTS_FILE="$SYNC_DIR/.conflicts.json"
+LIFECYCLE_CONTEXT=""
+if [ -f "$CONFLICTS_FILE" ]; then
+  # Quick check: file must be non-empty and contain at least one object
+  FILE_SIZE=$(wc -c < "$CONFLICTS_FILE" | tr -d ' ')
+  if [ "$FILE_SIZE" -gt 5 ]; then
+    # Parse conflicts using jq (available per prereqs)
+    CONFLICT_COUNT=$(jq 'length' "$CONFLICTS_FILE" 2>/dev/null || echo "0")
+    if [ "$CONFLICT_COUNT" -gt 0 ]; then
+      CONFLICT_DETAILS=$(jq -r '.[] | "  - sync_id: \(.sync_id) | \(.summary)\n    local: \(.local_lifecycle) (\(.local_updated[:10]))\n    remote: \(.remote_lifecycle) (\(.remote_updated[:10]))\n    Resolve: kg sync resolve \(.sync_id[:8]) keep-local  OR  kg sync resolve \(.sync_id[:8]) accept-remote"' "$CONFLICTS_FILE" 2>/dev/null)
+      LIFECYCLE_CONTEXT="LIFECYCLE CONFLICTS ($CONFLICT_COUNT chunk(s) blocked from sync import):\n$CONFLICT_DETAILS\n\nThese chunks have different lifecycle states between local DB and git.\nThe user must choose which version to keep for each conflict.\nRun the kg sync resolve commands shown above.\n"
+    fi
+  fi
+fi
+
+# 4. Combine context
+if [ -n "$CONTEXT_PARTS" ] && [ -n "$LIFECYCLE_CONTEXT" ]; then
+  FULL_CONTEXT="SYNC CONFLICTS DETECTED — RESOLVE BEFORE PROCEEDING\n\n${CONTEXT_PARTS}\n${LIFECYCLE_CONTEXT}\nHelp the user resolve ALL sync conflicts before doing any other work."
+elif [ -n "$CONTEXT_PARTS" ]; then
+  FULL_CONTEXT="SYNC CONFLICTS DETECTED — RESOLVE BEFORE PROCEEDING\n\n${CONTEXT_PARTS}\nHelp the user resolve these git merge conflicts before doing any other work."
+elif [ -n "$LIFECYCLE_CONTEXT" ]; then
+  FULL_CONTEXT="SYNC CONFLICTS DETECTED — RESOLVE BEFORE PROCEEDING\n\n${LIFECYCLE_CONTEXT}\nHelp the user resolve these lifecycle conflicts before doing any other work."
+else
+  # No conflicts found — exit silently
+  exit 0
+fi
+
+# 5. Output hook-specific JSON
+printf '%s' "$FULL_CONTEXT" | jq -Rs '{
+  hookSpecificOutput: {
+    hookEventName: "UserPromptSubmit",
+    additionalContext: .
+  }
+}'
+
+exit 0
+HOOKEOF
+
+# --------------------------------------------------------------------------
 # Hook 1c: kg-entity-decomposition-check.sh (NEW)
 # PreToolUse on knowledge_store — enforces entity decomposition rules.
 # BLOCKS if 2+ entities but no relations provided.
@@ -896,6 +975,9 @@ add_hook "SessionStart" "" "kg prime"
 # --- PreCompact (kg prime restores KG context after compaction) ---
 add_hook "PreCompact" "" "kg prime"
 
+# --- UserPromptSubmit (sync conflict detection — BEFORE kg context so conflicts show first) ---
+add_hook "UserPromptSubmit" "" ".claude/hooks/kg-sync-conflict-check.sh"
+
 # --- UserPromptSubmit (auto-query KG with user prompt) ---
 add_hook "UserPromptSubmit" "" "kg context"
 
@@ -941,7 +1023,7 @@ echo "$SETTINGS" | jq '.' > "$SETTINGS_FILE"
 info "Hooks installed to $HOOKS_DIR"
 info "Settings merged into $SETTINGS_FILE"
 echo ""
-echo "Hooks installed (15 scripts + kg prime + kg context, 8 events):"
+echo "Hooks installed (16 scripts + kg prime + kg context, 8 events):"
 echo "  [PreToolUse]          kg-require-domain-check.sh"
 echo "  [PreToolUse]          kg-source-category-check.sh (evolve: category only, no source)"
 echo "  [PreToolUse]          kg-entity-decomposition-check.sh (2+ entities → require relations)"
@@ -957,6 +1039,7 @@ echo "  [PostToolUse]         kg-mark-tool-used.sh"
 echo "  [PostToolUseFailure]  kg-tool-failure.sh"
 echo "  [SessionStart]        kg prime (injects full skill context)"
 echo "  [PreCompact]          kg prime (restores KG context after compaction)"
+echo "  [UserPromptSubmit]    kg-sync-conflict-check.sh (blocks on unresolved sync conflicts)"
 echo "  [UserPromptSubmit]    kg context (auto-query KG with user prompt)"
 echo "  [SessionEnd]          kg-session-end-cleanup.sh"
 echo "  [Stop]                kg-learning-capture-check.sh"
