@@ -120,6 +120,15 @@ String processListValueType(
         isResponseModel: isResponseModel,
       );
 
+      // Generate nested classes within the item class first (depth-first)
+      generateNestedClasses(
+        processedFields,
+        modelBuffer,
+        generatedClasses,
+        className,
+        isResponseModel: isResponseModel,
+      );
+
       // Generate the class
       modelBuffer.writeln(
         generateModel(
@@ -955,7 +964,9 @@ String generateModel(
         if (type == 'String') {
           buffer.writeln('    $camelKey: (json[\'$key\'] as String?)?.trim(),');
         } else if (type == 'num') {
-          buffer.writeln('    $camelKey: json[\'$key\'] is String ? num.tryParse(json[\'$key\']) : json[\'$key\'] as num?,');
+          buffer.writeln(
+            '    $camelKey: json[\'$key\'] is String ? num.tryParse(json[\'$key\']) : json[\'$key\'] as num?,',
+          );
         } else if (type == 'bool' || type == 'dynamic') {
           buffer.writeln('    $camelKey: json[\'$key\'] as $type?,');
         } else {
@@ -968,7 +979,9 @@ String generateModel(
         if (type == 'String') {
           buffer.writeln('    $camelKey: (json[\'$key\'] as String).trim(),');
         } else if (type == 'num') {
-          buffer.writeln('    $camelKey: json[\'$key\'] is String ? num.parse(json[\'$key\']) : json[\'$key\'] as num,');
+          buffer.writeln(
+            '    $camelKey: json[\'$key\'] is String ? num.parse(json[\'$key\']) : json[\'$key\'] as num,',
+          );
         } else if (type == 'bool' || type == 'dynamic') {
           buffer.writeln('    $camelKey: json[\'$key\'] as $type,');
         } else {
@@ -1067,9 +1080,10 @@ String generateModel(
           if (dartFieldType == 'String') {
             buffer.writeln('    $camelKey: (json[\'$key\'] as String).trim(),');
           } else if (dartFieldType == 'num') {
-            buffer.writeln('    $camelKey: json[\'$key\'] is String ? num.parse(json[\'$key\']) : json[\'$key\'] as num,');
-          } else if (dartFieldType == 'bool' ||
-              dartFieldType == 'dynamic') {
+            buffer.writeln(
+              '    $camelKey: json[\'$key\'] is String ? num.parse(json[\'$key\']) : json[\'$key\'] as num,',
+            );
+          } else if (dartFieldType == 'bool' || dartFieldType == 'dynamic') {
             buffer.writeln('    $camelKey: json[\'$key\'] as $dartFieldType,');
           } else {
             buffer.writeln(
@@ -1082,9 +1096,10 @@ String generateModel(
               '    $camelKey: (json[\'$key\'] as String?)?.trim(),',
             );
           } else if (dartFieldType == 'num') {
-            buffer.writeln('    $camelKey: json[\'$key\'] is String ? num.tryParse(json[\'$key\']) : json[\'$key\'] as num?,');
-          } else if (dartFieldType == 'bool' ||
-              dartFieldType == 'dynamic') {
+            buffer.writeln(
+              '    $camelKey: json[\'$key\'] is String ? num.tryParse(json[\'$key\']) : json[\'$key\'] as num?,',
+            );
+          } else if (dartFieldType == 'bool' || dartFieldType == 'dynamic') {
             buffer.writeln('    $camelKey: json[\'$key\'] as $dartFieldType?,');
           } else {
             buffer.writeln(
@@ -1160,7 +1175,9 @@ String generateModel(
       } else if (type == 'String') {
         buffer.writeln('    $camelKey: (json[\'$key\'] as String?)?.trim(),');
       } else if (type == 'num') {
-        buffer.writeln('    $camelKey: json[\'$key\'] is String ? num.tryParse(json[\'$key\']) : json[\'$key\'] as num?,');
+        buffer.writeln(
+          '    $camelKey: json[\'$key\'] is String ? num.tryParse(json[\'$key\']) : json[\'$key\'] as num?,',
+        );
       } else if (type == 'bool' || type == 'dynamic') {
         buffer.writeln('    $camelKey: json[\'$key\'] as $type?,');
       } else {
