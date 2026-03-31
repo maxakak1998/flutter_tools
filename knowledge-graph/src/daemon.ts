@@ -324,7 +324,63 @@ async function daemonMain(): Promise<void> {
   // RPC dispatch — maps tool names to handler calls
   // ============================================================
 
+  // Auto-import cooldown: avoid scanning filesystem on every tool call
+  let lastSyncCheckMs = 0;
+  const SYNC_CHECK_COOLDOWN_MS = 30_000; // 30 seconds
+  let syncImportInFlight: Promise<void> | null = null;
+
+  /**
+   * Check for newer sync files and auto-import if needed.
+   * Debounced to avoid scanning filesystem on every RPC call.
+   * Only runs for knowledge_* tool methods, skipped for connect/disconnect/shutdown.
+   */
+  async function autoImportIfStale(): Promise<void> {
+    const now = Date.now();
+    if (now - lastSyncCheckMs < SYNC_CHECK_COOLDOWN_MS) return;
+    lastSyncCheckMs = now;
+
+    // Serialize: if an import is already running, wait for it
+    if (syncImportInFlight) {
+      await syncImportInFlight;
+      return;
+    }
+
+    try {
+      const manifestPath = join(syncDir, 'manifest.json');
+      if (!existsSync(manifestPath)) return;
+
+      const manifest: SyncManifest = JSON.parse(readFileSync(manifestPath, 'utf-8'));
+      const lastImportAt = manifest.last_import_at || '';
+      if (!checkForNewerSyncFiles(syncDir, lastImportAt)) return;
+
+      log('Sync: auto-import triggered (newer sync files detected)');
+      syncImportInFlight = (async () => {
+        try {
+          const importResult = await importAll(syncDir, storage, embedder, linker, config);
+          log(`Sync auto-import: ${importResult.new_chunks} new, ${importResult.updated_chunks} updated, ${importResult.deleted_chunks} deleted, ${importResult.blocked_chunks.length} blocked`);
+          fileLogger.info('sync', `Auto-import: ${importResult.new_chunks} new, ${importResult.updated_chunks} updated, ${importResult.deleted_chunks} deleted, ${importResult.blocked_chunks.length} blocked`);
+          if (importResult.blocked_chunks.length > 0) {
+            fileLogger.warn('sync', `Auto-import lifecycle conflicts: ${importResult.blocked_chunks.length} chunks blocked`);
+          }
+        } catch (e) {
+          log('Sync auto-import failed (non-fatal):', e);
+          fileLogger.warn('sync', `Auto-import failed: ${e}`);
+        } finally {
+          syncImportInFlight = null;
+        }
+      })();
+      await syncImportInFlight;
+    } catch (e) {
+      log('Sync auto-import check failed (non-fatal):', e);
+    }
+  }
+
   async function dispatchRpc(method: string, params: any): Promise<unknown> {
+    // Auto-import sync files before knowledge tool calls
+    if (method.startsWith('knowledge_')) {
+      await autoImportIfStale();
+    }
+
     const requestId = randomUUID();
     const onStep = eventBus.makeStepEmitter(requestId, method);
     const t0 = performance.now();
