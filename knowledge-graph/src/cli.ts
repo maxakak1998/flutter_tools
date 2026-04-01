@@ -1858,7 +1858,7 @@ async function runQuery(parsed: ParsedArgs): Promise<void> {
       }),
       signal: AbortSignal.timeout(10000),
     });
-    const body = await res.json() as { result?: { results: any[]; total: number }; error?: { message: string } };
+    const body = await res.json() as { result?: { chunks: any[]; total: number }; error?: { message: string } };
 
     if (body.error) {
       writeMarker('kg-consult-failed');
@@ -1868,7 +1868,7 @@ async function runQuery(parsed: ParsedArgs): Promise<void> {
 
     writeMarker('kg-consulted');
 
-    const results = body.result?.results ?? [];
+    const results = body.result?.chunks ?? [];
     if (results.length === 0) {
       console.log(`No results for "${queryText}".`);
       return;
@@ -1882,10 +1882,11 @@ async function runQuery(parsed: ParsedArgs): Promise<void> {
     console.log(`\n${bold}Results for "${queryText}"${reset} (${results.length} hits)\n`);
 
     for (const r of results) {
+      const meta = r.metadata ?? {};
       const score = (r.score ?? 0).toFixed(3);
-      const domain = r.domain || '';
-      const category = r.category || '';
-      const summary = r.summary || '';
+      const domain = meta.domain || '';
+      const category = meta.category || '';
+      const summary = meta.summary || '';
       const content = (r.content || '').slice(0, 120);
       console.log(`  ${cyan}${score}${reset}  ${bold}[${domain}]${reset} ${dim}(${category})${reset} ${summary}`);
       if (content) {
