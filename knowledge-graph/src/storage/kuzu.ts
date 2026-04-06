@@ -428,15 +428,22 @@ export class KuzuStorage implements IStorage {
     props?: Record<string, string>,
   ): Promise<void> {
     const entries = props ? Object.entries(props) : [];
-    const propsClause = entries.length > 0
-      ? ` {${entries.map(([k, v]) => `${k}: '${v.replace(/'/g, "''")}'`).join(', ')}}`
-      : '';
+    const params: Record<string, unknown> = { fromId, toId };
+
+    let propsClause = '';
+    if (entries.length > 0) {
+      const propParts = entries.map(([k, v], i) => {
+        params[`prop_${i}`] = v;
+        return `${k}: $prop_${i}`;
+      });
+      propsClause = ` {${propParts.join(', ')}}`;
+    }
 
     await this.queryParams(
       `MATCH (a:Chunk), (b:Chunk)
        WHERE a.id = $fromId AND b.id = $toId
        CREATE (a)-[:${relType}${propsClause}]->(b)`,
-      { fromId, toId },
+      params,
     );
   }
 

@@ -372,8 +372,11 @@ async function runDoctor(parsed: ParsedArgs): Promise<void> {
     'kg-session-end-cleanup.sh',
     'kg-learning-capture-check.sh',
     'kg-require-consult-before-edit.sh',
+    'kg-clear-consulted-after-edit.sh',
     'kg-mark-consulted.sh',
     'kg-mark-consulted-bash.sh',
+    'kg-collect-plan-findings.sh',
+    'kg-clear-plan-reviewed-after-exit.sh',
   ];
   const foundHooks = expectedHooks.filter((h) => existsSync(join(hooksDir, h)));
   if (foundHooks.length === expectedHooks.length) {
@@ -449,6 +452,31 @@ async function runDoctor(parsed: ParsedArgs): Promise<void> {
           .filter(({ event, command }) => !registered.some(r => r.event === event && r.command === command))
           .map(({ event, command }) => `${command}@${event}`);
         checks.push({ name: 'CLI hooks', status: 'warn', detail: `${registered.length}/${expectedCliHooks.length} — missing: ${missing.join(', ')}. Run: kg setup-hooks` });
+      }
+
+      const expectedGateHooks: { event: string; matcher: string; command: string }[] = [
+        { event: 'PreToolUse', matcher: 'ExitPlanMode', command: '.claude/hooks/kg-collect-plan-findings.sh' },
+        { event: 'PostToolUse', matcher: 'ExitPlanMode', command: '.claude/hooks/kg-clear-plan-reviewed-after-exit.sh' },
+        { event: 'PreToolUse', matcher: 'Edit', command: '.claude/hooks/kg-require-consult-before-edit.sh' },
+        { event: 'PreToolUse', matcher: 'Write', command: '.claude/hooks/kg-require-consult-before-edit.sh' },
+        { event: 'PostToolUse', matcher: 'Edit', command: '.claude/hooks/kg-clear-consulted-after-edit.sh' },
+        { event: 'PostToolUse', matcher: 'Write', command: '.claude/hooks/kg-clear-consulted-after-edit.sh' },
+      ];
+      const registeredGateHooks = expectedGateHooks.filter(({ event, matcher, command }) => {
+        const entries = settings?.hooks?.[event] ?? [];
+        return entries.some((entry: { matcher?: string; hooks?: { command?: string }[] }) =>
+          entry.matcher === matcher && entry.hooks?.some((h: { command?: string }) => h.command === command)
+        );
+      });
+      if (registeredGateHooks.length === expectedGateHooks.length) {
+        checks.push({ name: 'Gate hooks', status: 'ok', detail: `${registeredGateHooks.length}/${expectedGateHooks.length} registered (plan + per-edit consult)` });
+      } else if (registeredGateHooks.length === 0) {
+        checks.push({ name: 'Gate hooks', status: 'warn', detail: `not registered — run: kg setup-hooks` });
+      } else {
+        const missing = expectedGateHooks
+          .filter(({ event, matcher, command }) => !registeredGateHooks.some(r => r.event === event && r.matcher === matcher && r.command === command))
+          .map(({ event, matcher, command }) => `${command}@${event}:${matcher}`);
+        checks.push({ name: 'Gate hooks', status: 'warn', detail: `${registeredGateHooks.length}/${expectedGateHooks.length} — missing: ${missing.join(', ')}. Run: kg setup-hooks` });
       }
     } catch { /* ignore parse errors — already caught in 6b */ }
   }

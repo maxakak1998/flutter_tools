@@ -36,9 +36,12 @@ NEW_HOOKS=(
   "kg-tool-failure.sh"
   "kg-session-end-cleanup.sh"
   "kg-require-consult-before-edit.sh"
+  "kg-clear-consulted-after-edit.sh"
   "kg-mark-consulted.sh"
   "kg-mark-consulted-bash.sh"
   "kg-sync-conflict-check.sh"
+  "kg-collect-plan-findings.sh"
+  "kg-clear-plan-reviewed-after-exit.sh"
 )
 
 info "Removing new hook scripts..."
@@ -160,9 +163,20 @@ echo "  Removed kg-track-code-edits.sh from PostToolUse"
 echo "  Removed kg-audit-log.sh from PostToolUse (legacy)"
 echo "  Removed kg-mark-tool-used.sh from PostToolUse"
 
+# Remove plan exit gate
+remove_hook_command "PreToolUse" ".claude/hooks/kg-collect-plan-findings.sh"
+echo "  Removed kg-collect-plan-findings.sh from PreToolUse"
+
+remove_hook_command "PostToolUse" ".claude/hooks/kg-clear-plan-reviewed-after-exit.sh"
+echo "  Removed kg-clear-plan-reviewed-after-exit.sh from PostToolUse"
+
 # Remove consultation gate from PreToolUse
 remove_hook_command "PreToolUse" ".claude/hooks/kg-require-consult-before-edit.sh"
 echo "  Removed kg-require-consult-before-edit.sh from PreToolUse"
+
+# Remove per-edit consulted marker cleanup from PostToolUse
+remove_hook_command "PostToolUse" ".claude/hooks/kg-clear-consulted-after-edit.sh"
+echo "  Removed kg-clear-consulted-after-edit.sh from PostToolUse"
 
 # Remove consulted markers from PostToolUse
 remove_hook_command "PostToolUse" ".claude/hooks/kg-mark-consulted.sh"

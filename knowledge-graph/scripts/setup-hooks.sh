@@ -266,7 +266,7 @@ HOOKEOF
 cat > "$HOOKS_DIR/kg-learning-capture-check.sh" <<'HOOKEOF'
 #!/bin/bash
 # Stop hook — context-aware reminder about KG usage.
-# Checks if .dart files were edited without KG consultation.
+# Checks if code was edited without KG consultation.
 # NEVER blocks (always exit 0).
 INPUT=$(cat)
 SESSION_ID=$(echo "$INPUT" | jq -r '.session_id')
@@ -289,25 +289,12 @@ fi
 # Count unique areas edited
 AREAS=$(sort -u "$EDITS_FILE" | head -5)
 EDIT_COUNT=$(wc -l < "$EDITS_FILE" | tr -d ' ')
-
-# KG was used — no nudge needed
-if [ -f "$TOOL_MARKER" ]; then
-  exit 0
-fi
-
-# Files edited but KG not consulted — give specific nudge
 AREA_LIST=$(echo "$AREAS" | tr '\n' ', ' | sed 's/,$//')
-echo "" >&2
-echo "[KG Nudge] Edited ${EDIT_COUNT} file(s) in: ${AREA_LIST} — without consulting the knowledge graph." >&2
-echo "" >&2
-echo "SESSION START (missed):" >&2
-echo "  knowledge_list + knowledge_query('<topic>') — check existing domain knowledge" >&2
-echo "" >&2
-echo "SESSION END (still possible):" >&2
-echo "  life_store — store coding gotchas/patterns discovered during this session" >&2
-echo "  knowledge_store — store business rules confirmed by user" >&2
 
-# Log session summary to activity.log
+KG_USED="false"
+[ -f "$TOOL_MARKER" ] && KG_USED="true"
+
+# Log session summary to activity.log (always, regardless of KG usage)
 KG_DIR=""
 CHECK_DIR="$PWD"
 while [ "$CHECK_DIR" != "/" ]; do
@@ -319,8 +306,6 @@ while [ "$CHECK_DIR" != "/" ]; do
 done
 if [ -n "$KG_DIR" ]; then
   TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-  KG_USED="false"
-  [ -f "$TOOL_MARKER" ] && KG_USED="true"
   jq -n -c \
     --arg ts "$TIMESTAMP" --arg sid "$SESSION_ID" \
     --arg edits "${EDIT_COUNT:-0}" --argjson kg_used "$KG_USED" \
@@ -328,6 +313,22 @@ if [ -n "$KG_DIR" ]; then
     '{ts:$ts,session:$sid,event:"session_stop",edits:($edits|tonumber),kg_consulted:$kg_used,areas:$areas}' \
     >> "$KG_DIR/activity.log"
 fi
+
+# KG was used — no nudge needed
+if [ "$KG_USED" = "true" ]; then
+  exit 0
+fi
+
+# Files edited but KG not consulted — give specific nudge
+echo "" >&2
+echo "[KG Nudge] Edited ${EDIT_COUNT} file(s) in: ${AREA_LIST} — without consulting the knowledge graph." >&2
+echo "" >&2
+echo "SESSION START (missed):" >&2
+echo "  knowledge_list + knowledge_query('<topic>') — check existing domain knowledge" >&2
+echo "" >&2
+echo "SESSION END (still possible):" >&2
+echo "  life_store — store coding gotchas/patterns discovered during this session" >&2
+echo "  knowledge_store — store business rules confirmed by user" >&2
 
 exit 0
 HOOKEOF
@@ -707,6 +708,7 @@ rm -f "$MARKER_DIR/kg-code-edits-${SESSION_ID}" 2>/dev/null
 rm -f "$MARKER_DIR/kg-session-reminder-${SESSION_ID}" 2>/dev/null
 rm -f "$MARKER_DIR/kg-consulted-${SESSION_ID}" 2>/dev/null
 rm -f "$MARKER_DIR/kg-consult-failed-${SESSION_ID}" 2>/dev/null
+rm -f "$MARKER_DIR/kg-plan-reviewed-${SESSION_ID}" 2>/dev/null
 
 exit 0
 HOOKEOF
@@ -718,7 +720,7 @@ HOOKEOF
 cat > "$HOOKS_DIR/kg-require-consult-before-edit.sh" <<'HOOKEOF'
 #!/bin/bash
 # PreToolUse hook for Edit and Write
-# Blocks edits until KG is consulted in this session (via MCP tools or CLI).
+# Blocks edits until KG is consulted for this edit cycle (via MCP tools or CLI).
 # Circuit breaker: allows edits if KG consultation was attempted but failed.
 INPUT=$(cat)
 SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // ""')
@@ -764,23 +766,56 @@ esac
 
 # 5. BLOCK — not consulted, not failed, not exempt
 cat >&2 <<'BLOCKMSG'
-BLOCKED: Chưa tham vấn knowledge graph trong session này.
+BLOCKED: Chưa tham vấn Knowledge Graph trước khi edit.
 
-Trước khi edit, tham vấn KG (chỉ cần 1 lần/session):
+Trước khi edit, bạn PHẢI:
 
-  Bash (nhanh nhất):
-    kg list                      # xem domains & lifecycle
-    kg query '<chủ-đề>'         # tìm knowledge liên quan
+  1. CONSULT KG — tìm knowledge liên quan đến file/feature đang edit:
+       kg query '<chủ-đề liên quan>'
+       kg list (nếu cần xem tổng quan domains)
 
-  MCP tools:
-    ToolSearch('select:mcp__knowledge-graph__knowledge_list,mcp__knowledge-graph__knowledge_query')
-    knowledge_list / knowledge_query('<topic>')
+  2. GIẢI THÍCH — output cho user thấy:
+       • KG có gì liên quan (cite chunk ID hoặc tóm tắt)
+       • So sánh: edit này có conflict với KG knowledge không?
+       • Nếu KG không có gì liên quan, nói rõ "KG không có knowledge về topic này"
 
   Nếu KG không available: kg doctor → kg serve
 
 TẠI SAO: KG chứa business rules, domain constraints, gotchas từ sessions trước.
+Giải thích giúp user biết bạn đã cross-check trước khi sửa code.
 BLOCKMSG
 exit 2
+HOOKEOF
+
+# --------------------------------------------------------------------------
+# Hook 12b: kg-clear-consulted-after-edit.sh (NEW)
+# PostToolUse on Edit and Write — clears consultation marker after each edit
+# --------------------------------------------------------------------------
+cat > "$HOOKS_DIR/kg-clear-consulted-after-edit.sh" <<'HOOKEOF'
+#!/bin/bash
+# PostToolUse hook for Edit and Write
+# Clears KG consultation marker after each edit → enforces per-edit consultation.
+# Exempt files (same patterns as kg-require-consult-before-edit.sh) don't clear the marker.
+INPUT=$(cat)
+SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // ""')
+[ -z "$SESSION_ID" ] && exit 0
+
+MARKER_DIR="${TMPDIR:-/tmp}/claude-kg-hooks-$(id -u)"
+
+# Exempt file patterns — don't clear marker for generated/build/KG files
+FILE_PATH=$(echo "$INPUT" | jq -r '.tool_input.file_path // ""')
+case "$FILE_PATH" in
+  */.knowledge-graph/*) exit 0 ;;
+  */dist/*|*/build/*|*/out/*|*/target/*|*/node_modules/*) exit 0 ;;
+  */.dart_tool/*|*/.next/*|*/.nuxt/*|*/.turbo/*|*/coverage/*) exit 0 ;;
+  *.log|*.lock|*.pid|*.port) exit 0 ;;
+  *.g.dart|*.freezed.dart) exit 0 ;;
+  *.gen.*|*.generated.*|*.pb.*) exit 0 ;;
+esac
+
+# Clear marker — next production-file edit will require fresh KG query
+rm -f "$MARKER_DIR/kg-consulted-${SESSION_ID}" 2>/dev/null
+exit 0
 HOOKEOF
 
 # --------------------------------------------------------------------------
@@ -823,6 +858,85 @@ case "$COMMAND" in
     ;;
 esac
 
+exit 0
+HOOKEOF
+
+# --------------------------------------------------------------------------
+# Hook 15: kg-collect-plan-findings.sh (NEW)
+# PreToolUse on ExitPlanMode — forces KG review before leaving plan mode
+# --------------------------------------------------------------------------
+cat > "$HOOKS_DIR/kg-collect-plan-findings.sh" <<'HOOKEOF'
+#!/bin/bash
+# PreToolUse hook for ExitPlanMode
+# Blocks plan exit until Claude reviews findings for KG-worthy knowledge.
+# Uses a marker so Claude only needs to do this once per plan exit retry cycle.
+INPUT=$(cat)
+SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // ""')
+[ -z "$SESSION_ID" ] && exit 0
+
+MARKER_DIR="${TMPDIR:-/tmp}/claude-kg-hooks-$(id -u)"
+
+# Already reviewed findings for this plan exit retry cycle → ALLOW
+[ -f "$MARKER_DIR/kg-plan-reviewed-${SESSION_ID}" ] && exit 0
+
+# No .knowledge-graph/ in project tree → ALLOW
+CHECK_DIR="$PWD"
+KG_FOUND=false
+while [ "$CHECK_DIR" != "/" ]; do
+  if [ -d "$CHECK_DIR/.knowledge-graph" ]; then
+    KG_FOUND=true
+    break
+  fi
+  CHECK_DIR=$(dirname "$CHECK_DIR")
+done
+[ "$KG_FOUND" = "false" ] && exit 0
+
+# Create marker so retry can pass after review
+mkdir -m 700 -p "$MARKER_DIR" 2>/dev/null
+touch "$MARKER_DIR/kg-plan-reviewed-${SESSION_ID}"
+
+cat >&2 <<'BLOCKMSG'
+BLOCKED: Trước khi exit plan mode, review plan findings cho Knowledge Graph.
+
+Trong quá trình plan, bạn có thể đã phát hiện:
+  • Business rules hoặc domain constraints (từ code, docs, user input)
+  • Cross-feature dependencies hoặc relationships
+  • Workflow rationale — tại sao flow phải chạy theo thứ tự này
+  • Edge cases hoặc gotchas mà plan phải handle
+
+PHẢI LÀM:
+  1. QUERY KG — check xem findings đã tồn tại chưa:
+       kg query '<topic từ plan>'
+
+  2. REVIEW — liệt kê cho user thấy:
+       • Những domain knowledge mới phát hiện trong plan
+       • Đã có trong KG rồi hay chưa
+       • Recommend: store, skip, hoặc hỏi user confirm
+
+  3. STORE nếu có knowledge mới (sau khi user confirm):
+       knowledge_store với category phù hợp (fact/rule/insight/workflow)
+
+  4. Nếu không có gì mới, nói rõ: "Plan không phát hiện domain knowledge mới"
+
+Sau khi review xong, retry ExitPlanMode.
+BLOCKMSG
+exit 2
+HOOKEOF
+
+# --------------------------------------------------------------------------
+# Hook 16: kg-clear-plan-reviewed-after-exit.sh (NEW)
+# PostToolUse on ExitPlanMode — clears plan-review marker after successful exit
+# --------------------------------------------------------------------------
+cat > "$HOOKS_DIR/kg-clear-plan-reviewed-after-exit.sh" <<'HOOKEOF'
+#!/bin/bash
+# PostToolUse hook for ExitPlanMode
+# Clears plan-review marker after a successful plan exit so the next plan is gated again.
+INPUT=$(cat)
+SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // ""')
+[ -z "$SESSION_ID" ] && exit 0
+
+MARKER_DIR="${TMPDIR:-/tmp}/claude-kg-hooks-$(id -u)"
+rm -f "$MARKER_DIR/kg-plan-reviewed-${SESSION_ID}" 2>/dev/null
 exit 0
 HOOKEOF
 
@@ -933,6 +1047,9 @@ add_hook "PreToolUse" "mcp__knowledge-graph__knowledge_promote" ".claude/hooks/k
 add_hook "PreToolUse" "mcp__knowledge-graph__knowledge_evolve" ".claude/hooks/kg-source-category-check.sh"
 add_hook "PreToolUse" "mcp__knowledge-graph__knowledge_validate" ".claude/hooks/kg-require-validate-evidence.sh"
 
+# --- Plan exit gate (review plan findings before implementation) ---
+add_hook "PreToolUse" "ExitPlanMode" ".claude/hooks/kg-collect-plan-findings.sh"
+
 # --- Consultation gate (blocks Edit/Write until KG consulted) ---
 add_hook "PreToolUse" "Edit" ".claude/hooks/kg-require-consult-before-edit.sh"
 add_hook "PreToolUse" "Write" ".claude/hooks/kg-require-consult-before-edit.sh"
@@ -951,9 +1068,14 @@ add_hook "PostToolUse" "mcp__knowledge-graph__life_store" ".claude/hooks/kg-mark
 add_hook "PostToolUse" "mcp__knowledge-graph__life_feedback" ".claude/hooks/kg-mark-tool-used.sh"
 add_hook "PostToolUse" "mcp__knowledge-graph__life_draft_skill" ".claude/hooks/kg-mark-tool-used.sh"
 
+# --- Plan gate cleanup (successful ExitPlanMode re-arms next plan) ---
+add_hook "PostToolUse" "ExitPlanMode" ".claude/hooks/kg-clear-plan-reviewed-after-exit.sh"
+
 # --- Code edit tracking (for Stop nudge) ---
 add_hook "PostToolUse" "Edit" ".claude/hooks/kg-track-code-edits.sh"
+add_hook "PostToolUse" "Edit" ".claude/hooks/kg-clear-consulted-after-edit.sh"
 add_hook "PostToolUse" "Write" ".claude/hooks/kg-track-code-edits.sh"
+add_hook "PostToolUse" "Write" ".claude/hooks/kg-clear-consulted-after-edit.sh"
 
 # --- Consulted markers (MCP path) ---
 add_hook "PostToolUse" "mcp__knowledge-graph__knowledge_list" ".claude/hooks/kg-mark-consulted.sh"
@@ -1023,13 +1145,16 @@ echo "$SETTINGS" | jq '.' > "$SETTINGS_FILE"
 info "Hooks installed to $HOOKS_DIR"
 info "Settings merged into $SETTINGS_FILE"
 echo ""
-echo "Hooks installed (16 scripts + kg prime + kg context, 8 events):"
+echo "Hooks installed (20 scripts + kg prime + kg context, 9 events):"
 echo "  [PreToolUse]          kg-require-domain-check.sh"
 echo "  [PreToolUse]          kg-source-category-check.sh (evolve: category only, no source)"
 echo "  [PreToolUse]          kg-entity-decomposition-check.sh (2+ entities → require relations)"
 echo "  [PreToolUse]          kg-require-golden-evidence.sh"
 echo "  [PreToolUse]          kg-require-validate-evidence.sh"
-echo "  [PreToolUse]          kg-require-consult-before-edit.sh (gate Edit/Write until KG consulted)"
+echo "  [PreToolUse]          kg-collect-plan-findings.sh (gate ExitPlanMode until KG review)"
+echo "  [PreToolUse]          kg-require-consult-before-edit.sh (gate Edit/Write until KG consulted + explained)"
+echo "  [PostToolUse]         kg-clear-plan-reviewed-after-exit.sh (re-arm plan gate after success)"
+echo "  [PostToolUse]         kg-clear-consulted-after-edit.sh (re-arm edit consult after each edit)"
 echo "  [PostToolUse]         kg-mark-consulted.sh (MCP query/list → consulted marker)"
 echo "  [PostToolUse]         kg-mark-consulted-bash.sh (Bash kg list/query → consulted marker)"
 echo "  [PostToolUse]         kg-mark-domains-checked.sh"
