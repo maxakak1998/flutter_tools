@@ -7,5 +7,325 @@
     "defaultMode": "bypassPermissions"
   },
   "enableAllProjectMcpServers": true,
-  "outputStyle": "Explanatory"
+  "outputStyle": "Explanatory",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "mcp__knowledge-graph__knowledge_store",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/kg-require-domain-check.sh"
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/kg-source-category-check.sh"
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/kg-entity-decomposition-check.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__knowledge-graph__knowledge_promote",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/kg-require-golden-evidence.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__knowledge-graph__knowledge_evolve",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/kg-source-category-check.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__knowledge-graph__knowledge_validate",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/kg-require-validate-evidence.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "ExitPlanMode",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/kg-collect-plan-findings.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/kg-require-consult-before-edit.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/kg-require-consult-before-edit.sh"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "mcp__knowledge-graph__knowledge_list",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/kg-mark-domains-checked.sh"
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/kg-mark-tool-used.sh"
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/kg-mark-consulted.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__knowledge-graph__knowledge_store",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/kg-mark-tool-used.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__knowledge-graph__knowledge_evolve",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/kg-mark-tool-used.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__knowledge-graph__knowledge_query",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/kg-mark-tool-used.sh"
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/kg-mark-consulted.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__knowledge-graph__knowledge_validate",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/kg-mark-tool-used.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__knowledge-graph__knowledge_promote",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/kg-mark-tool-used.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__knowledge-graph__knowledge_link",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/kg-mark-tool-used.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__knowledge-graph__knowledge_delete",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/kg-mark-tool-used.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__knowledge-graph__life_store",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/kg-mark-tool-used.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__knowledge-graph__life_feedback",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/kg-mark-tool-used.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__knowledge-graph__life_draft_skill",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/kg-mark-tool-used.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "ExitPlanMode",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/kg-clear-plan-reviewed-after-exit.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/kg-track-code-edits.sh"
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/kg-clear-consulted-after-edit.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/kg-track-code-edits.sh"
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/kg-clear-consulted-after-edit.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/kg-mark-consulted-bash.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/kg-activity-tracker.sh"
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "mcp__knowledge-graph__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/kg-tool-failure.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/kg-activity-tracker.sh"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "kg prime"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "kg prime"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/kg-sync-conflict-check.sh"
+          },
+          {
+            "type": "command",
+            "command": "kg context"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/kg-session-end-cleanup.sh"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/kg-learning-capture-check.sh"
+          }
+        ]
+      }
+    ]
+  }
 }

@@ -21,6 +21,7 @@ import { DashboardServer } from './dashboard/server.js';
 import { handleQuery } from './tools/query.js';
 import { handleStore } from './tools/store.js';
 import { applyLocalhostCors, isHttpRequestError, readRequestBody } from './http-utils.js';
+import { AsyncMutex } from './async-mutex.js';
 
 import { handleLink } from './tools/link.js';
 import { handleList } from './tools/list.js';
@@ -68,6 +69,11 @@ async function daemonMain(): Promise<void> {
   }
 
   const { storage, embedder, retriever, linker, eventBus, entityRegistry } = core;
+
+  // RPC mutex: serializes all tool handler calls to prevent KuzuDB connection races.
+  // KuzuDB's Node.js binding doesn't support overlapping async queries on a single Connection.
+  const rpcMutex = new AsyncMutex();
+
   const cacheManager = createCacheManager(kgDir);
   cacheManager.ensureDir();
 
@@ -166,10 +172,12 @@ async function daemonMain(): Promise<void> {
 
   async function regenerateDomainStatsCache(): Promise<void> {
     try {
-      const [stats, allChunks] = await Promise.all([
-        storage.getStats(),
-        storage.listChunks({}, 5000),
-      ]);
+      const [stats, allChunks] = await rpcMutex.runExclusive(() =>
+        Promise.all([
+          storage.getStats(),
+          storage.listChunks({}, 5000),
+        ])
+      );
       // Exclude operational/entity-index layers from domain stats cache
       const chunks = allChunks.filter(c => c.layer !== 'operational' && c.layer !== 'entity-index');
 
@@ -226,7 +234,7 @@ async function daemonMain(): Promise<void> {
   }
 
   // Dashboard (reuse existing DashboardServer for API routes)
-  const dashboard = new DashboardServer(storage, embedder, retriever, eventBus);
+  const dashboard = new DashboardServer(storage, embedder, retriever, eventBus, rpcMutex);
 
   // Register dashboard triggers for pipeline visualization
   dashboard.registerTrigger('query', async (params) => {
@@ -643,7 +651,9 @@ async function daemonMain(): Promise<void> {
         const body = await readRequestBody(req);
         const rpcReq = parseRpcRequest(body);
         try {
-          const result = await dispatchRpc(rpcReq.method, rpcReq.params);
+          const result = await rpcMutex.runExclusive(() =>
+            dispatchRpc(rpcReq.method, rpcReq.params)
+          );
           sendJson(res, formatResult(rpcReq.id, result));
         } catch (e) {
           sendJson(res, formatError(rpcReq.id, -32603, e instanceof Error ? e.message : String(e)));
@@ -669,6 +679,8 @@ async function daemonMain(): Promise<void> {
           project_id: projectId,
           clients: clientCount,
           uptime_ms: Date.now() - startTime,
+          rpc_queue_depth: rpcMutex.pending,
+          rpc_locked: rpcMutex.isLocked,
         });
       } else {
         // Delegate to dashboard for /api/*, /, /index.html

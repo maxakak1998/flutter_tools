@@ -9,6 +9,7 @@ import { EventBus } from './events.js';
 import { handleGraphData, handleStats, handleChunkDetail, handleSearch } from './api.js';
 import { log } from '../types.js';
 import { applyLocalhostCors, isHttpRequestError, readRequestBody } from '../http-utils.js';
+import { AsyncMutex } from '../async-mutex.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -18,13 +19,16 @@ export class DashboardServer {
   private server: Server | null = null;
   private html: string;
   private triggers = new Map<string, TriggerHandler>();
+  private rpcMutex: AsyncMutex | null;
 
   constructor(
     private storage: IStorage,
     private embedder: Embedder,
     private retriever: Retriever,
     private eventBus: EventBus,
+    rpcMutex?: AsyncMutex,
   ) {
+    this.rpcMutex = rpcMutex ?? null;
     // Read HTML at startup — single file, no hot reload needed
     this.html = readFileSync(join(__dirname, 'index.html'), 'utf-8');
   }
@@ -63,10 +67,10 @@ export class DashboardServer {
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
         res.end(this.html);
       } else if (path === '/api/graph') {
-        const data = await handleGraphData(this.storage);
+        const data = await this.guarded(() => handleGraphData(this.storage));
         this.sendJson(res, data);
       } else if (path === '/api/stats') {
-        const data = await handleStats(this.storage, this.embedder);
+        const data = await this.guarded(() => handleStats(this.storage, this.embedder));
         this.sendJson(res, data);
       } else if (path === '/api/search') {
         const q = url.searchParams.get('q') || '';
@@ -84,11 +88,11 @@ export class DashboardServer {
         if (category) filters.category = category;
         if (importance) filters.importance = importance;
         if (limitParam) filters.limit = parseInt(limitParam, 10);
-        const data = await handleSearch(this.retriever, q, Object.keys(filters).length > 0 ? filters as any : undefined);
+        const data = await this.guarded(() => handleSearch(this.retriever, q, Object.keys(filters).length > 0 ? filters as any : undefined));
         this.sendJson(res, data);
       } else if (path.startsWith('/api/chunks/')) {
         const id = path.replace('/api/chunks/', '');
-        const data = await handleChunkDetail(this.storage, id);
+        const data = await this.guarded(() => handleChunkDetail(this.storage, id));
         if (data) {
           this.sendJson(res, data);
         } else {
@@ -114,7 +118,7 @@ export class DashboardServer {
         }
         const body = await readRequestBody(req);
         const params = JSON.parse(body || '{}');
-        const result = await handler(params);
+        const result = await this.guarded(() => handler(params));
         this.sendJson(res, result);
       } else {
         res.writeHead(404, { 'Content-Type': 'application/json' });
@@ -130,6 +134,11 @@ export class DashboardServer {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: String(e) }));
     }
+  }
+
+  /** Run fn through the RPC mutex if available, otherwise run directly. */
+  private guarded<T>(fn: () => Promise<T>): Promise<T> {
+    return this.rpcMutex ? this.rpcMutex.runExclusive(fn) : fn();
   }
 
   private sendJson(res: ServerResponse, data: unknown): void {

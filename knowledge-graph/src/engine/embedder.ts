@@ -44,6 +44,8 @@ export class Embedder {
   private model: string;
   private cache: LRUCache<string, number[]>;
   private cacheMaxSize: number;
+  /** In-flight embed requests, keyed by text hash. Prevents duplicate Ollama calls for the same text. */
+  private inflight = new Map<string, Promise<number[]>>();
 
   constructor(
     ollamaUrl = DEFAULT_CONFIG.ollama.url,
@@ -62,6 +64,21 @@ export class Embedder {
     const cached = this.cache.get(hash);
     if (cached) return cached;
 
+    // Coalesce: if the same text is already being embedded, await that promise
+    const existing = this.inflight.get(hash);
+    if (existing) return existing;
+
+    const promise = this.doEmbed(text, hash);
+    this.inflight.set(hash, promise);
+    try {
+      return await promise;
+    } finally {
+      this.inflight.delete(hash);
+    }
+  }
+
+  /** Internal: perform the actual Ollama embed call and cache the result. */
+  private async doEmbed(text: string, hash: string): Promise<number[]> {
     const response = await fetch(`${this.ollamaUrl}/api/embed`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
