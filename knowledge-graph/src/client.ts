@@ -6,6 +6,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
+import { randomUUID } from 'crypto';
 import { makeRpcRequest } from './rpc.js';
 import { log } from './types.js';
 import { getRuntimeVersion } from './version.js';
@@ -69,8 +70,16 @@ const metadataSchema = z.object({
 // ============================================================
 
 export async function clientMain(daemonUrl: string, projectId: string): Promise<void> {
-  // Register with daemon
-  await fetch(`${daemonUrl}/rpc/connect`, { method: 'POST' });
+  // Mint a stable per-process session id. A client restart = new session id
+  // (documented tradeoff — session identity is per-process, not persisted).
+  const sessionId = randomUUID();
+
+  // Register with daemon, identifying this session
+  await fetch(`${daemonUrl}/rpc/connect`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ session_id: sessionId }),
+  }).catch(() => {});
 
   const server = new McpServer({ name: 'knowledge-graph', version: getRuntimeVersion() });
 
@@ -83,7 +92,9 @@ export async function clientMain(daemonUrl: string, projectId: string): Promise<
   ) {
     server.tool(name, description, schema, async (params) => {
       try {
-        const result = await rpcCall(daemonUrl, methodName, params);
+        // Thread session identity into every RPC as an extra field the daemon
+        // can read. Does not alter the existing tool param shape.
+        const result = await rpcCall(daemonUrl, methodName, { ...params, session_id: sessionId });
         return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
       } catch (e) {
         return {
@@ -301,7 +312,11 @@ export async function clientMain(daemonUrl: string, projectId: string): Promise<
   // SIGTERM (Claude Code exiting): preserve daemon for other sessions
   process.on('SIGTERM', async () => {
     try {
-      await fetch(`${daemonUrl}/rpc/disconnect`, { method: 'POST' }).catch(() => {});
+      await fetch(`${daemonUrl}/rpc/disconnect`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: sessionId }),
+      }).catch(() => {});
       await server.close();
     } catch { /* ignore */ }
     process.exit(0);

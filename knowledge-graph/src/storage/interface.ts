@@ -1,4 +1,4 @@
-import { StoredChunk, GraphEdge, QueryFilters, ListFilters } from '../types.js';
+import { StoredChunk, GraphEdge, QueryFilters, ListFilters, SessionStateRow, SessionStateFilters } from '../types.js';
 
 export interface IStorage {
   // Lifecycle
@@ -32,6 +32,13 @@ export interface IStorage {
 
   // Access tracking
   incrementAccessCount(ids: string[]): Promise<void>;
+
+  // SessionState CRUD (volatile working-state — no embedding, no vector index)
+  createSessionState(row: Omit<SessionStateRow, 'created_at' | 'updated_at'> & Partial<Pick<SessionStateRow, 'created_at' | 'updated_at'>>): Promise<string>;
+  getSessionState(id: string): Promise<SessionStateRow | null>;
+  updateSessionState(id: string, updates: Partial<SessionStateRow>): Promise<void>;
+  listSessionState(filters: SessionStateFilters): Promise<SessionStateRow[]>;
+  deleteSessionState(id: string): Promise<void>;
 }
 
 export type StorageBackend = 'kuzu' | 'surreal';

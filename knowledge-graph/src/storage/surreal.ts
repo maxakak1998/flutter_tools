@@ -2,7 +2,7 @@ import { Surreal, RecordId, Table } from 'surrealdb';
 import { createNodeEngines } from '@surrealdb/node';
 import { mkdirSync } from 'fs';
 import { dirname } from 'path';
-import { StoredChunk, GraphEdge, QueryFilters, ListFilters, EMBEDDING_DIMENSIONS, log } from '../types.js';
+import { StoredChunk, GraphEdge, QueryFilters, ListFilters, SessionStateRow, SessionStateFilters, EMBEDDING_DIMENSIONS, log } from '../types.js';
 import { IStorage } from './interface.js';
 
 // ============================================================
@@ -135,6 +135,23 @@ export class SurrealStorage implements IStorage {
         await db.query(`DEFINE FIELD IF NOT EXISTS ${field} ON ${table} TYPE option<string>`);
       }
     }
+
+    // SessionState table (SCHEMAFULL) — volatile working-state. No embedding, no vector index.
+    await db.query(`DEFINE TABLE IF NOT EXISTS session_state SCHEMAFULL`);
+    await db.query(`DEFINE FIELD IF NOT EXISTS session_id ON session_state TYPE string DEFAULT ''`);
+    await db.query(`DEFINE FIELD IF NOT EXISTS project_id ON session_state TYPE string DEFAULT ''`);
+    await db.query(`DEFINE FIELD IF NOT EXISTS artifact_type ON session_state TYPE string`);
+    await db.query(`DEFINE FIELD IF NOT EXISTS status ON session_state TYPE string DEFAULT ''`);
+    await db.query(`DEFINE FIELD IF NOT EXISTS title ON session_state TYPE string DEFAULT ''`);
+    await db.query(`DEFINE FIELD IF NOT EXISTS body ON session_state TYPE string DEFAULT ''`);
+    await db.query(`DEFINE FIELD IF NOT EXISTS refs ON session_state TYPE array`);
+    await db.query(`DEFINE FIELD IF NOT EXISTS refs.* ON session_state TYPE string`);
+    await db.query(`DEFINE FIELD IF NOT EXISTS version ON session_state TYPE int DEFAULT 1`);
+    await db.query(`DEFINE FIELD IF NOT EXISTS pinned ON session_state TYPE bool DEFAULT false`);
+    await db.query(`DEFINE FIELD IF NOT EXISTS active ON session_state TYPE bool DEFAULT true`);
+    await db.query(`DEFINE FIELD IF NOT EXISTS created_at ON session_state TYPE string`);
+    await db.query(`DEFINE FIELD IF NOT EXISTS updated_at ON session_state TYPE string`);
+    await db.query(`DEFINE FIELD IF NOT EXISTS last_touched_at ON session_state TYPE string DEFAULT ''`);
   }
 
   // ============================================================
@@ -664,6 +681,152 @@ export class SurrealStorage implements IStorage {
       last_validated_at: (row.last_validated_at ?? '') as string,
       lifecycle: (row.lifecycle ?? 'active') as string,
       access_count: Number(row.access_count ?? 0),
+    };
+  }
+
+  // ============================================================
+  // SessionState CRUD (volatile working-state — no embedding, direct UPDATE)
+  // ============================================================
+
+  async createSessionState(
+    row: Omit<SessionStateRow, 'created_at' | 'updated_at'> & Partial<Pick<SessionStateRow, 'created_at' | 'updated_at'>>,
+  ): Promise<string> {
+    const db = this.getDb();
+    const now = new Date().toISOString();
+    const createdAt = row.created_at ?? now;
+    const updatedAt = row.updated_at ?? now;
+
+    await db.query(
+      `CREATE type::thing('session_state', $id) CONTENT {
+        session_id: $session_id,
+        project_id: $project_id,
+        artifact_type: $artifact_type,
+        status: $status,
+        title: $title,
+        body: $body,
+        refs: $refs,
+        version: $version,
+        pinned: $pinned,
+        active: $active,
+        created_at: $created_at,
+        updated_at: $updated_at,
+        last_touched_at: $last_touched_at
+      }`,
+      {
+        id: row.id,
+        session_id: row.session_id ?? '',
+        project_id: row.project_id ?? '',
+        artifact_type: row.artifact_type,
+        status: row.status ?? '',
+        title: row.title ?? '',
+        body: row.body ?? '',
+        refs: row.refs ?? [],
+        version: row.version ?? 1,
+        pinned: row.pinned ?? false,
+        active: row.active ?? true,
+        created_at: createdAt,
+        updated_at: updatedAt,
+        last_touched_at: row.last_touched_at ?? updatedAt,
+      },
+    );
+    return row.id;
+  }
+
+  async getSessionState(id: string): Promise<SessionStateRow | null> {
+    const db = this.getDb();
+    const [rows] = await db.query<[unknown[]]>(
+      `SELECT * FROM type::thing('session_state', $id)`,
+      { id },
+    );
+    if (!rows || rows.length === 0) return null;
+    return this.rowToSessionState(rows[0] as Record<string, unknown>);
+  }
+
+  async updateSessionState(id: string, updates: Partial<SessionStateRow>): Promise<void> {
+    const db = this.getDb();
+    const setClauses: string[] = ['updated_at = $updated_at'];
+    const params: Record<string, unknown> = {
+      id,
+      updated_at: new Date().toISOString(),
+    };
+
+    const fields: Array<[keyof SessionStateRow, string]> = [
+      ['session_id', 'session_id'], ['project_id', 'project_id'],
+      ['artifact_type', 'artifact_type'], ['status', 'status'],
+      ['title', 'title'], ['body', 'body'], ['refs', 'refs'],
+      ['version', 'version'], ['pinned', 'pinned'], ['active', 'active'],
+      ['last_touched_at', 'last_touched_at'],
+    ];
+
+    for (const [key, paramName] of fields) {
+      if (updates[key] !== undefined) {
+        setClauses.push(`${paramName} = $${paramName}`);
+        params[paramName] = updates[key];
+      }
+    }
+
+    await db.query(
+      `UPDATE type::thing('session_state', $id) SET ${setClauses.join(', ')}`,
+      params,
+    );
+  }
+
+  async listSessionState(filters: SessionStateFilters): Promise<SessionStateRow[]> {
+    const db = this.getDb();
+    const conditions: string[] = [];
+    const params: Record<string, unknown> = {};
+
+    if (filters.session_id !== undefined) {
+      conditions.push('session_id = $session_id');
+      params.session_id = filters.session_id;
+    }
+    if (filters.project_id !== undefined) {
+      conditions.push('project_id = $project_id');
+      params.project_id = filters.project_id;
+    }
+    if (filters.artifact_type !== undefined) {
+      conditions.push('artifact_type = $artifact_type');
+      params.artifact_type = filters.artifact_type;
+    }
+    if (filters.status !== undefined) {
+      conditions.push('status = $status');
+      params.status = filters.status;
+    }
+    if (filters.active !== undefined) {
+      conditions.push('active = $active');
+      params.active = filters.active;
+    }
+
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+    const [rows] = await db.query<[unknown[]]>(
+      `SELECT * FROM session_state ${where}`,
+      params,
+    );
+    if (!rows) return [];
+    return rows.map((r) => this.rowToSessionState(r as Record<string, unknown>));
+  }
+
+  async deleteSessionState(id: string): Promise<void> {
+    const db = this.getDb();
+    await db.query(`DELETE type::thing('session_state', $id)`, { id });
+  }
+
+  private rowToSessionState(row: Record<string, unknown>): SessionStateRow {
+    return {
+      id: extractId(row.id),
+      session_id: (row.session_id ?? '') as string,
+      project_id: (row.project_id ?? '') as string,
+      artifact_type: (row.artifact_type ?? '') as string,
+      status: (row.status ?? '') as string,
+      title: (row.title ?? '') as string,
+      body: (row.body ?? '') as string,
+      refs: (row.refs ?? []) as string[],
+      version: Number(row.version ?? 1),
+      pinned: Boolean(row.pinned ?? false),
+      active: Boolean(row.active ?? true),
+      created_at: (row.created_at ?? '') as string,
+      updated_at: (row.updated_at ?? '') as string,
+      last_touched_at: (row.last_touched_at ?? '') as string,
     };
   }
 }

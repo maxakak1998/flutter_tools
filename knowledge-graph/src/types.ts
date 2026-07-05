@@ -92,6 +92,39 @@ export interface StoredChunk {
   access_count: number;
 }
 
+// === Session state types (volatile working-state — no embedding, no vector index) ===
+
+export type SessionArtifactType =
+  | 'active_context'
+  | 'task'
+  | 'event'
+  | 'plan';
+
+export interface SessionStateRow {
+  id: string;
+  session_id: string;
+  project_id: string;
+  artifact_type: string;
+  status: string;
+  title: string;
+  body: string; // free text or JSON payload
+  refs: string[]; // file paths / chunk sync_ids / blocked_by task ids
+  version: number; // for future compare-and-swap
+  pinned: boolean; // exempt from compaction
+  active: boolean; // soft-evict flag
+  created_at: string;
+  updated_at: string;
+  last_touched_at: string; // for future anti-orphaning
+}
+
+export interface SessionStateFilters {
+  session_id?: string;
+  project_id?: string;
+  artifact_type?: string;
+  status?: string;
+  active?: boolean;
+}
+
 // === Tool result types ===
 
 export interface QueryResult {

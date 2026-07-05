@@ -307,10 +307,19 @@ async function daemonMain(): Promise<void> {
     return result;
   });
 
-  // Client tracking + idle shutdown
-  let clientCount = 0;
+  // Client tracking + idle shutdown.
+  // Lightweight session registry keyed on the client-minted session_id.
+  // `anonymousCount` preserves backward-compat with older clients that connect
+  // without a session_id (they fall back to plain counter behavior).
+  const sessions = new Map<string, { connectedAt: number }>();
+  let anonymousCount = 0;
   let idleTimer: ReturnType<typeof setTimeout> | null = null;
   const startTime = Date.now();
+
+  // Total active clients = tracked sessions + anonymous (session-less) clients.
+  function activeClientCount(): number {
+    return sessions.size + anonymousCount;
+  }
 
   function resetIdleTimer() {
     if (idleTimer) clearTimeout(idleTimer);
@@ -659,15 +668,26 @@ async function daemonMain(): Promise<void> {
           sendJson(res, formatError(rpcReq.id, -32603, e instanceof Error ? e.message : String(e)));
         }
       } else if (path === '/rpc/connect' && req.method === 'POST') {
-        clientCount++;
+        const sessionId = await readSessionId(req);
+        if (sessionId) {
+          sessions.set(sessionId, { connectedAt: Date.now() });
+        } else {
+          // Backward-compat: older client with no session_id
+          anonymousCount++;
+        }
         resetIdleTimer();
-        log(`Daemon: client connected (total: ${clientCount})`);
-        sendJson(res, { ok: true, clients: clientCount });
+        log(`Daemon: client connected (total: ${activeClientCount()}${sessionId ? `, session: ${sessionId}` : ''})`);
+        sendJson(res, { ok: true, clients: activeClientCount() });
       } else if (path === '/rpc/disconnect' && req.method === 'POST') {
-        clientCount = Math.max(0, clientCount - 1);
-        log(`Daemon: client disconnected (total: ${clientCount})`);
-        if (clientCount <= 0) startIdleTimer();
-        sendJson(res, { ok: true, clients: clientCount });
+        const sessionId = await readSessionId(req);
+        if (sessionId && sessions.has(sessionId)) {
+          sessions.delete(sessionId);
+        } else {
+          anonymousCount = Math.max(0, anonymousCount - 1);
+        }
+        log(`Daemon: client disconnected (total: ${activeClientCount()}${sessionId ? `, session: ${sessionId}` : ''})`);
+        if (activeClientCount() <= 0) startIdleTimer();
+        sendJson(res, { ok: true, clients: activeClientCount() });
       } else if (path === '/rpc/shutdown' && req.method === 'POST') {
         log('Daemon: shutdown requested via /rpc/shutdown');
         sendJson(res, { ok: true });
@@ -677,7 +697,8 @@ async function daemonMain(): Promise<void> {
         sendJson(res, {
           status: 'ok',
           project_id: projectId,
-          clients: clientCount,
+          clients: activeClientCount(),
+          sessions: Array.from(sessions.keys()),
           uptime_ms: Date.now() - startTime,
           rpc_queue_depth: rpcMutex.pending,
           rpc_locked: rpcMutex.isLocked,
@@ -716,7 +737,7 @@ async function daemonMain(): Promise<void> {
   async function shutdown() {
     if (shuttingDown) return;
     shuttingDown = true;
-    fileLogger.info('daemon', `Shutting down — uptime=${Math.round((Date.now() - startTime) / 1000)}s, clients=${clientCount}`);
+    fileLogger.info('daemon', `Shutting down — uptime=${Math.round((Date.now() - startTime) / 1000)}s, clients=${activeClientCount()}`);
     log('Daemon: shutting down...');
     try {
       // Flush pending sync exports before closing storage
@@ -749,6 +770,26 @@ async function daemonMain(): Promise<void> {
 function sendJson(res: ServerResponse, data: unknown): void {
   res.writeHead(200, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify(data));
+}
+
+/**
+ * Read the session_id from a connect/disconnect POST body.
+ * Returns a non-empty session id string, or null if the body is missing,
+ * empty, unparseable, or has no valid session_id (older clients).
+ */
+async function readSessionId(req: IncomingMessage): Promise<string | null> {
+  try {
+    const body = await readRequestBody(req);
+    if (!body) return null;
+    const parsed = JSON.parse(body) as { session_id?: unknown };
+    const sessionId = parsed?.session_id;
+    if (typeof sessionId === 'string' && sessionId.length > 0) {
+      return sessionId;
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 /**

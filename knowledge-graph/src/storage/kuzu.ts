@@ -1,7 +1,7 @@
 import { Database, Connection } from 'kuzu';
 import { mkdirSync } from 'fs';
 import { dirname } from 'path';
-import { StoredChunk, GraphEdge, QueryFilters, ListFilters, EMBEDDING_DIMENSIONS, log } from '../types.js';
+import { StoredChunk, GraphEdge, QueryFilters, ListFilters, SessionStateRow, SessionStateFilters, EMBEDDING_DIMENSIONS, log } from '../types.js';
 import { IStorage } from './interface.js';
 
 interface SavedRelation {
@@ -130,6 +130,28 @@ export class KuzuStorage implements IStorage {
     // Migration: add auto_created to DEPENDS_ON and CONTRADICTS for consistency
     await this.run("ALTER TABLE DEPENDS_ON ADD auto_created STRING DEFAULT 'false'");
     await this.run("ALTER TABLE CONTRADICTS ADD auto_created STRING DEFAULT 'false'");
+
+    // SessionState node table — volatile working-state. NO embedding, NO vector index,
+    // so updates use cheap in-place SET (avoids the delete+recreate workaround Chunk needs).
+    await this.run(`
+      CREATE NODE TABLE SessionState (
+        id STRING,
+        session_id STRING DEFAULT '',
+        project_id STRING DEFAULT '',
+        artifact_type STRING,
+        status STRING DEFAULT '',
+        title STRING DEFAULT '',
+        body STRING DEFAULT '',
+        refs STRING[],
+        version INT64 DEFAULT 1,
+        pinned BOOLEAN DEFAULT false,
+        active BOOLEAN DEFAULT true,
+        created_at STRING,
+        updated_at STRING,
+        last_touched_at STRING DEFAULT '',
+        PRIMARY KEY (id)
+      )
+    `);
 
   }
 
@@ -865,5 +887,177 @@ export class KuzuStorage implements IStorage {
         { id },
       );
     }
+  }
+
+  // === SessionState CRUD (volatile working-state — no embedding, cheap in-place SET) ===
+
+  async createSessionState(
+    row: Omit<SessionStateRow, 'created_at' | 'updated_at'> & Partial<Pick<SessionStateRow, 'created_at' | 'updated_at'>>,
+  ): Promise<string> {
+    const now = new Date().toISOString();
+    const createdAt = row.created_at ?? now;
+    const updatedAt = row.updated_at ?? now;
+    await this.queryParams(
+      `CREATE (s:SessionState {
+        id: $id,
+        session_id: $session_id,
+        project_id: $project_id,
+        artifact_type: $artifact_type,
+        status: $status,
+        title: $title,
+        body: $body,
+        refs: $refs,
+        version: $version,
+        pinned: $pinned,
+        active: $active,
+        created_at: $created_at,
+        updated_at: $updated_at,
+        last_touched_at: $last_touched_at
+      })`,
+      {
+        id: row.id,
+        session_id: row.session_id ?? '',
+        project_id: row.project_id ?? '',
+        artifact_type: row.artifact_type,
+        status: row.status ?? '',
+        title: row.title ?? '',
+        body: row.body ?? '',
+        refs: row.refs ?? [],
+        version: row.version ?? 1,
+        pinned: row.pinned ?? false,
+        active: row.active ?? true,
+        created_at: createdAt,
+        updated_at: updatedAt,
+        last_touched_at: row.last_touched_at ?? updatedAt,
+      },
+    );
+    return row.id;
+  }
+
+  async getSessionState(id: string): Promise<SessionStateRow | null> {
+    const rows = await this.queryParams(
+      'MATCH (s:SessionState) WHERE s.id = $id RETURN s.*',
+      { id },
+    );
+    if (rows.length === 0) return null;
+    return this.rowToSessionState(rows[0]);
+  }
+
+  async updateSessionState(id: string, updates: Partial<SessionStateRow>): Promise<void> {
+    // No vector-indexed column — safe to use SET directly (the cheap path).
+    const setClauses: string[] = ['s.updated_at = $updated_at'];
+    const params: Record<string, unknown> = {
+      id,
+      updated_at: new Date().toISOString(),
+    };
+
+    if (updates.session_id !== undefined) {
+      setClauses.push('s.session_id = $session_id');
+      params.session_id = updates.session_id;
+    }
+    if (updates.project_id !== undefined) {
+      setClauses.push('s.project_id = $project_id');
+      params.project_id = updates.project_id;
+    }
+    if (updates.artifact_type !== undefined) {
+      setClauses.push('s.artifact_type = $artifact_type');
+      params.artifact_type = updates.artifact_type;
+    }
+    if (updates.status !== undefined) {
+      setClauses.push('s.status = $status');
+      params.status = updates.status;
+    }
+    if (updates.title !== undefined) {
+      setClauses.push('s.title = $title');
+      params.title = updates.title;
+    }
+    if (updates.body !== undefined) {
+      setClauses.push('s.body = $body');
+      params.body = updates.body;
+    }
+    if (updates.refs !== undefined) {
+      setClauses.push('s.refs = $refs');
+      params.refs = updates.refs;
+    }
+    if (updates.version !== undefined) {
+      setClauses.push('s.version = $version');
+      params.version = updates.version;
+    }
+    if (updates.pinned !== undefined) {
+      setClauses.push('s.pinned = $pinned');
+      params.pinned = updates.pinned;
+    }
+    if (updates.active !== undefined) {
+      setClauses.push('s.active = $active');
+      params.active = updates.active;
+    }
+    if (updates.last_touched_at !== undefined) {
+      setClauses.push('s.last_touched_at = $last_touched_at');
+      params.last_touched_at = updates.last_touched_at;
+    }
+    await this.queryParams(
+      `MATCH (s:SessionState) WHERE s.id = $id SET ${setClauses.join(', ')}`,
+      params,
+    );
+  }
+
+  async listSessionState(filters: SessionStateFilters): Promise<SessionStateRow[]> {
+    const conditions: string[] = [];
+    const params: Record<string, unknown> = {};
+
+    if (filters.session_id !== undefined) {
+      conditions.push('s.session_id = $session_id');
+      params.session_id = filters.session_id;
+    }
+    if (filters.project_id !== undefined) {
+      conditions.push('s.project_id = $project_id');
+      params.project_id = filters.project_id;
+    }
+    if (filters.artifact_type !== undefined) {
+      conditions.push('s.artifact_type = $artifact_type');
+      params.artifact_type = filters.artifact_type;
+    }
+    if (filters.status !== undefined) {
+      conditions.push('s.status = $status');
+      params.status = filters.status;
+    }
+    if (filters.active !== undefined) {
+      conditions.push('s.active = $active');
+      params.active = filters.active;
+    }
+
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+    const rows = await this.queryParams(
+      `MATCH (s:SessionState) ${where} RETURN s.*`,
+      params,
+    );
+    return rows.map((r) => this.rowToSessionState(r));
+  }
+
+  async deleteSessionState(id: string): Promise<void> {
+    await this.queryParams(
+      'MATCH (s:SessionState) WHERE s.id = $id DETACH DELETE s',
+      { id },
+    );
+  }
+
+  /** Map a row from `RETURN s.*` (s.id, s.session_id, ...) to SessionStateRow */
+  private rowToSessionState(row: Record<string, unknown>): SessionStateRow {
+    return {
+      id: (row['s.id'] ?? '') as string,
+      session_id: (row['s.session_id'] ?? '') as string,
+      project_id: (row['s.project_id'] ?? '') as string,
+      artifact_type: (row['s.artifact_type'] ?? '') as string,
+      status: (row['s.status'] ?? '') as string,
+      title: (row['s.title'] ?? '') as string,
+      body: (row['s.body'] ?? '') as string,
+      refs: (row['s.refs'] ?? []) as string[],
+      version: Number(row['s.version'] ?? 1),
+      pinned: Boolean(row['s.pinned'] ?? false),
+      active: Boolean(row['s.active'] ?? true),
+      created_at: (row['s.created_at'] ?? '') as string,
+      updated_at: (row['s.updated_at'] ?? '') as string,
+      last_touched_at: (row['s.last_touched_at'] ?? '') as string,
+    };
   }
 }
