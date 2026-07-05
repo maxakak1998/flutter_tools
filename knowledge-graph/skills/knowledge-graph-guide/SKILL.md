@@ -19,6 +19,7 @@ description: "Hub skill for Knowledge Graph MCP tools. Use when starting KG work
 | Search/browse existing knowledge | `kg-exploring` |
 | Validate or promote knowledge lifecycle | `kg-lifecycle` |
 | Store coding mistake/gotcha/workaround | `kg-life-knowledge` |
+| Track working state / resume across sessions ("what was I doing?") | `kg-session-state` |
 | Debug KG tool errors | `kg-troubleshooting` |
 
 ## Tool Quick Reference
@@ -41,6 +42,21 @@ description: "Hub skill for Knowledge Graph MCP tools. Use when starting KG work
 | `life_store` | Store coding gotcha, pattern, workaround |
 | `life_feedback` | Report success/failure after applying a learning |
 | `life_draft_skill` | Generate skill draft from high-score learnings |
+
+### Session-State Tools (volatile working memory — NOT durable knowledge)
+| Tool | Purpose |
+|------|---------|
+| `state_set_context` / `state_get_context` | Record / read current focus + next step (append-only trail) |
+| `state_save_plan` / `state_get_plan` | Clone a plan file immutably (v1 = original) / read active or a version |
+| `state_task_upsert` / `state_task_list` | Task ledger: status pending/in_progress/blocked/done/deferred |
+| `state_checkpoint` / `state_resume` | Fold state into a resume packet / project-scoped "catch me up" |
+| `state_projection` | Cross-session focus board (what other live sessions are doing) |
+| `state_prune` | Surface/evict orphaned tasks untouched >N days |
+| `state_compact` | Fold old context events to bound the stream |
+| `state_sessions` | List currently-connected sessions |
+| `decision_record` | Durable design decision → Chunk (queryable, SUPERSEDES lineage, bypasses dedup) |
+
+**Three-boundary rule:** business WHY → `knowledge_store` (Chunk, durable). Coding HOW → `life_store` (operational). "What am I doing right now / where did I leave off" → `state_*` (volatile, not synced, not embedded). A design decision you want to find later → `decision_record` (durable Chunk, NOT `state_*`).
 
 ## Domain vs Life Knowledge — Decision Guide
 
