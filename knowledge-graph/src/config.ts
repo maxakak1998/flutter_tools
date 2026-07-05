@@ -109,6 +109,7 @@ export const DEFAULT_CONFIG: KnowledgeConfig = {
       insight: 0.95,
       question: 0.90,
       workflow: 0.98,
+      decision: 1.0,
     },
   },
   domains: { canonical: [], aliases: {} },

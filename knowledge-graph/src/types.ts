@@ -34,7 +34,8 @@ export type ChunkCategory =
   | 'rule'
   | 'insight'
   | 'question'
-  | 'workflow';
+  | 'workflow'
+  | 'decision';
 
 export type ChunkLifecycle =
   | 'hypothesis'
@@ -165,6 +166,7 @@ export interface StoreResult {
     relation_hint: 'similar' | 'loosely_related';
   }>;
   entity_chunks_created?: string[];
+  superseded_id?: string;
 }
 
 export interface AutoLink {

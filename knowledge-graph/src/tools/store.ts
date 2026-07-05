@@ -15,6 +15,7 @@ function inferLayer(category: ChunkCategory): ChunkLayer {
   switch (category) {
     case 'fact':
     case 'rule':
+    case 'decision':
       return 'core-knowledge';
     case 'insight':
     case 'question':
@@ -26,7 +27,7 @@ function inferLayer(category: ChunkCategory): ChunkLayer {
 
 // Target content sizes by category — warns (does not reject) when exceeded
 const CONTENT_SIZE_TARGETS: Record<string, number> = {
-  fact: 500, rule: 800, insight: 600, question: 400, workflow: 800,
+  fact: 500, rule: 800, insight: 600, question: 400, workflow: 800, decision: 800,
 };
 
 /**
@@ -204,35 +205,43 @@ export async function handleStore(
   domainAliases?: Record<string, string>,
   canonicalDomains?: string[],
   entityRegistry?: EntityAliasRegistry,
+  skipDedup = false,
 ): Promise<StoreResult> {
   // Generate embedding first (needed for both dedup check and storage)
   onStep?.('embedding', 'Generating embedding via Ollama');
   const embedding = await embedder.embed(content);
   onStep?.('embedding_done', 'Embedding generated', { dimensions: embedding.length });
 
+  // Decisions are durable, iterative knowledge — near-identical decisions
+  // ("lever A failed" vs "lever A retry") must each persist as distinct chunks,
+  // so the dedup check is bypassed entirely for them.
+  const bypassDedup = skipDedup || metadata.category === 'decision';
+
   // Semantic deduplication check (k=50 + post-filter to exclude operational/entity-index layer)
-  onStep?.('dedup_check', 'Checking for semantic duplicates');
-  const dedupCandidates = await storage.vectorSearchUnfiltered(embedding, 50);
-  const topHit = dedupCandidates.find(h => h.chunk.layer !== 'operational' && h.chunk.layer !== 'entity-index');
-  if (topHit) {
-    const similarity = 1 - topHit.distance;
-    if (similarity >= dedupThreshold) {
-      onStep?.('dedup_hit', 'Semantic duplicate detected', {
-        existing_id: topHit.chunk.id,
-        similarity,
-        existing_summary: topHit.chunk.summary,
-      });
-      log('Semantic duplicate detected (similarity:', similarity.toFixed(4), '), returning existing chunk:', topHit.chunk.id);
-      return {
-        id: topHit.chunk.id,
-        auto_links: [],
-        warnings: [],
-        duplicate_of: topHit.chunk.id,
-        similarity,
-        existing_summary: topHit.chunk.summary,
-        existing_content: topHit.chunk.content,
-        action_hint: 'Content overlaps with existing chunk. Use knowledge_evolve to merge new information into the existing chunk, or make your content more distinct.',
-      };
+  if (!bypassDedup) {
+    onStep?.('dedup_check', 'Checking for semantic duplicates');
+    const dedupCandidates = await storage.vectorSearchUnfiltered(embedding, 50);
+    const topHit = dedupCandidates.find(h => h.chunk.layer !== 'operational' && h.chunk.layer !== 'entity-index');
+    if (topHit) {
+      const similarity = 1 - topHit.distance;
+      if (similarity >= dedupThreshold) {
+        onStep?.('dedup_hit', 'Semantic duplicate detected', {
+          existing_id: topHit.chunk.id,
+          similarity,
+          existing_summary: topHit.chunk.summary,
+        });
+        log('Semantic duplicate detected (similarity:', similarity.toFixed(4), '), returning existing chunk:', topHit.chunk.id);
+        return {
+          id: topHit.chunk.id,
+          auto_links: [],
+          warnings: [],
+          duplicate_of: topHit.chunk.id,
+          similarity,
+          existing_summary: topHit.chunk.summary,
+          existing_content: topHit.chunk.content,
+          action_hint: 'Content overlaps with existing chunk. Use knowledge_evolve to merge new information into the existing chunk, or make your content more distinct.',
+        };
+      }
     }
   }
 

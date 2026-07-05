@@ -406,10 +406,10 @@ async function testAccessTracking() {
 async function testOldCategoriesRejected() {
   console.error('\n📋 Test 17: Verify old categories not in tool schemas');
   // The zod schemas in index.ts would reject these. We test the types.
-  const validCategories = ['fact', 'rule', 'insight', 'question', 'workflow'];
+  const validCategories = ['fact', 'rule', 'insight', 'question', 'workflow', 'decision'];
   const oldCategories = ['concept', 'pattern', 'example', 'reference', 'learning', 'event', 'condition', 'action', 'state'];
 
-  assert(validCategories.length === 5, `5 valid categories`);
+  assert(validCategories.length === 6, `6 valid categories`);
   // We can't test zod rejection here (that's in index.ts), but we verify the store handler works with new categories
   assert(true, 'Old categories (concept, pattern, example, etc.) removed from schema');
 }

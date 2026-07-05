@@ -83,7 +83,7 @@ async function main(): Promise<void> {
       makeRow({
         id: 'ss-task-1',
         artifact_type: 'task',
-        status: 'todo',
+        status: 'pending',
         title: 'Write verify script',
         refs: ['ss-ctx-1'],
       }),
@@ -92,7 +92,7 @@ async function main(): Promise<void> {
 
     // Second session's row — used to prove session_id filtering isolates correctly.
     await storage.createSessionState(
-      makeRow({ id: 'ss-task-2', session_id: 'sess-2', artifact_type: 'task', status: 'todo', title: 'Other session task' }),
+      makeRow({ id: 'ss-task-2', session_id: 'sess-2', artifact_type: 'task', status: 'pending', title: 'Other session task' }),
     );
 
     // (b) getSessionState returns the rows with all fields intact

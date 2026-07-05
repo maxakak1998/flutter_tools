@@ -33,8 +33,12 @@ import { handleBriefing } from './tools/briefing.js';
 import { handleExport } from './tools/export.js';
 import { handleIngest } from './tools/ingest.js';
 import { handleLifeStore } from './tools/life-store.js';
+import { handleDecisionRecord } from './tools/decision.js';
 import { handleLifeFeedback } from './tools/life-feedback.js';
 import { handleLifeDraftSkill } from './tools/life-draft-skill.js';
+import { handleStateSetContext, handleStateGetContext } from './tools/state-context.js';
+import { handleStateSavePlan, handleStateGetPlan } from './tools/state-plan.js';
+import { handleStateTaskUpsert, handleStateTaskList } from './tools/state-task.js';
 import { createAutoExporter } from './sync/auto-export.js';
 import { migrateV1toV2 } from './sync/migrate.js';
 import { importAll, removeConflict } from './sync/import.js';
@@ -523,6 +527,113 @@ async function daemonMain(): Promise<void> {
         case 'life_draft_skill': {
           result = await handleLifeDraftSkill(storage, config, params.domain, params.target_skill_path, params.force);
           scheduleCacheRegen();
+          break;
+        }
+
+        // Decision record (durable, dedup-bypassed architectural/design decisions)
+        case 'decision_record': {
+          onStep('start', `Decision: "${(params.summary || '').slice(0, 50)}"`);
+          const drResult = await handleDecisionRecord(
+            storage,
+            embedder,
+            linker,
+            params.content,
+            params.summary,
+            params.domain,
+            params.keywords,
+            params.importance,
+            params.supersedes_id,
+            params.rationale,
+            onStep,
+            config.dedup.similarityThreshold,
+            config.learning.hypothesisInitialConfidence,
+            config.domains.aliases,
+            config.domains.canonical,
+            entityRegistry,
+          );
+          scheduleCacheRegen();
+          onStep('complete', `Recorded ${drResult.id}`, { duration_ms: Math.round(performance.now() - t0), id: drResult.id, auto_links: drResult.auto_links.length });
+          // Auto-export: decisions are durable knowledge and never deduped
+          autoExporter.queueChunkExport(drResult.id);
+          // If a SUPERSEDES edge was created, refresh edge files too
+          if (drResult.superseded_id) {
+            autoExporter.queueEdgeRefresh();
+          }
+          result = drResult;
+          break;
+        }
+
+        // Session state tools (active_context — append-only working focus)
+        case 'state_set_context': {
+          result = await handleStateSetContext(
+            storage,
+            params.session_id ?? '',
+            projectId ?? '',
+            params.focus,
+            params.next_step,
+            params.refs,
+            params.note,
+          );
+          break;
+        }
+        case 'state_get_context': {
+          result = await handleStateGetContext(
+            storage,
+            params.session_id ?? '',
+            projectId ?? '',
+            params.session_id,
+            params.limit ?? 10,
+            params.since,
+          );
+          break;
+        }
+
+        // Plan snapshot tools (immutable, versioned plan clones)
+        case 'state_save_plan': {
+          result = await handleStateSavePlan(
+            storage,
+            kgDir ?? '',
+            params.session_id ?? '',
+            projectId ?? '',
+            params.source_path,
+            params.title,
+            params.ts,
+          );
+          break;
+        }
+        case 'state_get_plan': {
+          result = await handleStateGetPlan(
+            storage,
+            projectId ?? '',
+            params.session_id ?? '',
+            params.title,
+            params.version,
+            params.session_id,
+          );
+          break;
+        }
+
+        // Task ledger tools (progress tracking — status + blocked_by)
+        case 'state_task_upsert': {
+          result = await handleStateTaskUpsert(
+            storage,
+            params.session_id ?? '',
+            projectId ?? '',
+            params.title,
+            params.status,
+            params.task_id,
+            params.blocked_by,
+            params.note,
+          );
+          break;
+        }
+        case 'state_task_list': {
+          result = await handleStateTaskList(
+            storage,
+            projectId ?? '',
+            params.session_id,
+            params.status,
+          );
           break;
         }
 

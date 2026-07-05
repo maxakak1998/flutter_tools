@@ -31,7 +31,7 @@ async function rpcCall(daemonUrl: string, method: string, params: unknown): Prom
 // Tool schemas (Zod validation before forwarding to daemon)
 // ============================================================
 
-const categoryEnum = z.enum(['fact', 'rule', 'insight', 'question', 'workflow']);
+const categoryEnum = z.enum(['fact', 'rule', 'insight', 'question', 'workflow', 'decision']);
 const importanceEnum = z.enum(['critical', 'high', 'medium', 'low']);
 const lifecycleEnum = z.enum(['hypothesis', 'validated', 'promoted', 'canonical', 'refuted', 'active']);
 const relationEnum = z.enum(['relates_to', 'depends_on', 'contradicts', 'supersedes', 'triggers', 'requires', 'produces', 'is_part_of', 'constrains', 'precedes', 'transitions_to', 'governed_by']);
@@ -93,8 +93,14 @@ export async function clientMain(daemonUrl: string, projectId: string): Promise<
     server.tool(name, description, schema, async (params) => {
       try {
         // Thread session identity into every RPC as an extra field the daemon
-        // can read. Does not alter the existing tool param shape.
-        const result = await rpcCall(daemonUrl, methodName, { ...params, session_id: sessionId });
+        // can read. Does not alter the existing tool param shape. A caller-supplied
+        // session_id wins (e.g. state_get_context/state_get_plan reading another
+        // session, or '' to span all project sessions); otherwise use the minted id.
+        const callerSessionId = (params as { session_id?: string }).session_id;
+        const result = await rpcCall(daemonUrl, methodName, {
+          ...params,
+          session_id: callerSessionId ?? sessionId,
+        });
         return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
       } catch (e) {
         return {
@@ -290,6 +296,105 @@ export async function clientMain(daemonUrl: string, projectId: string): Promise<
     'Generate a draft Claude skill from high-score operational learnings in a domain. Does NOT auto-install — returns draft content for review.',
     { domain: z.string(), target_skill_path: z.string().optional(), force: z.boolean().optional() },
     'life_draft_skill',
+  );
+
+  // ============================================================
+  // Decision record tool (durable architectural/design decisions)
+  // ============================================================
+
+  proxyTool(
+    'decision_record',
+    'Record an architectural/design decision with rationale and what it supersedes. Stored as durable, queryable knowledge (semantic search + supersede lineage), NOT subject to dedup so near-identical iterative decisions each persist.',
+    {
+      content: z.string().min(1).max(5000).describe('Natural-language description of the decision and its rationale'),
+      summary: z.string().min(1).max(200).describe('One-sentence description of the decision'),
+      domain: z.string().max(50).describe('Topic area for the decision'),
+      keywords: z.array(z.string().min(2)).min(1).max(15).describe('Search terms'),
+      importance: importanceEnum.optional().describe('Priority signal (defaults to high)'),
+      supersedes_id: z.string().optional().describe('Chunk id of the decision this one replaces'),
+      rationale: z.string().optional().describe('Reason for superseding the prior decision (used on the SUPERSEDES edge)'),
+    },
+    'decision_record',
+  );
+
+  // ============================================================
+  // Session state tools (active_context — append-only working focus)
+  // ============================================================
+
+  proxyTool(
+    'state_set_context',
+    'Record what you are currently working on: focus, the file/feature being touched, the immediate next step. Call when you start or pivot a task so a future session can resume.',
+    {
+      focus: z.string().min(1).describe('What you are currently working on (short focus statement)'),
+      next_step: z.string().optional().describe('The immediate next step to take'),
+      refs: z.array(z.string()).optional().describe('Files/features being touched'),
+      note: z.string().optional().describe('Optional extra context'),
+    },
+    'state_set_context',
+  );
+
+  proxyTool(
+    'state_get_context',
+    "Read back your current working context: latest focus, recent actions, next step. Use at session start or after compaction to answer 'what was I doing?'.",
+    {
+      session_id: z.string().optional().describe("Session to read (defaults to your own; empty string spans all sessions of the project)"),
+      limit: z.number().int().positive().optional().describe('Max trail entries to return (default 10)'),
+      since: z.string().optional().describe('ISO timestamp — only return entries at or after this time'),
+    },
+    'state_get_context',
+  );
+
+  // ============================================================
+  // Plan snapshot tools (immutable, versioned plan clones)
+  // ============================================================
+
+  proxyTool(
+    'state_save_plan',
+    'Save a snapshot of a plan document you just wrote. Clones the file into local state storage, versioned and immutable — version 1 is the original plan.',
+    {
+      source_path: z.string().min(1).describe('Absolute path to the .md plan file to clone'),
+      title: z.string().optional().describe('Plan title (defaults to the source filename); versions are grouped by title'),
+      ts: z.string().optional().describe('Optional timestamp for the clone filename (defaults to now)'),
+    },
+    'state_save_plan',
+  );
+
+  proxyTool(
+    'state_get_plan',
+    'Retrieve a saved plan: the active version by default, or a specific version (version 1 = original). Returns the cloned file path + metadata.',
+    {
+      title: z.string().optional().describe('Plan title to retrieve (defaults to the most recently saved plan)'),
+      version: z.number().int().positive().optional().describe('Specific version to retrieve (1 = original); omit for the active/latest version'),
+      session_id: z.string().optional().describe('Session to read (defaults to your own; empty string spans all sessions of the project)'),
+    },
+    'state_get_plan',
+  );
+
+  // ============================================================
+  // Task ledger tools (progress tracking — status + blocked_by)
+  // ============================================================
+
+  proxyTool(
+    'state_task_upsert',
+    'Create or update a task/subtask with a status (pending/in_progress/blocked/done) and optional blocked_by references. Use to track what is done, left, or blocked across sessions.',
+    {
+      task_id: z.string().optional().describe('Task id to update in place; omit to create a new task'),
+      title: z.string().min(1).describe('Task title'),
+      status: z.enum(['pending', 'in_progress', 'blocked', 'done']).describe('Task status'),
+      blocked_by: z.array(z.string()).optional().describe('Task ids this task is blocked by'),
+      note: z.string().optional().describe('Optional free-text note'),
+    },
+    'state_task_upsert',
+  );
+
+  proxyTool(
+    'state_task_list',
+    "List tasks filtered by status/session. Answers 'what is the current status?' — what is done, in progress, blocked, or pending.",
+    {
+      session_id: z.string().optional().describe('Session to list (defaults to all sessions of the project)'),
+      status: z.enum(['pending', 'in_progress', 'blocked', 'done']).optional().describe('Filter by status'),
+    },
+    'state_task_list',
   );
 
   // ============================================================
