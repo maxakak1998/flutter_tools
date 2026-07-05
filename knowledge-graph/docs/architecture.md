@@ -72,7 +72,8 @@ The server handles:
 ├─────────────────────────────────────────────────┤
 │         Layer 2: Tool Handlers (src/tools/)        │
 │  store · query · evolve · link · validate · promote │
-│  list · delete                                     │
+│  list · delete · briefing · export · ingest        │
+│  life_* · decision_record · state_* (session state) │
 │  Orchestrate engine + storage for each tool call   │
 ├─────────────────────────────────────────────────┤
 │         Layer 3: Knowledge Engine (src/engine/)    │
@@ -80,13 +81,21 @@ The server handles:
 │  Retriever: hybrid search pipeline                  │
 │  Linker: auto-link by similarity + suggestions     │
 │  Confidence: confirmation/refutation + decay        │
+│  Projection: cross-session focus/task board         │
 ├─────────────────────────────────────────────────┤
 │         Layer 4: Storage (src/storage/)             │
 │  IStorage interface + backend factory               │
 │  KuzuDB (default) or SurrealDB (opt-in)            │
-│  HNSW index (cosine) · 1 node table · 15 relations │
+│  HNSW index (cosine) · Chunk + SessionState tables │
+│  15 relations · SessionState: no embedding          │
 └─────────────────────────────────────────────────┘
 ```
+
+### Session-State Subsystem
+
+Alongside the durable knowledge graph, Layer 2 exposes a **session-state subsystem** (`decision_record` + `state_*` tools) for volatile working memory — current focus, plans, tasks, and derived checkpoints. It stores 4 artifact types (`active_context`, `task`, `event`, `plan`) in a dedicated `SessionState` table with **no embedding and no vector index** (Layer 3's engine is bypassed for these), so it is never semantically searched. `state_projection` uses `engine/projection.ts` to fold a cross-session board from the live sessions tracked by the daemon's in-memory registry.
+
+`SessionState` is **local-only**: it is not synced or exported (the sync path covers only durable `Chunk` knowledge), reflecting that working memory is machine-/session-local scratch, not shared truth. Durable design decisions are the exception — `decision_record` writes them into the `Chunk` table (category `decision`), so they are embedded, queryable, and part of the synced graph.
 
 ---
 

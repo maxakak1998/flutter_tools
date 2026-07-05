@@ -170,6 +170,59 @@ Note: The "cannot promote refuted" guard checks confidence (< 0.2), not lifecycl
 
 ---
 
+## decision_record (`decision.ts`)
+
+**Purpose**: Record a durable architectural/design decision as a `Chunk` (category `decision`, layer `core-knowledge`).
+
+**Parameters**: `content`, `summary`, `domain`, `keywords`, optional `importance` (default `high`), optional `supersedes_id`, optional `rationale`
+
+**Flow**:
+1. Build metadata with `category='decision'`
+2. Delegate to `handleStore()` with `skipDedup=true` — the 0.88 dedup check is bypassed so near-identical iterative decisions each persist as separate chunks
+3. If `supersedes_id` is set, create a `SUPERSEDES` edge (new → prior) carrying `rationale`, forming a queryable decision lineage
+4. Return the `StoreResult` (`{ id, auto_links[], superseded_id?, ... }`)
+
+---
+
+## Session-State Handlers (`state-*.ts`)
+
+All session-state handlers read/write the `SessionState` table (volatile, no embedding). The daemon threads the calling `session_id` into each; a caller-supplied `session_id` overrides it (empty string = all project sessions).
+
+### state_set_context / state_get_context (`state-context.ts`)
+
+- **set**: append an `active_context` row (`title=focus`, `body={next_step, note}`, `refs`). Returns `{ id, session_id, focus, next_step, refs, created_at }`. The daemon opportunistically triggers compaction after the write when the session is far over the keep-recent window.
+- **get**: list `active_context` rows (own session by default; empty session spans all), newest-first, sliced to `limit`, optional `since` filter. Returns `{ session_id, latest, trail[], total }`.
+
+### state_save_plan / state_get_plan (`state-plan.ts`)
+
+- **save**: clone the source `.md` into `<kgDir>/state/plans/<project>/<session>/<ts>-<slug>.md`, mint an immutable `plan` row (v1 = original), mark any prior active plan of the same title `superseded`. Returns `{ id, title, version, status, source_path, clone_path, refs[], created_at }`.
+- **get**: resolve the active version by default (or a specific `version`), project-scoped. Returns `{ session_id, title, requested_version, plan, versions[], total }`.
+
+### state_task_upsert / state_task_list (`state-task.ts`)
+
+- **upsert**: create (no `task_id`) or update-in-place a `task` row; `status` in the status field, `note` in the JSON body, `blocked_by` encoded as `blocked_by:<id>` refs. Optional `expected_version` enforces optimistic concurrency (conflict on mismatch). Returns the task entry.
+- **list**: filter `task` rows by session/status. Returns `{ session_id, status, tasks[], total }`.
+
+### state_checkpoint / state_resume (`state-checkpoint.ts`)
+
+- **checkpoint**: fold the session's `active_context` + active `plan` + open `task`s + recent `decision` chunks (limit 10) into `{ session_id, active_context[], open_tasks[], active_plan, recent_decisions[] }`.
+- **resume**: project-scoped (works on a fresh session). Adds `active_plans[]`, `orphaned[]` (tasks untouched > 7 days), and a rendered `markdown` briefing.
+
+### state_prune (`state-prune.ts`)
+
+**Purpose**: anti-orphaning GC. Finds `task`/`event` rows that are active, unpinned, not done/compacted, and untouched past the cutoff (default 7 days). `mode='surface'` reports only; `mode='evict'` soft-evicts (`active=false`). Plans and pinned rows are never orphaned. Returns `{ project_id, mode, older_than_days, cutoff, orphaned[], evicted_count?, message }`.
+
+### state_compact (`state-compact.ts`)
+
+**Purpose**: fold old `active_context` events per session into a summary `event` snapshot, keeping the newest `keep_recent` (default 50) verbatim. Pinned rows, plans, and tasks are never compacted. Returns `{ project_id, keep_recent, compacted_count, sessions_affected, summaries[], message }`.
+
+### state_sessions / state_projection
+
+- **state_sessions**: served directly by the daemon from its in-memory registry (not a `tools/` handler). Returns `{ sessions: [{ session_id, connectedAt, last_seen }] }`.
+- **state_projection** (`engine/projection.ts`): folds a cross-session board — per-session latest focus, union of edited files, combined open tasks — plus a `markdown` summary. Returns `ProjectionView & { markdown }`.
+
+---
+
 ## Error Handling
 
 - Chunk not found: throw `Error("Chunk not found: {id}")`

@@ -1,10 +1,12 @@
 # MCP Tool Reference
 
-8 tools exposed to Claude via JSON-RPC over stdio.
+27 tools exposed to Claude via JSON-RPC over stdio, in four groups: domain-knowledge, operational-learning, decision-record, and session-state.
 
 ---
 
 ## Overview
+
+### Domain-knowledge tools
 
 | # | Tool | Purpose | When to use |
 |---|------|---------|-------------|
@@ -16,6 +18,37 @@
 | 6 | `knowledge_delete` | Delete chunk | Remove chunk and all its relationships |
 | 7 | `knowledge_validate` | Confirm/refute | Drive lifecycle via evidence-backed validation |
 | 8 | `knowledge_promote` | Graduate chunk | Promote lifecycle status (caller should verify golden evidence) |
+| 9 | `knowledge_briefing` | Domain overview | Session-start briefing: summaries, open questions, stale knowledge |
+| 10 | `knowledge_export` | Export graph | Markdown/JSON dump grouped by domain/category/lifecycle |
+| 11 | `knowledge_ingest` | Chunk raw text | Turn raw text into review candidates (does NOT auto-store) |
+
+### Operational-learning tools
+
+| # | Tool | Purpose | When to use |
+|---|------|---------|-------------|
+| 12 | `life_store` | Store a learning | Coding gotcha/pattern/workaround (requires a `life:*` tag) |
+| 13 | `life_feedback` | Score a learning | Report success/failure after applying it |
+| 14 | `life_draft_skill` | Draft a skill | Generate a Claude skill from high-score learnings |
+
+### Decision & session-state tools
+
+| # | Tool | Purpose | When to use |
+|---|------|---------|-------------|
+| 15 | `decision_record` | Durable decision | Record a design decision (Chunk, dedup bypassed, supersede lineage) |
+| 16 | `state_set_context` | Set working focus | Record what you're doing now + next step (append-only) |
+| 17 | `state_get_context` | Read working focus | "What was I doing?" — latest focus + recent trail |
+| 18 | `state_save_plan` | Snapshot a plan | Clone a `.md` plan into immutable, versioned state |
+| 19 | `state_get_plan` | Retrieve a plan | Active version by default, or a specific version |
+| 20 | `state_task_upsert` | Track a task | Create/update task with status + `blocked_by` |
+| 21 | `state_task_list` | List tasks | "What's the current status?" |
+| 22 | `state_checkpoint` | Fold state | Snapshot context + plan + tasks + decisions |
+| 23 | `state_resume` | Resume briefing | Project-scoped "catch me up" (works on a fresh session) |
+| 24 | `state_sessions` | List live sessions | See what other sessions are connected |
+| 25 | `state_projection` | Cross-session board | Merged focus/task view across all live sessions |
+| 26 | `state_prune` | Anti-orphaning GC | Surface/evict forgotten tasks untouched for N days |
+| 27 | `state_compact` | Bound the stream | Fold old active-context events into a summary |
+
+Tools 1-8 are documented in full below; 9-14 predate this reference. The new decision & session-state tools (15-27) are documented in the [Decision & Session-State Tools](#decision--session-state-tools-detail) section.
 
 ---
 
@@ -31,7 +64,7 @@ Store a single knowledge chunk. Embeds content, creates graph node, auto-links t
 | `metadata.summary` | string | yes | 1-sentence description (max 200 chars) |
 | `metadata.keywords` | string[] | yes | 1-15 key terms (each 2+ chars) |
 | `metadata.domain` | string | yes | Topic area, free-form (max 50 chars, e.g. `"dependency-injection"`) |
-| `metadata.category` | enum | yes | `fact` `rule` `insight` `question` `workflow` |
+| `metadata.category` | enum | yes | `fact` `rule` `insight` `question` `workflow` `decision` |
 | `metadata.importance` | enum | yes | `critical` `high` `medium` `low` |
 | `metadata.entities` | string[] | no | Named things (class names, tools), each 2+ chars |
 | `metadata.suggested_relations` | object[] | no | `{ concept, relation }` — hints for auto-linking |
@@ -60,7 +93,7 @@ Search the knowledge base using hybrid retrieval: vector similarity + keyword ma
 |-------|------|----------|-------------|
 | `query` | string | yes | Natural language search query |
 | `filters.domain` | string | no | Filter by domain |
-| `filters.category` | enum | no | `fact` `rule` `insight` `question` `workflow` |
+| `filters.category` | enum | no | `fact` `rule` `insight` `question` `workflow` `decision` |
 | `filters.importance` | enum | no | `critical` `high` `medium` `low` |
 | `filters.tags` | string[] | no | Filter by tags |
 | `filters.layer` | string | no | Filter by layer |
@@ -95,7 +128,7 @@ Browse stored chunks with optional filters. Returns summary view with effective 
 | Param | Type | Required | Description |
 |-------|------|----------|-------------|
 | `filters.domain` | string | no | Filter by domain |
-| `filters.category` | enum | no | `fact` `rule` `insight` `question` `workflow` |
+| `filters.category` | enum | no | `fact` `rule` `insight` `question` `workflow` `decision` |
 | `filters.importance` | enum | no | `critical` `high` `medium` `low` |
 | `filters.tags` | string[] | no | Filter by tags |
 | `filters.source` | string | no | Filter by source |
@@ -219,7 +252,7 @@ Promote a knowledge chunk to a higher lifecycle status. Caller should verify all
 |-------|------|----------|-------------|
 | `id` | string | yes | Chunk ID to promote |
 | `reason` | string | yes | Why this chunk is being promoted (use golden evidence format) |
-| `new_category` | enum | no | Optionally change category: `fact` `rule` `insight` `question` `workflow` |
+| `new_category` | enum | no | Optionally change category: `fact` `rule` `insight` `question` `workflow` `decision` |
 | `new_importance` | enum | no | Optionally change importance: `critical` `high` `medium` `low` |
 
 **Returns**: `{ id, previous_category, new_category, previous_lifecycle, new_lifecycle, confidence, reason }`
@@ -240,6 +273,162 @@ Promote a knowledge chunk to a higher lifecycle status. Caller should verify all
 Use reason format: `Golden Evidence: [docs:path] [code:path:line] [tests:path] [task:issue-id]`
 
 If any source is missing, ask the user to create it before promoting.
+
+---
+
+## Decision & Session-State Tools (detail)
+
+`decision_record` writes **durable** knowledge into the Chunk table (category `decision`). The `state_*` tools operate on **volatile** working memory in a separate `SessionState` table (no embedding, not synced, not semantically searched). Every `state_*` call is threaded with the client-minted `session_id`; a caller-supplied `session_id` overrides it (an empty string spans all project sessions).
+
+### decision_record
+
+Record an architectural/design decision as a durable, queryable chunk. Unlike `knowledge_store`, the 0.88 semantic-dedup check is **bypassed** so near-identical iterative decisions each persist.
+
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `content` | string | yes | Natural-language decision + rationale (max 5000 chars) |
+| `summary` | string | yes | One-sentence description (max 200 chars) |
+| `domain` | string | yes | Topic area (max 50 chars) |
+| `keywords` | string[] | yes | 1-15 search terms (each 2+ chars) |
+| `importance` | enum | no | `critical` `high` `medium` `low` (defaults to `high`) |
+| `supersedes_id` | string | no | Chunk id of the decision this replaces |
+| `rationale` | string | no | Reason for superseding (used on the `SUPERSEDES` edge) |
+
+**Returns**: `StoreResult` — `{ id, auto_links[], warnings[], superseded_id?, ... }` (same shape as `knowledge_store`). Category is forced to `decision`, layer to `core-knowledge`. When `supersedes_id` is given, a `SUPERSEDES` edge is created from the new chunk to the prior decision, forming a queryable lineage.
+
+### state_set_context
+
+Append a working-context entry (append-only trail). Call when starting or pivoting a task.
+
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `focus` | string | yes | What you are currently working on |
+| `next_step` | string | no | The immediate next step |
+| `refs` | string[] | no | Files/features being touched |
+| `note` | string | no | Extra context |
+
+**Returns**: `{ id, session_id, focus, next_step, refs, created_at }`. Opportunistically triggers `state_compact` when the session runs far over the keep-recent window.
+
+### state_get_context
+
+Read back the current working context (own session by default).
+
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `session_id` | string | no | Session to read (default: own; empty string spans all project sessions) |
+| `limit` | number | no | Max trail entries (default 10) |
+| `since` | string | no | ISO timestamp — only entries at/after this time |
+
+**Returns**: `{ session_id, latest, trail[], total }`. `session_id` is `null` when spanning all sessions; `latest` is the newest entry or `null`.
+
+### state_save_plan
+
+Clone a `.md` plan file into local state storage — immutable and versioned (v1 = original). Saving a new version of the same title marks the prior active plan `superseded` (preserved for history).
+
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `source_path` | string | yes | Absolute path to the `.md` plan file to clone |
+| `title` | string | no | Plan title (defaults to source filename); versions group by title |
+| `ts` | string | no | Timestamp for the clone filename (defaults to now) |
+
+**Returns**: `{ id, title, version, status, source_path, clone_path, refs[], created_at }`.
+
+### state_get_plan
+
+Retrieve a saved plan — active version by default, or a specific version. Project-scoped so a fresh session can read the original/current plan.
+
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `title` | string | no | Plan title (defaults to most recently saved) |
+| `version` | number | no | Specific version (1 = original); omit for active/latest |
+| `session_id` | string | no | Narrow to a single session's plans (default: project-scoped) |
+
+**Returns**: `{ session_id, title, requested_version, plan, versions[], total }`. `plan` is the selected version entry (or `null`); `versions` lists all versions for the title.
+
+### state_task_upsert
+
+Create or update a task/subtask.
+
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `title` | string | yes | Task title |
+| `status` | enum | yes | `pending` `in_progress` `blocked` `done` `deferred` |
+| `task_id` | string | no | Task id to update in place; omit to create |
+| `blocked_by` | string[] | no | Task ids this task is blocked by |
+| `note` | string | no | Free-text note |
+| `expected_version` | number | no | Optimistic concurrency: write only succeeds if task is still at this version, else fails with a conflict |
+
+**Returns**: task entry `{ id, title, status, blocked_by[], note, session_id, created_at, updated_at, version }`. `status='deferred'` marks intentionally-parked work — prime candidates for `state_prune` and resume nudges.
+
+### state_task_list
+
+List tasks filtered by status/session.
+
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `session_id` | string | no | Session to list (default: all sessions of the project) |
+| `status` | enum | no | Filter: `pending` `in_progress` `blocked` `done` `deferred` |
+
+**Returns**: `{ session_id, status, tasks[], total }`.
+
+### state_checkpoint
+
+Fold current session state into a resume packet.
+
+**Parameters**: none (session-scoped via the threaded `session_id`).
+
+**Returns**: `{ session_id, active_context[], open_tasks[], active_plan, recent_decisions[] }`. `recent_decisions` are durable Chunk-table `decision` chunks (newest first, limit 10).
+
+### state_resume
+
+Full project-scoped resume briefing — works on a brand-new session.
+
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `since_days` | number | no | Only surface state touched within the last N days (default: all time) |
+
+**Returns**: `{ project_id, since_days, active_context[], open_tasks[], active_plans[], recent_decisions[], orphaned[], markdown }`. `markdown` is a rendered human-readable briefing; `orphaned` lists tasks untouched past the 7-day cutoff.
+
+### state_sessions
+
+List currently-connected sessions from the daemon's in-memory registry.
+
+**Parameters**: none.
+
+**Returns**: `{ sessions: [{ session_id, connectedAt, last_seen }] }`.
+
+### state_projection
+
+Merged cross-session focus/task board across all live sessions of the project.
+
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `project_id` | string | no | Project to view (defaults to current) |
+
+**Returns**: `{ project_id, sessions[], edited_files[], open_tasks[], generated_at, markdown }`. `sessions[]` is each session's latest focus; `edited_files` is the union of active-context refs; `open_tasks` is the combined non-done task board.
+
+### state_prune
+
+Surface or evict orphaned tasks/intentions not touched in N days (anti-orphaning GC). Plans and pinned rows are never orphaned.
+
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `project_id` | string | no | Project to prune (defaults to current) |
+| `older_than_days` | number | no | Age cutoff (default 7) |
+| `mode` | enum | no | `surface` (default, report-only) or `evict` (soft-evict, `active=false`) |
+
+**Returns**: `{ project_id, mode, older_than_days, cutoff, orphaned[], evicted_count?, message }`.
+
+### state_compact
+
+Fold old active-context events into a summary snapshot to keep the working-memory stream bounded. Pinned rows, plans, tasks, and the newest N events per session are never compacted.
+
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `project_id` | string | no | Project to compact (defaults to current) |
+| `keep_recent` | number | no | Newest N active-context events per session to keep verbatim (default 50) |
+
+**Returns**: `{ project_id, keep_recent, compacted_count, sessions_affected, summaries[], message }`.
 
 ---
 

@@ -36,7 +36,7 @@ Embedded graph database with vector extension. No external server needed — dat
 | `summary` | STRING | 1-sentence description (max 200 chars) | CREATE |
 | `embedding` | DOUBLE[1024] | bge-m3 vector embedding | CREATE |
 | `source` | STRING | Origin file path or identifier | CREATE |
-| `category` | STRING | fact, rule, insight, question, workflow | CREATE |
+| `category` | STRING | fact, rule, insight, question, workflow, decision | CREATE |
 | `domain` | STRING | Topic area (e.g., "dependency-injection") | CREATE |
 | `importance` | STRING | critical, high, medium, low | CREATE |
 | `layer` | STRING | core-knowledge, learning, procedural, or custom (DEFAULT 'core-knowledge') | CREATE |
@@ -64,6 +64,7 @@ The `store` handler emits warnings when content exceeds category-specific size t
 | `insight` | 600 chars |
 | `question` | 400 chars |
 | `workflow` | 800 chars |
+| `decision` | 800 chars |
 
 ### 15 Relationship Tables (Chunk → Chunk)
 
@@ -81,6 +82,29 @@ The `store` handler emits warnings when content exceeds category-specific size t
 | `PRECEDES` | `description STRING, auto_created STRING` | Source precedes target |
 | `TRANSITIONS_TO` | `description STRING, auto_created STRING` | Source transitions to target |
 | `GOVERNED_BY` | `description STRING, auto_created STRING` | Source is governed by target |
+
+### SessionState Node Table (14 columns)
+
+A separate node table for **volatile working memory** (session context, plans, tasks, compaction events). It holds NO embedding and has NO vector index — updates use cheap in-place `SET` (KuzuDB) / direct `UPDATE` (SurrealDB) instead of the delete+recreate workaround `Chunk` needs. It is local-only and is never included in the sync/export path.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | STRING (PK) | UUID |
+| `session_id` | STRING (DEFAULT '') | Client-minted per-process session id |
+| `project_id` | STRING (DEFAULT '') | Owning project |
+| `artifact_type` | STRING | `active_context`, `task`, `event`, or `plan` |
+| `status` | STRING (DEFAULT '') | Artifact-specific status (e.g. task: pending/in_progress/blocked/done/deferred; plan: active/superseded) |
+| `title` | STRING (DEFAULT '') | Focus statement / task title / plan title |
+| `body` | STRING (DEFAULT '') | Free text or JSON payload (e.g. `{next_step, note}`) |
+| `refs` | STRING[] | File paths / chunk ids / `blocked_by:<taskId>` refs |
+| `version` | INT64 (DEFAULT 1) | Version counter (plans immutable-versioned; tasks CAS via `expected_version`) |
+| `pinned` | BOOLEAN (DEFAULT false) | Exempt from compaction |
+| `active` | BOOLEAN (DEFAULT true) | Soft-evict flag (anti-orphaning) |
+| `created_at` | STRING | ISO 8601 timestamp |
+| `updated_at` | STRING | ISO 8601 timestamp |
+| `last_touched_at` | STRING (DEFAULT '') | For anti-orphaning age checks |
+
+KuzuDB: `CREATE NODE TABLE SessionState (...)`. SurrealDB: SCHEMAFULL `session_state` table defined via `DEFINE TABLE/FIELD ... IF NOT EXISTS`. CRUD: `createSessionState`, `getSessionState`, `updateSessionState` (in-place SET), `listSessionState` (filtered by session/project/artifact_type/status/active), `deleteSessionState`.
 
 ---
 
@@ -221,7 +245,8 @@ The `run()` helper catches "already exists" errors silently. This makes `initial
 
 | Type | Values |
 |------|--------|
-| `ChunkCategory` | fact, rule, insight, question, workflow |
+| `ChunkCategory` | fact, rule, insight, question, workflow, decision |
+| `SessionArtifactType` | active_context, task, event, plan |
 | `Importance` | critical, high, medium, low |
 | `KnowledgeRelation` | 15 relation types (see RELATION_TABLE_MAP above) |
 
@@ -269,6 +294,8 @@ await db.use({ namespace: 'knowledge', database: 'graph' });
 ### Schema
 
 SCHEMAFULL `chunk` table with all 24 fields. Array fields use typed sub-fields (e.g., `keywords.*` TYPE string). Embedding field is `array<float>` with HNSW vector index (1024 dims, COSINE distance).
+
+A second SCHEMAFULL `session_state` table mirrors the KuzuDB SessionState table (14 fields, no embedding, no vector index) — see [SessionState Node Table](#sessionstate-node-table-14-columns). Defined idempotently via `DEFINE TABLE/FIELD ... IF NOT EXISTS`; updates use direct `UPDATE`.
 
 ### Key Differences from KuzuDB
 

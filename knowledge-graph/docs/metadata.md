@@ -13,7 +13,7 @@ Passed as the `metadata` parameter to `knowledge_store` and partially to `knowle
 | `summary` | string | YES | min 1, max 200 chars (enforced by Zod) | -- |
 | `keywords` | string[] | YES | 1-15 items, each min 2 chars (enforced by Zod) | -- |
 | `domain` | string | YES | max 50 chars (enforced by Zod), no min length (empty string passes Zod), auto-normalized to kebab-case on store | -- |
-| `category` | enum | YES | `fact` \| `rule` \| `insight` \| `question` \| `workflow` | -- |
+| `category` | enum | YES | `fact` \| `rule` \| `insight` \| `question` \| `workflow` \| `decision` | -- |
 | `importance` | enum | YES | `critical` \| `high` \| `medium` \| `low` | -- |
 | `entities` | string[] | no | min 2 chars each, deduplicated | `[]` |
 | `suggested_relations` | SuggestedRelation[] | no | see [Section 3](#3-suggestedrelation) | -- |
@@ -25,7 +25,7 @@ Passed as the `metadata` parameter to `knowledge_store` and partially to `knowle
 
 | Field | Type | Required | Constraints |
 |-------|------|----------|-------------|
-| `content` | string | YES | Zod hard limit 5000 chars (in `client.ts`); per-category size warnings in `store.ts` (fact: 500, rule: 800, insight: 600, question: 400, workflow: 800) |
+| `content` | string | YES | Zod hard limit 5000 chars (in `client.ts`); per-category size warnings in `store.ts` (fact: 500, rule: 800, insight: 600, question: 400, workflow: 800, decision: 800) |
 
 ---
 
@@ -99,7 +99,7 @@ All provided metadata fields are normalized using the same rules as `knowledge_s
 | `summary` | string | no | min 1, max 200 chars |
 | `keywords` | string[] | no | 1–15 items, each min 2 chars (same as store) |
 | `domain` | string | no | max 50 chars (same as store) |
-| `category` | enum | no | same 5 values |
+| `category` | enum | no | same 6 values |
 | `importance` | enum | no | same 4 values |
 | `layer` | string | no | auto-inferred from category if omitted and category changed |
 | `entities` | string[] | no | Min 2 chars each (same as store), also filtered to 2+ chars during normalization |

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Is
 
-A **domain knowledge** graph MCP server for Claude Code. Stores **business logic, domain rules, and workflow rationale** as atomic nodes with semantic embeddings (Ollama/bge-m3) in a graph database. This is NOT a code index — it captures the "why" behind code (business constraints, domain decisions, cross-feature relationships) that Claude infers by reasoning across code, docs, and user context. Supports two storage backends: **KuzuDB** (default) and **SurrealDB** (embedded mode). Features confidence scoring, lifecycle management, temporal decay, validation/refutation, and proactive surfacing. Exposes 8 tools via JSON-RPC.
+A **domain knowledge** graph MCP server for Claude Code. Stores **business logic, domain rules, and workflow rationale** as atomic nodes with semantic embeddings (Ollama/bge-m3) in a graph database. This is NOT a code index — it captures the "why" behind code (business constraints, domain decisions, cross-feature relationships) that Claude infers by reasoning across code, docs, and user context. Supports two storage backends: **KuzuDB** (default) and **SurrealDB** (embedded mode). Features confidence scoring, lifecycle management, temporal decay, validation/refutation, and proactive surfacing. It also runs a **session-state subsystem** (volatile working memory: context, plans, tasks, checkpoints) alongside the durable knowledge graph. Exposes 27 tools via JSON-RPC.
 
 ### Content Boundary: Domain Knowledge vs Code Knowledge
 
@@ -23,6 +23,8 @@ A **domain knowledge** graph MCP server for Claude Code. Stores **business logic
 - Code syntax or technical implementation details
 
 **Interview Protocol**: When Claude infers business logic from code but isn't certain, it MUST ask the user to confirm before storing. See the knowledge-graph skill (`~/.claude/skills/knowledge-graph/SKILL.md`) for interview rules.
+
+**Third boundary — session state**: The `state_*` tools store **volatile working memory** (current focus, plans, tasks, checkpoints) in a separate `SessionState` table. This is DISTINCT from both domain knowledge (durable `Chunk` truths, above) and operational learnings (`life:*` chunks — coding gotchas/patterns). Session state is transient per-work-session scratch: it is not embedded, not semantically searched, and not synced. Use it to answer "what was I doing / where did I leave off", never to record durable facts. Durable design decisions go through `decision_record` (a `Chunk`), not `state_*`. See [Session-State Subsystem](#session-state-subsystem).
 
 ## Commands
 
@@ -72,6 +74,7 @@ npx tsx scripts/build-artifact-test.ts
 | `context` | Auto-query KG with user prompt (UserPromptSubmit hook) |
 | `setup-hooks` | Install KG enforcement hooks into current project (requires `jq`) |
 | `remove-hooks` | Remove KG enforcement hooks from current project (requires `jq`) |
+| `import-memory-bank <path>` | Import a flat-file memory-bank (`decisionLog.md`) into the KG as `decision` chunks |
 
 ### CLI Options
 
@@ -177,9 +180,21 @@ Per-project knowledge graphs via `.knowledge-graph/` directories:
 - **CLI auto-kills stale processes** during `reset-db` (checks via `ps`, only kills `node cli.js serve` processes). The `serve` and `serve-standalone` commands call `ensureDaemon()` from `cli.ts`; after the daemon URL is resolved, `client.ts` runs as the stdio proxy.
 - **Storage abstraction** — All storage access goes through `IStorage` interface (`storage/interface.ts`). Backend is selected by `createStorage(backend, dbPath)` factory. Tool handlers and engine components are backend-agnostic.
 
+### Session-State Subsystem
+
+Alongside the durable knowledge graph, the daemon runs a **session-state subsystem** for volatile working memory — "what am I doing right now / where did I leave off". This is a third content boundary, distinct from both domain knowledge (`Chunk`) and operational learnings (`life:*` chunks): session state is transient per-work-session scratch, not a durable truth.
+
+- **Storage** — a separate `SessionState` node table (KuzuDB) / `session_state` SCHEMAFULL table (SurrealDB). **No embedding, no vector index** — it is never semantically searched, so writes use cheap in-place `SET` instead of the delete+recreate workaround `Chunk` needs. It is **local-only**: not embedded, not surfaced in `knowledge_query`, and NOT included in the sync/export path (working memory does not sync between machines).
+- **4-artifact taxonomy** (`artifact_type`): `active_context` (append-only focus trail), `plan` (immutable versioned clones of `.md` plan files), `task` (status ledger: pending/in_progress/blocked/done/deferred + `blocked_by`), and `event` (compaction summary snapshots). A **checkpoint** is *derived*, not stored — `state_checkpoint`/`state_resume` fold the live artifacts into a resume packet on demand.
+- **Decisions live in `Chunk`, not here** — `decision_record` writes a durable, queryable `decision` chunk (dedup bypassed, optional `SUPERSEDES` lineage). Only the volatile artifacts above live in `SessionState`.
+- **Session identity + registry** — the client mints a per-process `session_id` (UUID) on startup and threads it into every RPC (a caller-supplied `session_id` wins, e.g. `''` to span all project sessions). The daemon keeps an **in-memory** registry keyed on `session_id` (`connectedAt`/`lastSeen`), populated on `/rpc/connect` and reported by `state_sessions` and `GET /health`'s `sessions[]`. The registry is not persisted — a client restart is a new session.
+- **Resume via `kg prime`** — the `prime` CLI hook (SessionStart/PreCompact) surfaces the resume briefing so a fresh or post-compaction session can catch up. `state_resume` is project-scoped and works on a brand-new session id.
+- **Anti-orphaning** — `state_prune` surfaces (or `evict`s) tasks/intentions untouched past a cutoff (default 7 days); `deferred` tasks are prime orphan candidates. Plans and pinned rows are never orphaned.
+- **Compaction** — `state_compact` folds old `active_context` events into a summary snapshot to keep the stream bounded; pinned rows, plans, tasks, and the newest N events per session are never compacted. `state_set_context` also opportunistically compacts when a session runs far over the keep-recent window.
+
 ### Graph Schema
 
-**Node Table**: Single `Chunk` table. All knowledge is stored as chunks with metadata fields. KuzuDB uses a node table; SurrealDB uses a SCHEMAFULL table with the same fields.
+**Node Tables**: `Chunk` (all durable knowledge — chunks with metadata + learning fields) and `SessionState` (volatile working memory, no embedding — see [Session-State Subsystem](#session-state-subsystem)). KuzuDB uses node tables; SurrealDB uses SCHEMAFULL tables with the same fields.
 
 **Chunk Fields**: Each chunk has a `layer` field (`core-knowledge`, `learning`, `procedural`, or custom). Auto-inferred from category if not provided.
 
@@ -194,7 +209,7 @@ Per-project knowledge graphs via `.knowledge-graph/` directories:
 | `lifecycle` | STRING | 'active' | hypothesis/validated/promoted/canonical/refuted/active |
 | `access_count` | INT64 | 0 | Times retrieved via query |
 
-### Categories (5)
+### Categories (6)
 
 | Category | Meaning | Example | Size Target | Initial Lifecycle | Initial Confidence |
 |---|---|---|---|---|---|
@@ -203,6 +218,7 @@ Per-project knowledge graphs via `.knowledge-graph/` directories:
 | `insight` | A business pattern Claude inferred from code (needs user confirmation) | "It seems withdrawal limits are tiered by verification level — unverified: $500, basic: $5000, full: unlimited" | 600 chars | `hypothesis` | 0.3 |
 | `question` | An open business question to ask the user | "Why does the product soft-delete flow skip the confirmation dialog for admin users?" | 400 chars | `hypothesis` | 0.3 |
 | `workflow` | A business process or user journey with rationale | "User onboarding: signup → email verify → ID upload → manual review (24h SLA) → account activated" | 800 chars | `active` | 0.5 |
+| `decision` | A durable architectural/design decision with rationale (via `decision_record`) | "Switched session state off the Chunk table into a separate SessionState table so volatile working memory never pollutes semantic search" | 800 chars | `active` | 0.5 |
 
 **Why categories matter**: Layer auto-inference, content size warnings, predictable filtering. Categories do NOT affect search scoring, auto-linking, or deduplication. Note that `insight` and `question` start as hypotheses — Claude should interview the user to confirm before these can be promoted.
 
@@ -370,7 +386,9 @@ Before storing, the system checks for semantic duplicates:
 
 When a duplicate is detected (similarity >= 0.88), the store returns the existing chunk ID with `duplicate_of`, `similarity`, `existing_content`, `existing_summary`, and `action_hint` fields. No new chunk is created. The hint suggests using `knowledge_evolve` to merge new information into the existing chunk.
 
-## Tools (8 total)
+## Tools (27 total)
+
+### Domain-Knowledge Tools
 
 | Tool | Purpose |
 |------|---------|
@@ -382,6 +400,37 @@ When a duplicate is detected (similarity >= 0.88), the store returns the existin
 | `knowledge_delete` | Delete chunk (lifecycle guard: validated/promoted/canonical require reason) |
 | `knowledge_validate` | Confirm or refute knowledge (drives lifecycle) |
 | `knowledge_promote` | Graduate knowledge to higher lifecycle status |
+| `knowledge_briefing` | Domain overview briefing (summaries, open questions, stale knowledge) |
+| `knowledge_export` | Export graph as markdown/JSON grouped by domain/category/lifecycle |
+| `knowledge_ingest` | Chunk raw text into review candidates (does NOT auto-store) |
+
+### Operational-Learning Tools
+
+| Tool | Purpose |
+|------|---------|
+| `life_store` | Store an operational learning (coding gotcha/pattern/workaround); requires a `life:*` tag |
+| `life_feedback` | Report success/failure after applying a learning (adjusts score) |
+| `life_draft_skill` | Draft a Claude skill from high-score learnings in a domain |
+
+### Decision & Session-State Tools
+
+`decision_record` writes a **durable** decision into the Chunk table (category `decision`). The `state_*` tools operate on **volatile** working memory in the separate SessionState table (see [Session-State Subsystem](#session-state-subsystem)).
+
+| Tool | Purpose |
+|------|---------|
+| `decision_record` | Record a durable design decision into the Chunk table (category `decision`, dedup bypassed so iterative decisions each persist; optional `supersedes_id` forms lineage) |
+| `state_set_context` | Append current focus / next step / touched refs to the session's working context (append-only) |
+| `state_get_context` | Read back latest focus + recent trail (own session by default; empty `session_id` spans all project sessions) |
+| `state_save_plan` | Clone a `.md` plan file into local state as an immutable, versioned snapshot (v1 = original) |
+| `state_get_plan` | Retrieve a saved plan (active version by default, or a specific version); project-scoped |
+| `state_task_upsert` | Create/update a task with status (pending/in_progress/blocked/done/deferred) + `blocked_by`; optimistic `expected_version` |
+| `state_task_list` | List tasks filtered by status/session |
+| `state_checkpoint` | Fold current context + active plan + open tasks + recent decisions into one snapshot |
+| `state_resume` | Full project-scoped resume briefing (context, plan, open/blocked tasks, decisions, orphaned) — the "catch me up" tool |
+| `state_sessions` | List currently-connected sessions for this project (from the daemon registry) |
+| `state_projection` | Merged cross-session focus/task board across all live sessions |
+| `state_prune` | Surface (or `evict`) orphaned tasks/intentions untouched for N days (anti-orphaning) |
+| `state_compact` | Fold old active-context events into a summary snapshot to keep the stream bounded |
 
 
 ### knowledge_validate
@@ -455,7 +504,7 @@ Preserves confidence, validation_count, lifecycle, and other learning fields on 
 
 When `layer` is omitted, inferred from `category` in `store.ts:inferLayer()`:
 
-- `fact`, `rule` → `core-knowledge`
+- `fact`, `rule`, `decision` → `core-knowledge`
 - `insight`, `question` → `learning`
 - `workflow` → `procedural`
 
@@ -539,6 +588,7 @@ File: `~/.knowledge-graph/knowledge.json` (created by `knowledge-graph setup`)
 | `decayRates.insight` | 0.95 | 5% monthly decay |
 | `decayRates.question` | 0.90 | 10% monthly decay |
 | `decayRates.workflow` | 0.98 | 2% monthly decay |
+| `decayRates.decision` | 1.0 | No decay for decisions |
 
 ### Project Configuration (`.knowledge-graph/config.json`)
 
@@ -584,6 +634,13 @@ File: `~/.knowledge-graph/knowledge.json` (created by `knowledge-graph setup`)
 | Hypothesis initial confidence | 0.3 | `config.ts` |
 | Daemon idle timeout | 300s (5 min) | `project.ts` default |
 | Daemon startup timeout | 15s | `daemon-manager.ts` |
+| MCP tools exposed | 27 | `client.ts` |
+| Chunk categories | 6 (`fact` `rule` `insight` `question` `workflow` `decision`) | `types.ts` |
+| Session-state artifact types | 4 (`active_context` `task` `event` `plan`) | `types.ts` |
+| Task statuses | 5 (pending/in_progress/blocked/done/deferred) | `client.ts` zod |
+| State compaction keep-recent | 50 events/session | `daemon.ts` |
+| Orphan age cutoff | 7 days (default) | `state-prune.ts` / `state-checkpoint.ts` |
+| Checkpoint recent-decisions limit | 10 | `state-checkpoint.ts` |
 
 ### Storage Backends
 
@@ -597,6 +654,7 @@ Both backends implement the `IStorage` interface (`storage/interface.ts`). Backe
 - **Primary keys**: `Chunk.id` (STRING) — must be unique.
 - **Chunk defaults**: `layer` defaults to `'core-knowledge'`, `version` starts at 1, timestamps auto-set.
 - **Learning columns**: Added via ALTER TABLE migrations — `confidence`, `validation_count`, `refutation_count`, `last_validated_at`, `lifecycle`, `access_count`.
+- **SessionState table**: separate node table for volatile working memory. **No embedding, no vector index** → `updateSessionState()` uses cheap in-place `SET` (no delete+recreate workaround). Not synced.
 
 #### SurrealDB (`storage/surreal.ts`) — Opt-in
 
@@ -609,6 +667,7 @@ Both backends implement the `IStorage` interface (`storage/interface.ts`). Backe
 - **Reserved words**: `REQUIRES` is reserved in SurrealDB — mapped to `requires_rel` table internally.
 - **Relation tables**: 15 TYPE RELATION tables (FROM chunk TO chunk), mapped via `SURREAL_REL_TABLE`.
 - **KNN syntax**: `embedding <|K, COSINE|> $vec` with `vector::distance::knn()` for distance.
+- **SessionState table**: SCHEMAFULL `session_state` table for volatile working memory — no embedding, no vector index, direct `UPDATE`. Defined with `DEFINE ... IF NOT EXISTS`. Not synced.
 
 ## Key Files
 
@@ -632,6 +691,7 @@ Both backends implement the `IStorage` interface (`storage/interface.ts`). Backe
 | `src/engine/retriever.ts` | Hybrid search pipeline: vector + keyword + graph + confidence |
 | `src/engine/linker.ts` | Auto-linking + suggested relation matching |
 | `src/engine/confidence.ts` | Confidence scoring formulas + temporal decay |
+| `src/engine/projection.ts` | Cross-session focus/task board projection (`state_projection`) |
 | `src/tools/store.ts` | Store handler — dedup, learning defaults, proactive surfacing |
 | `src/tools/query.ts` | Query handler — delegates to retriever |
 | `src/tools/list.ts` | List handler — effective confidence with decay |
@@ -640,6 +700,14 @@ Both backends implement the `IStorage` interface (`storage/interface.ts`). Backe
 | `src/tools/promote.ts` | Promote handler — lifecycle graduation |
 | `src/tools/link.ts` | Link handler — create chunk→chunk edges |
 | `src/tools/delete.ts` | Delete handler — remove chunk + all edges |
+| `src/tools/decision.ts` | Decision-record handler — durable `decision` chunk, dedup bypassed |
+| `src/tools/state-context.ts` | `state_set_context` / `state_get_context` handlers |
+| `src/tools/state-plan.ts` | `state_save_plan` / `state_get_plan` handlers (immutable versioned clones) |
+| `src/tools/state-task.ts` | `state_task_upsert` / `state_task_list` handlers |
+| `src/tools/state-checkpoint.ts` | `state_checkpoint` / `state_resume` handlers (fold + resume briefing) |
+| `src/tools/state-prune.ts` | `state_prune` handler — anti-orphaning surface/evict |
+| `src/tools/state-compact.ts` | `state_compact` handler — fold old active-context events |
+| `src/tools/import-memory-bank.ts` | `parseDecisionLog()` — flat-file memory-bank → `decision` chunks (CLI) |
 
 | `src/dashboard/server.ts` | Dashboard HTTP server + SSE event streaming |
 | `src/dashboard/events.ts` | EventBus for pipeline step events |

@@ -38,6 +38,10 @@ function proxyTool(name, description, schema, methodName) {
 
 Zod schemas in `client.ts` validate input before forwarding. The daemon dispatches to the actual handler via `dispatchRpc()` in `daemon.ts`.
 
+27 tools are registered: 11 domain-knowledge (`knowledge_*`), 3 operational-learning (`life_*`), `decision_record`, and 12 session-state (`state_*`). See `docs/tools.md` for the full list.
+
+**Session identity**: `proxyTool()` threads a client-minted `session_id` (a per-process UUID, see [Session Registry](#session-registry)) into every RPC. A caller-supplied `session_id` in the tool params wins over the minted id (e.g. `state_get_context`/`state_get_plan` reading another session, or `''` to span all project sessions).
+
 ---
 
 ## CLI Commands
@@ -52,8 +56,9 @@ Zod schemas in `client.ts` validate input before forwarding. The daemon dispatch
 | `doctor` | Check Node version, Ollama, model, DB path, daemon, port |
 | `reset-db` | Delete the database (all chunks, edges, embeddings) |
 | `uninstall [--keep-data]` | Remove installed files, config, and MCP registration |
+| `import-memory-bank <path>` | Import a flat-file memory-bank (`decisionLog.md`) into the KG as `decision` chunks |
 
-Note: Running `knowledge-graph` with no command prints help text.
+Note: Running `knowledge-graph` with no command prints help text. `import-memory-bank` accepts either a directory (looks for `decisionLog.md` inside) or a file path directly; it parses `##`-heading decision sections via `parseDecisionLog()` in `src/tools/import-memory-bank.ts`.
 
 ### CLI Options
 
@@ -94,11 +99,12 @@ Priority: CLI flags > env vars > `knowledge.json` > hard defaults.
    ├─ Check daemon.pid file → detect zombie processes
    └─ If no valid daemon → fork() new daemon, poll for daemon.port file (15s timeout)
 4. clientMain(daemonUrl, projectId):
-   ├─ POST /rpc/connect to register with daemon
+   ├─ Mint a per-process session_id (UUID)
+   ├─ POST /rpc/connect { session_id } to register with daemon
    ├─ Create McpServer instance
-   ├─ Register all 8 tools via proxyTool() (with Zod schemas)
+   ├─ Register all 27 tools via proxyTool() (with Zod schemas; each threads session_id)
    ├─ Connect StdioServerTransport
-   └─ Register SIGINT/SIGTERM handlers
+   └─ Register SIGINT/SIGTERM handlers (SIGTERM POSTs /rpc/disconnect { session_id })
 ```
 
 ### Daemon startup (spawned by `daemon-manager.ts`)
@@ -114,7 +120,7 @@ Priority: CLI flags > env vars > `knowledge.json` > hard defaults.
 3. Create DashboardServer (hosts API routes + SSE)
 4. Register dashboard triggers for query, store, evolve, validate, promote
 5. Create HTTP server on `127.0.0.1` (port 0 = OS auto-assign, or set `daemon.port_range_start` in `.knowledge-graph/config.json`)
-   Endpoints: POST /rpc (tool dispatch), POST /rpc/connect, POST /rpc/disconnect, POST /rpc/shutdown, GET /health (returns { status, project_id, clients, uptime_ms }), all other routes → dashboard
+   Endpoints: POST /rpc (tool dispatch), POST /rpc/connect, POST /rpc/disconnect, POST /rpc/shutdown, GET /health (returns { status, project_id, clients, sessions[], uptime_ms, rpc_queue_depth, rpc_locked }), all other routes → dashboard
    All HTTP routes apply localhost-only origin checks (`127.0.0.1`, `localhost`, `::1`). POST routes use the shared request body reader in `src/http-utils.ts` with a 1 MB limit.
 6. Write daemon.port and daemon.pid files
 7. Start idle timer (auto-shutdown after configurable timeout, default 300s)
@@ -156,6 +162,19 @@ Triggered by `/rpc/shutdown`, SIGTERM, SIGINT, or idle timeout:
 ### Idle auto-shutdown
 
 The daemon starts an idle timer immediately on startup (before any client connects). On `/rpc/connect`, the timer is reset (cleared). On `/rpc/disconnect`, if no clients remain (`clientCount <= 0`), the timer restarts. If no client connects or reconnects before the timer expires (default 300s, configurable via `daemon.idle_timeout_ms` in `.knowledge-graph/config.json`), the daemon shuts itself down.
+
+---
+
+## Session Registry
+
+The daemon keeps a lightweight **in-memory** registry of live sessions, keyed on the client-minted `session_id` (an object of `{ connectedAt, lastSeen }` per session). It is not persisted — a client restart is a new session, and a daemon restart clears the registry.
+
+- **`POST /rpc/connect`** reads `session_id` from the body and records the session (`connectedAt`/`lastSeen` = now). A client with no `session_id` (older clients) falls back to an anonymous counter. Resets the idle timer.
+- **`POST /rpc/disconnect`** reads `session_id` and removes that session (or decrements the anonymous counter). Restarts the idle timer when no clients remain.
+- Every RPC advances the calling session's `lastSeen`.
+- **`state_sessions`** returns the registry as `{ sessions: [{ session_id, connectedAt, last_seen }] }`; **`GET /health`** reports the same list under `sessions[]`.
+
+The registry backs cross-session tools: `state_projection` and the `state_*` project-scoped reads work across all sessions of a project, while `state_get_context` defaults to the calling session.
 
 ---
 
