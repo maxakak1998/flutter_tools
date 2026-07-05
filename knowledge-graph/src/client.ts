@@ -365,7 +365,7 @@ export async function clientMain(daemonUrl: string, projectId: string): Promise<
     {
       title: z.string().optional().describe('Plan title to retrieve (defaults to the most recently saved plan)'),
       version: z.number().int().positive().optional().describe('Specific version to retrieve (1 = original); omit for the active/latest version'),
-      session_id: z.string().optional().describe('Session to read (defaults to your own; empty string spans all sessions of the project)'),
+      session_id: z.string().optional().describe("Project-scoped by default so a fresh session can read the original/current plan; pass another session's id to narrow to only that session's plans"),
     },
     'state_get_plan',
   );
@@ -395,6 +395,26 @@ export async function clientMain(daemonUrl: string, projectId: string): Promise<
       status: z.enum(['pending', 'in_progress', 'blocked', 'done']).optional().describe('Filter by status'),
     },
     'state_task_list',
+  );
+
+  // ============================================================
+  // Resume + checkpoint tools (fold current state into a resume packet)
+  // ============================================================
+
+  proxyTool(
+    'state_checkpoint',
+    'Generate a resume packet: folds current context + active plan + open tasks + recent decisions into one snapshot.',
+    {},
+    'state_checkpoint',
+  );
+
+  proxyTool(
+    'state_resume',
+    "Return the full resume briefing for the current project: last active context, active plan, open/blocked tasks, recent decisions — project-scoped so it works on a brand-new session. The 'catch me up' tool.",
+    {
+      since_days: z.number().int().positive().optional().describe('Only surface state touched within the last N days (default: all time)'),
+    },
+    'state_resume',
   );
 
   // ============================================================

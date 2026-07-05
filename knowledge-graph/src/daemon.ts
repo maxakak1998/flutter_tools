@@ -39,6 +39,7 @@ import { handleLifeDraftSkill } from './tools/life-draft-skill.js';
 import { handleStateSetContext, handleStateGetContext } from './tools/state-context.js';
 import { handleStateSavePlan, handleStateGetPlan } from './tools/state-plan.js';
 import { handleStateTaskUpsert, handleStateTaskList } from './tools/state-task.js';
+import { handleStateCheckpoint, handleStateResume } from './tools/state-checkpoint.js';
 import { createAutoExporter } from './sync/auto-export.js';
 import { migrateV1toV2 } from './sync/migrate.js';
 import { importAll, removeConflict } from './sync/import.js';
@@ -633,6 +634,25 @@ async function daemonMain(): Promise<void> {
             projectId ?? '',
             params.session_id,
             params.status,
+          );
+          break;
+        }
+
+        // Resume + checkpoint tools (fold current state into a resume packet)
+        case 'state_checkpoint': {
+          result = await handleStateCheckpoint(
+            storage,
+            params.session_id ?? '',
+            projectId ?? '',
+          );
+          break;
+        }
+        case 'state_resume': {
+          // Project-scoped: does NOT require session_id (works on a fresh session).
+          result = await handleStateResume(
+            storage,
+            projectId ?? '',
+            params.since_days,
           );
           break;
         }

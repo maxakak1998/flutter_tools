@@ -178,6 +178,13 @@ export async function handleStateSavePlan(
  * Returns the active (latest) plan by default, or a specific version.
  * version=1 returns the original plan. When title is omitted and multiple
  * plans exist, resolves the most recently created active plan.
+ *
+ * PROJECT-SCOPED by default (like state_resume): plans are project-level
+ * artifacts — save_plan computes versions and supersession project-wide with no
+ * session filter — so a fresh session (next day / new chat) can read back "the
+ * original plan" and "the current plan" without owning any plan rows itself.
+ * An explicit non-empty session_id narrows to that session's plans; an explicit
+ * empty string is also project-wide.
  */
 export async function handleStateGetPlan(
   storage: IStorage,
@@ -187,14 +194,21 @@ export async function handleStateGetPlan(
   version?: number,
   requestedSessionId?: string,
 ): Promise<StateGetPlanResult> {
-  // Session scope: explicit empty string = all sessions; undefined = caller's own; else the given id.
-  const targetSessionId = requestedSessionId !== undefined ? requestedSessionId : callerSessionId;
-  const scopeAllSessions = targetSessionId === '';
+  // Session scope: a specific non-empty session_id narrows to that session;
+  // otherwise (undefined, empty string, or the caller's own auto-injected id)
+  // the read spans ALL sessions of the project so cross-session catch-up works.
+  const narrowSession =
+    requestedSessionId !== undefined &&
+    requestedSessionId !== '' &&
+    requestedSessionId !== callerSessionId
+      ? requestedSessionId
+      : null;
+  const scopeAllSessions = narrowSession === null;
 
   const rows = await storage.listSessionState({
     project_id: projectId,
     artifact_type: ARTIFACT_TYPE,
-    ...(scopeAllSessions ? {} : { session_id: targetSessionId }),
+    ...(scopeAllSessions ? {} : { session_id: narrowSession }),
   });
 
   // Narrow to the requested title when provided.
@@ -203,7 +217,7 @@ export async function handleStateGetPlan(
 
   if (scoped.length === 0) {
     return {
-      session_id: scopeAllSessions ? null : targetSessionId,
+      session_id: scopeAllSessions ? null : narrowSession,
       title: normalizedTitle ?? null,
       requested_version: version ?? null,
       plan: null,
@@ -232,7 +246,7 @@ export async function handleStateGetPlan(
   }
 
   return {
-    session_id: scopeAllSessions ? null : targetSessionId,
+    session_id: scopeAllSessions ? null : narrowSession,
     title: versions[0]?.title ?? normalizedTitle ?? null,
     requested_version: version ?? null,
     plan: selected,

@@ -169,6 +169,7 @@ COMMANDS
   sync export        Full export to sync/ (--dry-run to preview)
   sync import        Delta import from sync/ files
   sync resolve <id> <action>  Resolve lifecycle conflict (keep-local|accept-remote)
+  import-memory-bank <path>   Import a flat-file memory-bank (decisionLog.md) into KG decisions
   prime              Output skill context for hook injection (SessionStart/PreCompact)
   context            Auto-query KG with user prompt (UserPromptSubmit hook)
   logs               View recent daemon logs (last 100 entries)
@@ -213,6 +214,7 @@ EXAMPLES
   knowledge-graph sync status             # Show sync state
   knowledge-graph sync export             # Full export to sync/
   knowledge-graph sync export --dry-run   # Preview export without writing
+  knowledge-graph import-memory-bank ./memory-bank   # Import decisionLog.md into KG
   knowledge-graph sync import             # Delta import from sync files
   knowledge-graph sync resolve abc12345 keep-local     # Keep local lifecycle
   knowledge-graph sync resolve abc12345 accept-remote  # Accept remote lifecycle
@@ -1287,6 +1289,132 @@ async function fetchDaemonBriefing(project: ProjectInfo): Promise<string> {
   }
 }
 
+/**
+ * Fetch the project-scoped resume packet from the running daemon.
+ * Returns a compact markdown block or empty string if daemon unavailable / empty.
+ * Non-blocking: 2s timeout on health, 3s on RPC. Silent on any failure.
+ * Project-scoped (no session_id) so it works on a brand-new session.
+ */
+async function fetchDaemonResume(project: ProjectInfo): Promise<string> {
+  try {
+    if (!existsSync(project.daemonPortFile)) return '';
+
+    const port = parseInt(readFileSync(project.daemonPortFile, 'utf-8').trim(), 10);
+    if (!(port > 0)) return '';
+
+    const url = `http://127.0.0.1:${port}`;
+
+    // Health check (2s timeout)
+    const healthRes = await fetch(`${url}/health`, { signal: AbortSignal.timeout(2000) });
+    const health = await healthRes.json() as { status: string; project_id: string };
+    if (health.status !== 'ok' || health.project_id !== project.projectId) return '';
+
+    // Fetch resume via JSON-RPC (3s timeout). Project-scoped — no session_id.
+    const rpcRes = await fetch(`${url}/rpc`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'state_resume',
+        params: { project_id: project.projectId },
+        id: 1,
+      }),
+      signal: AbortSignal.timeout(3000),
+    });
+    const rpcBody = await rpcRes.json() as { result?: ResumeData; error?: unknown };
+    if (!rpcBody.result) return '';
+
+    return formatCondensedResume(rpcBody.result);
+  } catch {
+    // Daemon not running, timeout, or any error — skip silently
+    return '';
+  }
+}
+
+/** Subset of StateResumeResult used for prime output formatting */
+interface ResumeData {
+  active_context: Array<{
+    focus: string;
+    next_step: string | null;
+    refs: string[];
+  }>;
+  open_tasks: Array<{
+    title: string;
+    status: string;
+    blocked_by: string[];
+  }>;
+  active_plans: Array<{
+    title: string;
+    version: number;
+    clone_path: string | null;
+  }>;
+  recent_decisions: Array<{
+    summary: string;
+    domain: string;
+  }>;
+}
+
+/** Format the resume packet as a compact, actionable markdown block. */
+function formatCondensedResume(data: ResumeData): string {
+  const { active_context, open_tasks, active_plans, recent_decisions } = data;
+
+  // Nothing to resume — stay silent so the prime output isn't cluttered.
+  if (
+    active_context.length === 0 &&
+    open_tasks.length === 0 &&
+    active_plans.length === 0 &&
+    recent_decisions.length === 0
+  ) {
+    return '';
+  }
+
+  const lines: string[] = [];
+  lines.push('## Session Resume — what you were doing');
+
+  // Active context focus (most actionable).
+  if (active_context.length > 0) {
+    const latest = active_context[0];
+    lines.push('');
+    lines.push(`**Focus:** ${latest.focus}`);
+    if (latest.next_step) lines.push(`**Next step:** ${latest.next_step}`);
+    if (latest.refs.length > 0) lines.push(`**Refs:** ${latest.refs.join(', ')}`);
+  }
+
+  // Active plan title + path.
+  if (active_plans.length > 0) {
+    lines.push('');
+    for (const p of active_plans.slice(0, 3)) {
+      const path = p.clone_path ? ` — ${p.clone_path}` : '';
+      lines.push(`**Plan:** ${p.title} (v${p.version})${path}`);
+    }
+  }
+
+  // Open task count + titles.
+  if (open_tasks.length > 0) {
+    const blockedCount = open_tasks.filter((t) => t.status === 'blocked').length;
+    lines.push('');
+    lines.push(`**${open_tasks.length} open task(s)**${blockedCount > 0 ? ` (${blockedCount} blocked)` : ''}:`);
+    for (const t of open_tasks.slice(0, 5)) {
+      const blocked = t.blocked_by.length > 0 ? ` [blocked_by: ${t.blocked_by.join(', ')}]` : '';
+      lines.push(`- [${t.status}] ${t.title}${blocked}`);
+    }
+    if (open_tasks.length > 5) {
+      lines.push(`- ... and ${open_tasks.length - 5} more (use state_task_list)`);
+    }
+  }
+
+  // Recent decision summaries.
+  if (recent_decisions.length > 0) {
+    lines.push('');
+    lines.push(`**Recent decisions:**`);
+    for (const d of recent_decisions.slice(0, 5)) {
+      lines.push(`- [${d.domain}] ${d.summary}`);
+    }
+  }
+
+  return lines.join('\n');
+}
+
 /** Subset of BriefingResult used for prime output formatting */
 interface BriefingData {
   domains: Array<{
@@ -1436,10 +1564,14 @@ If working on domain tasks:
       break;
   }
 
-  // Fetch live briefing from daemon (non-blocking, fast)
+  // Fetch live briefing + resume packet from daemon (non-blocking, fast)
   let briefingText = '';
+  let resumeText = '';
   if (project && (source === 'startup' || source === 'compact' || source === 'resume')) {
-    briefingText = await fetchDaemonBriefing(project);
+    [resumeText, briefingText] = await Promise.all([
+      fetchDaemonResume(project),
+      fetchDaemonBriefing(project),
+    ]);
   }
 
   // Build skill content
@@ -1447,14 +1579,16 @@ If working on domain tasks:
 
   let additionalContext: string;
   if (skillContent) {
-    // Assemble: header → briefing (if available) → skill guide
+    // Assemble: header → resume (most actionable) → briefing → skill guide
     const parts = [header];
+    if (resumeText) parts.push(resumeText);
     if (briefingText) parts.push(briefingText);
     parts.push(skillContent);
     additionalContext = parts.join('\n\n');
   } else {
     // Fallback: minimal context (same as old kg-session-start.sh)
     const parts = [header];
+    if (resumeText) parts.push(resumeText);
     if (briefingText) parts.push(briefingText);
     parts.push('Use knowledge_list to check existing domains before storing new knowledge. Domain knowledge (WHY) → knowledge_store. Coding tips (HOW) → life_store.');
     additionalContext = parts.join('\n\n');
@@ -2189,6 +2323,127 @@ async function runSyncResolve(parsed: ParsedArgs): Promise<void> {
 }
 
 // ============================================================
+// Import memory-bank command (Module M7 — migration importer)
+// ============================================================
+
+/**
+ * Ingest an existing flat-file memory-bank so adopting the KG feature isn't a
+ * cold start. Parses a decisionLog.md into individual decision entries and
+ * records each via the `decision_record` RPC (Chunk table, dedup bypassed).
+ *
+ * Runs through the daemon — it owns the DB lock. If no daemon is running, one is
+ * spawned via ensureDaemon() so the import can proceed unattended.
+ */
+async function runImportMemoryBank(parsed: ParsedArgs): Promise<void> {
+  const project = discoverProject(process.cwd());
+  if (!project) {
+    console.error('No .knowledge-graph/ found. Run `kg init` first.');
+    process.exit(1);
+  }
+
+  const rawPath = parsed.positionalArgs.join(' ').trim();
+  if (!rawPath) {
+    console.error('Usage: kg import-memory-bank <path-to-memory-bank-dir-or-decisionLog.md>');
+    process.exit(1);
+  }
+
+  // 1. Resolve the target file: directory → look for decisionLog.md; file → use it.
+  const resolved = rawPath.startsWith('/') ? rawPath : join(process.cwd(), rawPath);
+  if (!existsSync(resolved)) {
+    console.error(`Path not found: ${resolved}`);
+    process.exit(1);
+  }
+
+  let decisionFile = resolved;
+  if (statSync(resolved).isDirectory()) {
+    const candidate = join(resolved, 'decisionLog.md');
+    if (!existsSync(candidate)) {
+      console.error(`No decisionLog.md found in directory: ${resolved}`);
+      console.error('Point at the file directly if it has a different name.');
+      process.exit(1);
+    }
+    decisionFile = candidate;
+  }
+
+  // 2. Parse markdown into decision entries.
+  const { parseDecisionLog } = await import('./tools/import-memory-bank.js');
+  let markdown: string;
+  try {
+    markdown = readFileSync(decisionFile, 'utf-8');
+  } catch (e) {
+    console.error(`Failed to read ${decisionFile}: ${e instanceof Error ? e.message : String(e)}`);
+    process.exit(1);
+  }
+
+  const decisions = parseDecisionLog(markdown);
+  if (decisions.length === 0) {
+    console.log(`No decision sections (## headings) found in ${decisionFile}. Nothing to import.`);
+    return;
+  }
+
+  console.log(`Parsed ${decisions.length} decision(s) from ${decisionFile}.`);
+
+  // 3. Ensure the daemon is running (it owns the DB) — spawn if needed.
+  let daemonUrl = await getDaemonUrl(project);
+  if (!daemonUrl) {
+    console.log('Daemon not running — starting it...');
+    updateLastAccessed(project.projectId);
+    const config = resolveConfig(parsed);
+    config.db.path = project.dbPath;
+    try {
+      daemonUrl = await ensureDaemon(project, config);
+    } catch (e) {
+      console.error(`Failed to start daemon: ${e instanceof Error ? e.message : String(e)}`);
+      console.error('Start it manually with `kg serve` and retry.');
+      process.exit(1);
+    }
+  }
+
+  // 4. Record each decision via JSON-RPC. Per-call timeout accounts for embedding latency.
+  let imported = 0;
+  let skipped = 0;
+  for (const d of decisions) {
+    try {
+      const res = await fetch(`${daemonUrl}/rpc`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          method: 'decision_record',
+          params: {
+            content: d.content,
+            summary: d.title.slice(0, 200),
+            domain: 'imported-decisions',
+            keywords: d.keywords,
+            importance: 'medium',
+          },
+          id: imported + skipped + 1,
+        }),
+        signal: AbortSignal.timeout(30000),
+      });
+      const body = await res.json() as { result?: { id: string }; error?: { message: string } };
+      if (body.error) {
+        skipped++;
+        console.error(`  skipped: "${d.title.slice(0, 60)}" — ${body.error.message}`);
+      } else {
+        imported++;
+      }
+    } catch (e) {
+      skipped++;
+      console.error(`  skipped: "${d.title.slice(0, 60)}" — ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  // 5. Summary.
+  const bold = '\x1b[1m';
+  const reset = '\x1b[0m';
+  console.log('');
+  console.log(`${bold}Imported ${imported} decisions from ${decisionFile}${reset}` + (skipped > 0 ? ` (${skipped} skipped)` : ''));
+  console.log('Note: re-running will create duplicates; decisions bypass dedup by design.');
+  console.log('');
+}
+
+// ============================================================
 // Main dispatcher
 // ============================================================
 
@@ -2326,6 +2581,13 @@ switch (parsed.command) {
 
   case 'context':
     runContext().catch(() => process.exit(0));
+    break;
+
+  case 'import-memory-bank':
+    runImportMemoryBank(parsed).catch((e) => {
+      console.error('Import failed:', e);
+      process.exit(1);
+    });
     break;
 
   case 'sync': {
