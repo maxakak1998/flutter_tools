@@ -200,22 +200,25 @@ export async function handleStateCheckpoint(
   let contextRows = await storage.listSessionState({
     project_id: projectId,
     artifact_type: CONTEXT_ARTIFACT,
+    active: true, // compacted/evicted rows excluded from the live stream
     ...(sessionId ? { session_id: sessionId } : {}),
   });
   if (contextRows.length === 0 && sessionId) {
     contextRows = await storage.listSessionState({
       project_id: projectId,
       artifact_type: CONTEXT_ARTIFACT,
+      active: true,
     });
   }
   const active_context = byNewest(contextRows, (r) => r.created_at)
     .slice(0, DEFAULT_CONTEXT_LIMIT)
     .map(contextRowToEntry);
 
-  // open_tasks — all tasks for the session, filtered to status != 'done'.
+  // open_tasks — all live tasks for the session, filtered to status != 'done'.
   const taskRows = await storage.listSessionState({
     project_id: projectId,
     artifact_type: TASK_ARTIFACT,
+    active: true, // evicted orphans are out of the ledger
     ...(sessionId ? { session_id: sessionId } : {}),
   });
   const open_tasks = byNewest(taskRows.filter((r) => r.status !== 'done'), (r) => r.updated_at)
@@ -350,20 +353,22 @@ export async function handleStateResume(
       ? new Date(Date.now() - sinceDays * 24 * 60 * 60 * 1000).toISOString()
       : null;
 
-  // active_context — across ALL sessions of the project, newest first.
+  // active_context — across ALL sessions of the project, newest first (live only).
   const contextRows = await storage.listSessionState({
     project_id: projectId,
     artifact_type: CONTEXT_ARTIFACT,
+    active: true,
   });
   const active_context = byNewest(contextRows, (r) => r.created_at)
     .filter((r) => (sinceIso ? r.created_at >= sinceIso : true))
     .slice(0, DEFAULT_CONTEXT_LIMIT)
     .map(contextRowToEntry);
 
-  // open_tasks — all non-done tasks across the project.
+  // open_tasks — all non-done live tasks across the project.
   const taskRows = await storage.listSessionState({
     project_id: projectId,
     artifact_type: TASK_ARTIFACT,
+    active: true,
   });
   const open_tasks = byNewest(taskRows.filter((r) => r.status !== 'done'), (r) => r.updated_at)
     .map(taskRowToEntry);

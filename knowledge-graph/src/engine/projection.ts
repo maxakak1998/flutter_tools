@@ -112,10 +112,11 @@ export async function buildProjection(storage: IStorage, projectId: string): Pro
     return cached.view;
   }
 
-  // active_context — across ALL sessions of the project.
+  // active_context — across ALL sessions of the project (live rows only).
   const contextRows = await storage.listSessionState({
     project_id: projectId,
     artifact_type: CONTEXT_ARTIFACT,
+    active: true,
   });
 
   // Fold to one latest focus per session_id.
@@ -145,10 +146,11 @@ export async function buildProjection(storage: IStorage, projectId: string): Pro
   }
   const edited_files = Array.from(fileSet).sort();
 
-  // open_tasks — all non-done tasks across the project, newest first.
+  // open_tasks — all non-done tasks across the project, newest first (live only).
   const taskRows = await storage.listSessionState({
     project_id: projectId,
     artifact_type: TASK_ARTIFACT,
+    active: true,
   });
   const open_tasks: ProjectionTask[] = byNewest(
     taskRows.filter((r) => r.status !== 'done'),

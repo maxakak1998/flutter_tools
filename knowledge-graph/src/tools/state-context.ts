@@ -130,6 +130,7 @@ export async function handleStateGetContext(
   const rows = await storage.listSessionState({
     project_id: projectId,
     artifact_type: ARTIFACT_TYPE,
+    active: true, // compacted/evicted rows are out of the live stream
     ...(scopeAllSessions ? {} : { session_id: targetSessionId }),
   });
 

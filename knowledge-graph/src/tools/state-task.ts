@@ -225,6 +225,7 @@ export async function handleStateTaskList(
   const rows = await storage.listSessionState({
     project_id: projectId,
     artifact_type: ARTIFACT_TYPE,
+    active: true, // evicted/soft-deleted rows are out of the working ledger
     ...(sessionId ? { session_id: sessionId } : {}),
     ...(status ? { status } : {}),
   });

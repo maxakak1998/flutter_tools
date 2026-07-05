@@ -26,6 +26,7 @@ import { handleStateTaskUpsert, casUpdateSessionState } from '../src/tools/state
 import { buildProjection } from '../src/engine/projection.js';
 import { handleStatePrune } from '../src/tools/state-prune.js';
 import { handleStateResume } from '../src/tools/state-checkpoint.js';
+import { handleStateTaskList } from '../src/tools/state-task.js';
 import { handleStateCompact } from '../src/tools/state-compact.js';
 import { randomUUID } from 'crypto';
 import { join } from 'path';
@@ -240,6 +241,19 @@ async function verifyPruneAndOrphan(): Promise<void> {
 
   const orphanAfterEvict = await storage.getSessionState(orphanId);
   assert(!!orphanAfterEvict && orphanAfterEvict.active === false, 'evicted orphan is now active=false');
+
+  // Regression guard: an evicted row MUST disappear from the working ledger
+  // read surfaces — not just carry active=false at the storage layer.
+  const ledgerAfterEvict = await handleStateTaskList(storage, PROJ_PRUNE);
+  assert(
+    !ledgerAfterEvict.tasks.some((t) => t.id === orphanId),
+    'evicted orphan no longer surfaces in state_task_list',
+  );
+  const resumeAfterEvict = await handleStateResume(storage, PROJ_PRUNE);
+  assert(
+    !resumeAfterEvict.open_tasks.some((t) => t.id === orphanId),
+    'evicted orphan no longer surfaces in state_resume open_tasks',
+  );
 
   // Controls remain live and untouched.
   const pinnedAfter = await storage.getSessionState(pinnedId);
