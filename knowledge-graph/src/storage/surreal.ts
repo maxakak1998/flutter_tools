@@ -765,6 +765,10 @@ export class SurrealStorage implements IStorage {
       }
     }
 
+    // version is caller-controlled (plan-version number in M4 + CAS counter in M9)
+    // and is NOT auto-incremented here; a plain update preserves it. See the kuzu
+    // backend for the rationale kept in sync.
+
     await db.query(
       `UPDATE type::thing('session_state', $id) SET ${setClauses.join(', ')}`,
       params,

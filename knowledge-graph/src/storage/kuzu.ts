@@ -980,6 +980,10 @@ export class KuzuStorage implements IStorage {
       params.refs = updates.refs;
     }
     if (updates.version !== undefined) {
+      // version is caller-controlled: it doubles as the plan-version number (M4)
+      // and the CAS counter (M9, via casUpdateSessionState). NOT auto-incremented
+      // here — a plain update preserves the existing version. CAS soundness
+      // therefore requires all writers on a contended row to use expected_version.
       setClauses.push('s.version = $version');
       params.version = updates.version;
     }

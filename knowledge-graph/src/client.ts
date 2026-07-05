@@ -376,23 +376,24 @@ export async function clientMain(daemonUrl: string, projectId: string): Promise<
 
   proxyTool(
     'state_task_upsert',
-    'Create or update a task/subtask with a status (pending/in_progress/blocked/done) and optional blocked_by references. Use to track what is done, left, or blocked across sessions.',
+    "Create or update a task/subtask with a status (pending/in_progress/blocked/done/deferred) and optional blocked_by references. Use to track what is done, left, or blocked across sessions. Set status='deferred' for someday/maybe work you are intentionally NOT doing now — deferred tasks are prime candidates for orphaning, so they surface in state_prune and resume nudges.",
     {
       task_id: z.string().optional().describe('Task id to update in place; omit to create a new task'),
       title: z.string().min(1).describe('Task title'),
-      status: z.enum(['pending', 'in_progress', 'blocked', 'done']).describe('Task status'),
+      status: z.enum(['pending', 'in_progress', 'blocked', 'done', 'deferred']).describe("Task status. 'deferred' = someday/maybe (intentionally parked)."),
       blocked_by: z.array(z.string()).optional().describe('Task ids this task is blocked by'),
       note: z.string().optional().describe('Optional free-text note'),
+      expected_version: z.number().int().positive().optional().describe('Optimistic concurrency: the version you last read. When provided on an update, the write only succeeds if the task is still at this version; otherwise it fails with a conflict instead of clobbering a concurrent update.'),
     },
     'state_task_upsert',
   );
 
   proxyTool(
     'state_task_list',
-    "List tasks filtered by status/session. Answers 'what is the current status?' — what is done, in progress, blocked, or pending.",
+    "List tasks filtered by status/session. Answers 'what is the current status?' — what is done, in progress, blocked, pending, or deferred.",
     {
       session_id: z.string().optional().describe('Session to list (defaults to all sessions of the project)'),
-      status: z.enum(['pending', 'in_progress', 'blocked', 'done']).optional().describe('Filter by status'),
+      status: z.enum(['pending', 'in_progress', 'blocked', 'done', 'deferred']).optional().describe('Filter by status'),
     },
     'state_task_list',
   );
@@ -415,6 +416,47 @@ export async function clientMain(daemonUrl: string, projectId: string): Promise<
       since_days: z.number().int().positive().optional().describe('Only surface state touched within the last N days (default: all time)'),
     },
     'state_resume',
+  );
+
+  proxyTool(
+    'state_sessions',
+    'List the currently-connected sessions for this project (id, connected time, last activity). Use to see what other sessions are live.',
+    {},
+    'state_sessions',
+  );
+
+  proxyTool(
+    'state_projection',
+    'View a merged, cross-session focus/task board across all live sessions of this project — what every concurrent session is currently working on.',
+    {
+      project_id: z.string().optional().describe('Project to view (defaults to the current project)'),
+    },
+    'state_projection',
+  );
+
+  // ============================================================
+  // Anti-orphaning GC (surface / evict forgotten intentions)
+  // ============================================================
+
+  proxyTool(
+    'state_prune',
+    "Surface or evict orphaned tasks/intentions not touched in N days (things created 'to do later' that nobody returned to). Answers 'what did I mean to do but forgot?' and keeps the ledger from becoming a graveyard.",
+    {
+      project_id: z.string().optional().describe('Project to prune (defaults to the current project)'),
+      older_than_days: z.number().int().positive().optional().describe('Age cutoff — rows not touched in this many days are orphaned (default 7)'),
+      mode: z.enum(['surface', 'evict']).optional().describe("'surface' (default) reports orphans without modifying; 'evict' soft-evicts them (active=false)"),
+    },
+    'state_prune',
+  );
+
+  proxyTool(
+    'state_compact',
+    'Fold old active-context events into a summary snapshot to keep the working-memory stream bounded. Pinned rows, plans, tasks, and the newest N events are never compacted.',
+    {
+      project_id: z.string().optional().describe('Project to compact (defaults to the current project)'),
+      keep_recent: z.number().int().positive().optional().describe('Newest N active-context/event rows per session to always keep verbatim (default 50)'),
+    },
+    'state_compact',
   );
 
   // ============================================================

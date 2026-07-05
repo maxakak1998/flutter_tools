@@ -25,6 +25,39 @@ export interface StateTaskListResult {
 const ARTIFACT_TYPE = 'task';
 const BLOCKED_BY_PREFIX = 'blocked_by:';
 
+/**
+ * Optimistic concurrency (CAS) update for a single SessionState row.
+ *
+ * Reads the current row, compares its `version` against `expectedVersion`, and
+ * ONLY writes when they match — bumping version to `expectedVersion + 1`. If the
+ * row was changed by another session since the caller read it (version drift),
+ * this THROWS a clear conflict error instead of silently clobbering the newer
+ * write. Use for the rare single-valued shared cell where two concurrent
+ * sessions might race on the same row.
+ */
+export async function casUpdateSessionState(
+  storage: IStorage,
+  id: string,
+  expectedVersion: number,
+  updates: Partial<SessionStateRow>,
+): Promise<SessionStateRow> {
+  const current = await storage.getSessionState(id);
+  if (!current) {
+    throw new Error(`casUpdateSessionState: row not found: ${id}`);
+  }
+  if (current.version !== expectedVersion) {
+    throw new Error(
+      `Version conflict on ${id}: expected version ${expectedVersion} but current is ${current.version}. ` +
+        `Another session updated this row concurrently — re-read the latest state and retry with the new version.`,
+    );
+  }
+  // version is a controlled field here — force it to expectedVersion+1 regardless
+  // of any version the caller may have passed in `updates`.
+  await storage.updateSessionState(id, { ...updates, version: expectedVersion + 1 });
+  const updated = await storage.getSessionState(id);
+  return updated ?? ({ ...current, ...updates, version: expectedVersion + 1 } as SessionStateRow);
+}
+
 /** Parse the JSON body of a task row (tolerant of malformed bodies). */
 function parseTaskBody(body: string): { note: string | null } {
   if (!body) return { note: null };
@@ -88,6 +121,7 @@ export async function handleStateTaskUpsert(
   taskId?: string,
   blockedBy?: string[],
   note?: string,
+  expectedVersion?: number,
 ): Promise<StateTaskEntry> {
   const now = new Date().toISOString();
 
@@ -115,6 +149,16 @@ export async function handleStateTaskUpsert(
     // blocked_by only overwrites when explicitly provided.
     if (blockedBy !== undefined) {
       updates.refs = encodeBlockedBy(blockedBy);
+    }
+
+    // CAS path: when the caller supplies expected_version, route through the
+    // optimistic-concurrency helper so a concurrent write surfaces a conflict
+    // instead of being clobbered. Default (no expected_version) keeps the
+    // existing last-write-wins in-place SET behavior.
+    if (expectedVersion !== undefined) {
+      const casRow = await casUpdateSessionState(storage, taskId, expectedVersion, updates);
+      log('state_task_upsert: CAS updated task', taskId, '->', status, 'v', casRow.version);
+      return rowToEntry(casRow);
     }
 
     await storage.updateSessionState(taskId, updates);

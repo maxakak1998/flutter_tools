@@ -1,5 +1,6 @@
 import { IStorage } from '../storage/interface.js';
 import { SessionStateRow, StoredChunk, log } from '../types.js';
+import { findOrphans, rowToOrphan, OrphanEntry } from './state-prune.js';
 
 // === Result types ===
 
@@ -56,6 +57,12 @@ export interface StateResumeResult {
   open_tasks: ResumeTaskEntry[];
   active_plans: ResumePlanEntry[];
   recent_decisions: ResumeDecisionEntry[];
+  /**
+   * Anti-orphaning nudge — tasks/intentions untouched for > ORPHAN_AGE_DAYS,
+   * not done, not pinned, still active. Kept SEPARATE from open_tasks so every
+   * resume flags forgotten work without burying it in the normal task list.
+   */
+  orphaned: OrphanEntry[];
   markdown: string;
 }
 
@@ -67,6 +74,10 @@ const BLOCKED_BY_PREFIX = 'blocked_by:';
 // Defaults for how much to fold in.
 const DEFAULT_CONTEXT_LIMIT = 5;
 const DEFAULT_DECISION_LIMIT = 10;
+
+// Anti-orphaning nudge threshold — intentions untouched this long are surfaced
+// as "forgotten" on every resume.
+const ORPHAN_AGE_DAYS = 7;
 
 // === Body / refs parsers (tolerant of malformed payloads) ===
 
@@ -246,6 +257,7 @@ function formatResumeMarkdown(
   open_tasks: ResumeTaskEntry[],
   active_plans: ResumePlanEntry[],
   recent_decisions: ResumeDecisionEntry[],
+  orphaned: OrphanEntry[],
 ): string {
   const lines: string[] = [];
   lines.push('# Session Resume — what you were doing');
@@ -291,6 +303,17 @@ function formatResumeMarkdown(
     for (const t of open_tasks) {
       const blocked = t.blocked_by.length > 0 ? ` [blocked_by: ${t.blocked_by.join(', ')}]` : '';
       lines.push(`- [${t.status}] ${t.title}${blocked}`);
+    }
+  }
+
+  // Orphaned intentions — forgotten work nudge (kept visually distinct).
+  lines.push('');
+  lines.push(`## Orphaned — you meant to do these but forgot (${orphaned.length})`);
+  if (orphaned.length === 0) {
+    lines.push(`_Nothing untouched for more than ${ORPHAN_AGE_DAYS} days._`);
+  } else {
+    for (const o of orphaned) {
+      lines.push(`- [${o.status}] ${o.title} (untouched ${o.age_days}d)`);
     }
   }
 
@@ -356,9 +379,15 @@ export async function handleStateResume(
   // recent_decisions — durable Chunk-table decisions, newest first.
   const recent_decisions = await fetchRecentDecisions(storage, DEFAULT_DECISION_LIMIT);
 
-  const markdown = formatResumeMarkdown(active_context, open_tasks, active_plans, recent_decisions);
+  // orphaned — anti-orphaning nudge: tasks/intentions untouched for > ORPHAN_AGE_DAYS,
+  // not done, not pinned, still active. Separate from open_tasks so it stands out.
+  const nowMs = Date.now();
+  const orphanRows = await findOrphans(storage, projectId, ORPHAN_AGE_DAYS, nowMs);
+  const orphaned = orphanRows.map((r) => rowToOrphan(r, nowMs));
 
-  log('state_resume: project', projectId, '->', active_context.length, 'context,', open_tasks.length, 'open tasks,', active_plans.length, 'plans,', recent_decisions.length, 'decisions');
+  const markdown = formatResumeMarkdown(active_context, open_tasks, active_plans, recent_decisions, orphaned);
+
+  log('state_resume: project', projectId, '->', active_context.length, 'context,', open_tasks.length, 'open tasks,', active_plans.length, 'plans,', recent_decisions.length, 'decisions,', orphaned.length, 'orphaned');
 
   return {
     project_id: projectId,
@@ -367,6 +396,7 @@ export async function handleStateResume(
     open_tasks,
     active_plans,
     recent_decisions,
+    orphaned,
     markdown,
   };
 }

@@ -40,11 +40,18 @@ import { handleStateSetContext, handleStateGetContext } from './tools/state-cont
 import { handleStateSavePlan, handleStateGetPlan } from './tools/state-plan.js';
 import { handleStateTaskUpsert, handleStateTaskList } from './tools/state-task.js';
 import { handleStateCheckpoint, handleStateResume } from './tools/state-checkpoint.js';
+import { handleStatePrune } from './tools/state-prune.js';
+import { handleStateCompact } from './tools/state-compact.js';
+import { handleStateProjection, invalidateProjection } from './engine/projection.js';
 import { createAutoExporter } from './sync/auto-export.js';
 import { migrateV1toV2 } from './sync/migrate.js';
 import { importAll, removeConflict } from './sync/import.js';
 import { formatConflictReport } from './sync/merge.js';
 import type { SyncManifest } from './sync/format.js';
+
+// Default newest-N active_context/event rows per session protected from
+// compaction. Opportunistic compaction only triggers past 2x this window.
+const STATE_COMPACT_KEEP_RECENT = 50;
 
 // ============================================================
 // Main daemon entry point
@@ -316,7 +323,10 @@ async function daemonMain(): Promise<void> {
   // Lightweight session registry keyed on the client-minted session_id.
   // `anonymousCount` preserves backward-compat with older clients that connect
   // without a session_id (they fall back to plain counter behavior).
-  const sessions = new Map<string, { connectedAt: number }>();
+  // `connectedAt` is set on /rpc/connect; `lastSeen` advances on every RPC the
+  // session makes, so other modules (e.g. M9 projection) can distinguish a live,
+  // active session from one that connected long ago and went quiet.
+  const sessions = new Map<string, { connectedAt: number; lastSeen: number }>();
   let anonymousCount = 0;
   let idleTimer: ReturnType<typeof setTimeout> | null = null;
   const startTime = Date.now();
@@ -324,6 +334,15 @@ async function daemonMain(): Promise<void> {
   // Total active clients = tracked sessions + anonymous (session-less) clients.
   function activeClientCount(): number {
     return sessions.size + anonymousCount;
+  }
+
+  // Snapshot of the currently-connected sessions for lifecycle queries.
+  function listActiveSessions(): Array<{ session_id: string; connectedAt: number; last_seen: number }> {
+    return Array.from(sessions.entries()).map(([session_id, info]) => ({
+      session_id,
+      connectedAt: info.connectedAt,
+      last_seen: info.lastSeen,
+    }));
   }
 
   function resetIdleTimer() {
@@ -398,6 +417,13 @@ async function daemonMain(): Promise<void> {
   }
 
   async function dispatchRpc(method: string, params: any): Promise<unknown> {
+    // Refresh session liveness: any RPC from a tracked session advances last_seen.
+    // Cheap in-memory update — lets listActiveSessions() report recent activity.
+    if (params?.session_id) {
+      const tracked = sessions.get(params.session_id);
+      if (tracked) tracked.lastSeen = Date.now();
+    }
+
     // Auto-import sync files before knowledge tool calls
     if (method.startsWith('knowledge_')) {
       await autoImportIfStale();
@@ -566,15 +592,40 @@ async function daemonMain(): Promise<void> {
 
         // Session state tools (active_context — append-only working focus)
         case 'state_set_context': {
+          const setSessionId = params.session_id ?? '';
           result = await handleStateSetContext(
             storage,
-            params.session_id ?? '',
+            setSessionId,
             projectId ?? '',
             params.focus,
             params.next_step,
             params.refs,
             params.note,
           );
+          invalidateProjection(projectId ?? '');
+          // Opportunistic compaction: keep the append-only active_context stream
+          // bounded without a separate cron. Only fires when this session is FAR
+          // over the keepRecent window (> 2x), so it is rare and cheap. Runs
+          // synchronously under the RPC mutex; guards live inside handleStateCompact
+          // (pinned/plan/task-immune, newest-keepRecent-anchored).
+          try {
+            const activeContextRows = await storage.listSessionState({
+              project_id: projectId ?? '',
+              artifact_type: 'active_context',
+              active: true,
+              ...(setSessionId ? { session_id: setSessionId } : {}),
+            });
+            if (activeContextRows.length > STATE_COMPACT_KEEP_RECENT * 2) {
+              const compacted = await handleStateCompact(storage, projectId ?? '', {
+                keepRecent: STATE_COMPACT_KEEP_RECENT,
+                ...(setSessionId ? { sessionId: setSessionId } : {}),
+              });
+              if (compacted.compacted_count > 0) invalidateProjection(projectId ?? '');
+            }
+          } catch (compactErr) {
+            // Compaction is best-effort — never fail the write it piggybacks on.
+            log('state_set_context: opportunistic compaction failed:', compactErr);
+          }
           break;
         }
         case 'state_get_context': {
@@ -600,6 +651,7 @@ async function daemonMain(): Promise<void> {
             params.title,
             params.ts,
           );
+          invalidateProjection(projectId ?? '');
           break;
         }
         case 'state_get_plan': {
@@ -625,7 +677,9 @@ async function daemonMain(): Promise<void> {
             params.task_id,
             params.blocked_by,
             params.note,
+            params.expected_version,
           );
+          invalidateProjection(projectId ?? '');
           break;
         }
         case 'state_task_list': {
@@ -654,6 +708,45 @@ async function daemonMain(): Promise<void> {
             projectId ?? '',
             params.since_days,
           );
+          break;
+        }
+
+        // Session registry lifecycle — who is live right now (in-memory, not stored)
+        case 'state_sessions': {
+          result = { sessions: listActiveSessions() };
+          break;
+        }
+
+        // Cross-session projection — merged focus/task board across all sessions
+        case 'state_projection': {
+          result = await handleStateProjection(
+            storage,
+            params.project_id || projectId || '',
+          );
+          break;
+        }
+
+        // Anti-orphaning GC — surface / evict forgotten tasks & intentions
+        case 'state_prune': {
+          result = await handleStatePrune(
+            storage,
+            params.project_id || projectId || '',
+            params.older_than_days,
+            params.mode,
+          );
+          if (params.mode === 'evict') invalidateProjection(params.project_id || projectId || '');
+          break;
+        }
+
+        // Auto-compaction — fold old active-context events into a summary snapshot
+        case 'state_compact': {
+          const compactProjectId = params.project_id || projectId || '';
+          result = await handleStateCompact(storage, compactProjectId, {
+            keepRecent: params.keep_recent ?? STATE_COMPACT_KEEP_RECENT,
+          });
+          if ((result as { compacted_count: number }).compacted_count > 0) {
+            invalidateProjection(compactProjectId);
+          }
           break;
         }
 
@@ -801,7 +894,8 @@ async function daemonMain(): Promise<void> {
       } else if (path === '/rpc/connect' && req.method === 'POST') {
         const sessionId = await readSessionId(req);
         if (sessionId) {
-          sessions.set(sessionId, { connectedAt: Date.now() });
+          const now = Date.now();
+          sessions.set(sessionId, { connectedAt: now, lastSeen: now });
         } else {
           // Backward-compat: older client with no session_id
           anonymousCount++;
@@ -829,7 +923,7 @@ async function daemonMain(): Promise<void> {
           status: 'ok',
           project_id: projectId,
           clients: activeClientCount(),
-          sessions: Array.from(sessions.keys()),
+          sessions: listActiveSessions(),
           uptime_ms: Date.now() - startTime,
           rpc_queue_depth: rpcMutex.pending,
           rpc_locked: rpcMutex.isLocked,
