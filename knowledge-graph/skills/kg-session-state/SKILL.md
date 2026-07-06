@@ -1,6 +1,6 @@
 ---
 name: kg-session-state
-description: "Track volatile working memory so an AI can resume across sessions. Use for 'what was I doing', 'where did I leave off', saving a plan, tracking task status, or catching up a fresh/post-compaction session. Triggers: session start, plan finalized, task status change, 'resume', 'catch me up', 'what's the status', 'what was the original plan'."
+description: "Track volatile working memory so an AI can resume across sessions. Capture PROACTIVELY (without being asked) whenever you start/pivot a task, break work into steps, change a task's status, finalize a plan, or wrap up — see the Autonomous capture rules. Also use for 'what was I doing', 'where did I leave off', 'update state', 'save progress', 'resume', 'catch me up', 'what's the status', 'what was the original plan'. Triggers: session start, task begin/pivot, multi-item request, plan finalized, task status change, before pause/compaction."
 ---
 
 # Session State — Working Memory Across Sessions
@@ -20,6 +20,25 @@ Volatile per-work-session scratch: current focus, plans, tasks, checkpoints. Sto
 - `decision_record` when you commit to a design choice — goes to the durable Chunk graph with SUPERSEDES lineage (bypasses dedup, so iterative near-identical decisions each persist).
 
 **At boundaries (before a long pause / compaction):** `state_checkpoint` folds everything into a resume packet.
+
+## Autonomous capture rules (record WITHOUT being asked)
+
+Do not wait for the user to say "save state". Capture proactively at these exact moments — one tool call per trigger, no exploratory retries:
+
+| WHEN (trigger) | DO (exactly one call) |
+|---|---|
+| You begin a task, or pivot to a different focus/file | `state_set_context` {focus, next_step, refs} |
+| You break work into steps, OR the user gives a multi-item request | `state_task_upsert` once per item (status `pending`; the one you start now → `in_progress`) |
+| A task changes state (start / finish / get blocked / park) | `state_task_upsert` {task_id, status} — update in place, do NOT create a new row |
+| You finalize a plan `.md` (e.g. after ExitPlanMode) | `state_save_plan` {source_path} |
+| You commit to a design choice with a rationale | `decision_record` |
+| Before a long pause, before compaction, or when wrapping up | `state_checkpoint` |
+
+**Anti-dithering rules (avoid the "called 4 times" thrash):**
+- "update state" / "save progress" (vague) = `state_set_context` with your current focus, THEN `state_task_upsert` for each open task IF the ledger is behind. Do not probe with repeated reads first — write what you know.
+- Check the ledger with ONE `state_task_list` only if you are unsure what already exists; otherwise upsert directly.
+- One focus per `state_set_context`. Don't split a single focus into multiple calls.
+- Never mix knowledge into these: a business rule is `knowledge_store`, a coding gotcha is `life_store`, a decision is `decision_record` — none of those are `state_*`.
 
 ## Answering the classic questions
 - "What did I do recently?" → `state_get_context` or `state_resume`.
