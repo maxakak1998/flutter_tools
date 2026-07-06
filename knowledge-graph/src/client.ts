@@ -335,7 +335,7 @@ export async function clientMain(daemonUrl: string, projectId: string): Promise<
 
   proxyTool(
     'state_get_context',
-    "Read back your current working context: latest focus, recent actions, next step. Use at session start or after compaction to answer 'what was I doing?'.",
+    "READ one session's focus trail (not tasks/plans/decisions). Returns latest focus + recent actions + next step for a single session. Use when you only need 'what was THIS session doing?'. For a full cross-session catch-up, use state_resume instead.",
     {
       session_id: z.string().optional().describe("Session to read (defaults to your own; empty string spans all sessions of the project)"),
       limit: z.number().int().positive().optional().describe('Max trail entries to return (default 10)'),
@@ -404,14 +404,14 @@ export async function clientMain(daemonUrl: string, projectId: string): Promise<
 
   proxyTool(
     'state_checkpoint',
-    'Generate a resume packet: folds current context + active plan + open tasks + recent decisions into one snapshot.',
+    "WRITE-a-snapshot at a boundary. Folds THIS session's current context + active plan + open tasks + recent decisions into one packet. Call before a long pause or before compaction to bookmark where you are. To READ back at the start of a new session, use state_resume (project-scoped) — do not use checkpoint to read.",
     {},
     'state_checkpoint',
   );
 
   proxyTool(
     'state_resume',
-    "Return the full resume briefing for the current project: last active context, active plan, open/blocked tasks, recent decisions — project-scoped so it works on a brand-new session. The 'catch me up' tool.",
+    "THE 'catch me up' TOOL — start here at the beginning of any session. READ the full project-wide briefing: last active context, active plan, open/blocked tasks, orphaned intentions, recent decisions. Project-scoped, so it works on a brand-new session with no prior history. Prefer this over state_get_context (single-session) and state_checkpoint (write).",
     {
       since_days: z.number().int().positive().optional().describe('Only surface state touched within the last N days (default: all time)'),
     },
@@ -440,13 +440,22 @@ export async function clientMain(daemonUrl: string, projectId: string): Promise<
 
   proxyTool(
     'state_prune',
-    "Surface or evict orphaned tasks/intentions not touched in N days (things created 'to do later' that nobody returned to). Answers 'what did I mean to do but forgot?' and keeps the ledger from becoming a graveyard.",
+    "READ-ONLY. Report orphaned tasks/intentions not touched in N days (things created 'to do later' that nobody returned to). Answers 'what did I mean to do but forgot?'. Does NOT modify anything — to clear them, call state_evict_orphans separately.",
     {
-      project_id: z.string().optional().describe('Project to prune (defaults to the current project)'),
+      project_id: z.string().optional().describe('Project to inspect (defaults to the current project)'),
       older_than_days: z.number().int().positive().optional().describe('Age cutoff — rows not touched in this many days are orphaned (default 7)'),
-      mode: z.enum(['surface', 'evict']).optional().describe("'surface' (default) reports orphans without modifying; 'evict' soft-evicts them (active=false)"),
     },
     'state_prune',
+  );
+
+  proxyTool(
+    'state_evict_orphans',
+    'DESTRUCTIVE (soft). Soft-evict (active=false) the orphaned tasks/intentions that state_prune surfaces, dropping them out of the working ledger. Pinned rows and plans are never touched. Call state_prune first to review, then this to clear.',
+    {
+      project_id: z.string().optional().describe('Project to evict from (defaults to the current project)'),
+      older_than_days: z.number().int().positive().optional().describe('Age cutoff — rows not touched in this many days are evicted (default 7)'),
+    },
+    'state_evict_orphans',
   );
 
   proxyTool(

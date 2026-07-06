@@ -24,7 +24,7 @@ import { SessionStateRow } from '../src/types.js';
 import { handleStateSetContext } from '../src/tools/state-context.js';
 import { handleStateTaskUpsert, casUpdateSessionState } from '../src/tools/state-task.js';
 import { buildProjection } from '../src/engine/projection.js';
-import { handleStatePrune } from '../src/tools/state-prune.js';
+import { handleStatePrune, handleStateEvictOrphans } from '../src/tools/state-prune.js';
 import { handleStateResume } from '../src/tools/state-checkpoint.js';
 import { handleStateTaskList } from '../src/tools/state-task.js';
 import { handleStateCompact } from '../src/tools/state-compact.js';
@@ -209,9 +209,9 @@ async function verifyPruneAndOrphan(): Promise<void> {
     status: 'pending', title: 'Fresh task', pinned: false, active: true,
   });
 
-  // --- surface mode: read-only, returns only the orphan ---
-  const surfaced = await handleStatePrune(storage, PROJ_PRUNE, undefined, 'surface');
-  assert(surfaced.mode === 'surface', 'surface mode reported', surfaced.mode);
+  // --- state_prune: read-only, returns only the orphan ---
+  const surfaced = await handleStatePrune(storage, PROJ_PRUNE, undefined);
+  assert(surfaced.mode === 'surface', 'prune reports surface mode', surfaced.mode);
   assert(surfaced.evicted_count === 0, 'surface mode evicts nothing', String(surfaced.evicted_count));
   assert(surfaced.orphaned.length === 1, 'exactly one orphan surfaced', `got ${surfaced.orphaned.length}`);
   assert(surfaced.orphaned[0].id === orphanId, 'the surfaced orphan is the backdated task', surfaced.orphaned[0].id);
@@ -233,9 +233,9 @@ async function verifyPruneAndOrphan(): Promise<void> {
   assert(!resumeOrphanIds.has(pinnedId) && !resumeOrphanIds.has(doneId) && !resumeOrphanIds.has(planId), 'resume orphaned excludes pinned/done/plan rows');
   assert(!resume.open_tasks.some((t) => t.id === orphanId) || resume.orphaned.some((o) => o.id === orphanId), 'orphan is tracked distinctly in the orphaned section');
 
-  // --- evict mode: soft-evicts only the orphan ---
-  const evicted = await handleStatePrune(storage, PROJ_PRUNE, undefined, 'evict');
-  assert(evicted.mode === 'evict', 'evict mode reported', evicted.mode);
+  // --- state_evict_orphans: soft-evicts only the orphan (separate destructive tool) ---
+  const evicted = await handleStateEvictOrphans(storage, PROJ_PRUNE, undefined);
+  assert(evicted.mode === 'evict', 'evict_orphans reports evict mode', evicted.mode);
   assert(evicted.evicted_count === 1, 'evict mode soft-evicts exactly the one orphan', String(evicted.evicted_count));
   assert(evicted.orphaned[0].id === orphanId, 'the evicted row is the orphan', evicted.orphaned[0].id);
 

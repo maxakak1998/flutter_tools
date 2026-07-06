@@ -26,7 +26,7 @@ Volatile per-work-session scratch: current focus, plans, tasks, checkpoints. Sto
 - "What's the status?" → `state_task_list` or `state_resume` open tasks.
 - "What was the original plan?" → `state_get_plan` with `version: 1`.
 - "What plan am I on now?" → `state_get_plan` (active).
-- "What did I mean to do but forgot?" → `state_prune` (surface mode) — or watch the "orphaned" section in `state_resume`.
+- "What did I mean to do but forgot?" → `state_prune` (read-only) — or watch the "orphaned" section in `state_resume`. To actually clear them, call `state_evict_orphans` (destructive) afterward.
 
 ## Concurrency + hygiene
 - Multiple sessions run against one daemon (serialized, no torn writes). Each session's context is its own; `state_projection` shows what all live sessions are focused on.

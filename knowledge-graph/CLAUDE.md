@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Is
 
-A **domain knowledge** graph MCP server for Claude Code. Stores **business logic, domain rules, and workflow rationale** as atomic nodes with semantic embeddings (Ollama/bge-m3) in a graph database. This is NOT a code index — it captures the "why" behind code (business constraints, domain decisions, cross-feature relationships) that Claude infers by reasoning across code, docs, and user context. Supports two storage backends: **KuzuDB** (default) and **SurrealDB** (embedded mode). Features confidence scoring, lifecycle management, temporal decay, validation/refutation, and proactive surfacing. It also runs a **session-state subsystem** (volatile working memory: context, plans, tasks, checkpoints) alongside the durable knowledge graph. Exposes 27 tools via JSON-RPC.
+A **domain knowledge** graph MCP server for Claude Code. Stores **business logic, domain rules, and workflow rationale** as atomic nodes with semantic embeddings (Ollama/bge-m3) in a graph database. This is NOT a code index — it captures the "why" behind code (business constraints, domain decisions, cross-feature relationships) that Claude infers by reasoning across code, docs, and user context. Supports two storage backends: **KuzuDB** (default) and **SurrealDB** (embedded mode). Features confidence scoring, lifecycle management, temporal decay, validation/refutation, and proactive surfacing. It also runs a **session-state subsystem** (volatile working memory: context, plans, tasks, checkpoints) alongside the durable knowledge graph. Exposes 28 tools via JSON-RPC.
 
 ### Content Boundary: Domain Knowledge vs Code Knowledge
 
@@ -189,7 +189,7 @@ Alongside the durable knowledge graph, the daemon runs a **session-state subsyst
 - **Decisions live in `Chunk`, not here** — `decision_record` writes a durable, queryable `decision` chunk (dedup bypassed, optional `SUPERSEDES` lineage). Only the volatile artifacts above live in `SessionState`.
 - **Session identity + registry** — the client mints a per-process `session_id` (UUID) on startup and threads it into every RPC (a caller-supplied `session_id` wins, e.g. `''` to span all project sessions). The daemon keeps an **in-memory** registry keyed on `session_id` (`connectedAt`/`lastSeen`), populated on `/rpc/connect` and reported by `state_sessions` and `GET /health`'s `sessions[]`. The registry is not persisted — a client restart is a new session.
 - **Resume via `kg prime`** — the `prime` CLI hook (SessionStart/PreCompact) surfaces the resume briefing so a fresh or post-compaction session can catch up. `state_resume` is project-scoped and works on a brand-new session id.
-- **Anti-orphaning** — `state_prune` surfaces (or `evict`s) tasks/intentions untouched past a cutoff (default 7 days); `deferred` tasks are prime orphan candidates. Plans and pinned rows are never orphaned.
+- **Anti-orphaning** — `state_prune` (read-only) surfaces tasks/intentions untouched past a cutoff (default 7 days); `state_evict_orphans` clears them; `deferred` tasks are prime orphan candidates. Plans and pinned rows are never orphaned.
 - **Compaction** — `state_compact` folds old `active_context` events into a summary snapshot to keep the stream bounded; pinned rows, plans, tasks, and the newest N events per session are never compacted. `state_set_context` also opportunistically compacts when a session runs far over the keep-recent window.
 
 ### Graph Schema
@@ -386,7 +386,7 @@ Before storing, the system checks for semantic duplicates:
 
 When a duplicate is detected (similarity >= 0.88), the store returns the existing chunk ID with `duplicate_of`, `similarity`, `existing_content`, `existing_summary`, and `action_hint` fields. No new chunk is created. The hint suggests using `knowledge_evolve` to merge new information into the existing chunk.
 
-## Tools (27 total)
+## Tools (28 total)
 
 ### Domain-Knowledge Tools
 
@@ -429,7 +429,8 @@ When a duplicate is detected (similarity >= 0.88), the store returns the existin
 | `state_resume` | Full project-scoped resume briefing (context, plan, open/blocked tasks, decisions, orphaned) — the "catch me up" tool |
 | `state_sessions` | List currently-connected sessions for this project (from the daemon registry) |
 | `state_projection` | Merged cross-session focus/task board across all live sessions |
-| `state_prune` | Surface (or `evict`) orphaned tasks/intentions untouched for N days (anti-orphaning) |
+| `state_prune` | READ-ONLY: report orphaned tasks/intentions untouched for N days |
+| `state_evict_orphans` | DESTRUCTIVE: soft-evict the orphans state_prune surfaces |
 | `state_compact` | Fold old active-context events into a summary snapshot to keep the stream bounded |
 
 
@@ -705,7 +706,7 @@ Both backends implement the `IStorage` interface (`storage/interface.ts`). Backe
 | `src/tools/state-plan.ts` | `state_save_plan` / `state_get_plan` handlers (immutable versioned clones) |
 | `src/tools/state-task.ts` | `state_task_upsert` / `state_task_list` handlers |
 | `src/tools/state-checkpoint.ts` | `state_checkpoint` / `state_resume` handlers (fold + resume briefing) |
-| `src/tools/state-prune.ts` | `state_prune` handler — anti-orphaning surface/evict |
+| `src/tools/state-prune.ts` | `state_prune` (surface) + `state_evict_orphans` (evict) handlers — anti-orphaning |
 | `src/tools/state-compact.ts` | `state_compact` handler — fold old active-context events |
 | `src/tools/import-memory-bank.ts` | `parseDecisionLog()` — flat-file memory-bank → `decision` chunks (CLI) |
 

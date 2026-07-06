@@ -98,53 +98,69 @@ export async function findOrphans(
   return orphans.sort((a, b) => (a.last_touched_at < b.last_touched_at ? 1 : a.last_touched_at > b.last_touched_at ? -1 : 0));
 }
 
+/** Resolve a positive integer day cutoff, falling back to the default. */
+function resolveDays(olderThanDays?: number): number {
+  return olderThanDays !== undefined && Number.isFinite(olderThanDays) && olderThanDays > 0
+    ? Math.floor(olderThanDays)
+    : DEFAULT_OLDER_THAN_DAYS;
+}
+
 /**
- * state_prune handler.
+ * state_prune handler — READ-ONLY.
  *
- * Anti-orphaning GC. Finds working-state intentions (tasks + events) that
+ * Anti-orphaning surface. Finds working-state intentions (tasks + events) that
  * nobody has touched in `older_than_days` and are still live, unpinned, and
- * unfinished — the classic "created to do later, then forgotten" garbage.
- *
- * - mode 'surface' (default): reports the orphans WITHOUT modifying anything, so
- *   the user is nudged about forgotten work.
- * - mode 'evict': soft-evicts each orphan (active=false) so it drops out of the
- *   working ledger, and reports what was evicted. NEVER touches pinned rows or
- *   plan rows (they are excluded from the candidate set entirely).
+ * unfinished — the classic "created to do later, then forgotten" garbage —
+ * and REPORTS them WITHOUT modifying anything. To actually clear them, the
+ * agent must make a separate, explicit call to state_evict_orphans. Splitting
+ * read (surface) from write (evict) keeps a "what did I forget?" query from
+ * ever mutating state by accident.
  */
 export async function handleStatePrune(
   storage: IStorage,
   projectId: string,
   olderThanDays?: number,
-  mode?: 'surface' | 'evict',
 ): Promise<StatePruneResult> {
   const nowMs = Date.now();
-  const resolvedDays =
-    olderThanDays !== undefined && Number.isFinite(olderThanDays) && olderThanDays > 0
-      ? Math.floor(olderThanDays)
-      : DEFAULT_OLDER_THAN_DAYS;
-  const resolvedMode: 'surface' | 'evict' = mode === 'evict' ? 'evict' : 'surface';
+  const resolvedDays = resolveDays(olderThanDays);
   const cutoffIso = new Date(nowMs - resolvedDays * 24 * 60 * 60 * 1000).toISOString();
 
   const orphanRows = await findOrphans(storage, projectId, resolvedDays, nowMs);
+  const orphaned = orphanRows.map((r) => rowToOrphan(r, nowMs));
+  log('state_prune: surfaced', orphaned.length, 'orphans (>', resolvedDays, 'days) in', projectId);
+  return {
+    project_id: projectId,
+    mode: 'surface',
+    older_than_days: resolvedDays,
+    cutoff: cutoffIso,
+    orphaned,
+    evicted_count: 0,
+    message:
+      orphaned.length === 0
+        ? `No orphans — nothing untouched for more than ${resolvedDays} days.`
+        : `${orphaned.length} orphaned intention(s) untouched for >${resolvedDays} days. You meant to do these but forgot. Re-touch (update status) to keep, or call state_evict_orphans to clear them.`,
+  };
+}
 
-  if (resolvedMode === 'surface') {
-    const orphaned = orphanRows.map((r) => rowToOrphan(r, nowMs));
-    log('state_prune: surfaced', orphaned.length, 'orphans (>', resolvedDays, 'days) in', projectId);
-    return {
-      project_id: projectId,
-      mode: 'surface',
-      older_than_days: resolvedDays,
-      cutoff: cutoffIso,
-      orphaned,
-      evicted_count: 0,
-      message:
-        orphaned.length === 0
-          ? `No orphans — nothing untouched for more than ${resolvedDays} days.`
-          : `${orphaned.length} orphaned intention(s) untouched for >${resolvedDays} days. You meant to do these but forgot. Re-touch (update status) to keep, or run state_prune with mode='evict' to clear them.`,
-    };
-  }
+/**
+ * state_evict_orphans handler — DESTRUCTIVE (soft).
+ *
+ * Soft-evicts (active=false) every orphan older than `older_than_days` so it
+ * drops out of the working ledger, and reports what was evicted. NEVER touches
+ * pinned rows or plan rows (they are excluded from the candidate set entirely).
+ * This is the write counterpart to the read-only state_prune — the agent should
+ * surface with state_prune first, then evict deliberately.
+ */
+export async function handleStateEvictOrphans(
+  storage: IStorage,
+  projectId: string,
+  olderThanDays?: number,
+): Promise<StatePruneResult> {
+  const nowMs = Date.now();
+  const resolvedDays = resolveDays(olderThanDays);
+  const cutoffIso = new Date(nowMs - resolvedDays * 24 * 60 * 60 * 1000).toISOString();
 
-  // --- evict mode: soft-evict each orphan (active=false) ---
+  const orphanRows = await findOrphans(storage, projectId, resolvedDays, nowMs);
   const now = new Date(nowMs).toISOString();
   const evicted: OrphanEntry[] = [];
   for (const row of orphanRows) {
@@ -152,8 +168,7 @@ export async function handleStatePrune(
     evicted.push(rowToOrphan(row, nowMs));
   }
 
-  log('state_prune: evicted', evicted.length, 'orphans (>', resolvedDays, 'days) in', projectId);
-
+  log('state_evict_orphans: evicted', evicted.length, 'orphans (>', resolvedDays, 'days) in', projectId);
   return {
     project_id: projectId,
     mode: 'evict',

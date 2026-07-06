@@ -40,7 +40,7 @@ import { handleStateSetContext, handleStateGetContext } from './tools/state-cont
 import { handleStateSavePlan, handleStateGetPlan } from './tools/state-plan.js';
 import { handleStateTaskUpsert, handleStateTaskList } from './tools/state-task.js';
 import { handleStateCheckpoint, handleStateResume } from './tools/state-checkpoint.js';
-import { handleStatePrune } from './tools/state-prune.js';
+import { handleStatePrune, handleStateEvictOrphans } from './tools/state-prune.js';
 import { handleStateCompact } from './tools/state-compact.js';
 import { handleStateProjection, invalidateProjection } from './engine/projection.js';
 import { createAutoExporter } from './sync/auto-export.js';
@@ -727,14 +727,27 @@ async function daemonMain(): Promise<void> {
         }
 
         // Anti-orphaning GC — surface / evict forgotten tasks & intentions
+        // Anti-orphaning — READ-ONLY surface of forgotten intentions.
         case 'state_prune': {
           result = await handleStatePrune(
             storage,
             params.project_id || projectId || '',
             params.older_than_days,
-            params.mode,
           );
-          if (params.mode === 'evict') invalidateProjection(params.project_id || projectId || '');
+          break;
+        }
+
+        // Anti-orphaning — DESTRUCTIVE soft-evict of orphans.
+        case 'state_evict_orphans': {
+          const evictProjectId = params.project_id || projectId || '';
+          result = await handleStateEvictOrphans(
+            storage,
+            evictProjectId,
+            params.older_than_days,
+          );
+          if ((result as { evicted_count: number }).evicted_count > 0) {
+            invalidateProjection(evictProjectId);
+          }
           break;
         }
 

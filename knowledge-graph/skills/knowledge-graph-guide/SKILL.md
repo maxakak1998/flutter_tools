@@ -51,7 +51,8 @@ description: "Hub skill for Knowledge Graph MCP tools. Use when starting KG work
 | `state_task_upsert` / `state_task_list` | Task ledger: status pending/in_progress/blocked/done/deferred |
 | `state_checkpoint` / `state_resume` | Fold state into a resume packet / project-scoped "catch me up" |
 | `state_projection` | Cross-session focus board (what other live sessions are doing) |
-| `state_prune` | Surface/evict orphaned tasks untouched >N days |
+| `state_prune` | READ-ONLY: report orphaned tasks untouched >N days |
+| `state_evict_orphans` | DESTRUCTIVE: soft-evict the orphans state_prune surfaces |
 | `state_compact` | Fold old context events to bound the stream |
 | `state_sessions` | List currently-connected sessions |
 | `decision_record` | Durable design decision → Chunk (queryable, SUPERSEDES lineage, bypasses dedup) |

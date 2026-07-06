@@ -1,6 +1,6 @@
 # MCP Tool Reference
 
-27 tools exposed to Claude via JSON-RPC over stdio, in four groups: domain-knowledge, operational-learning, decision-record, and session-state.
+28 tools exposed to Claude via JSON-RPC over stdio, in four groups: domain-knowledge, operational-learning, decision-record, and session-state.
 
 ---
 
@@ -45,10 +45,11 @@
 | 23 | `state_resume` | Resume briefing | Project-scoped "catch me up" (works on a fresh session) |
 | 24 | `state_sessions` | List live sessions | See what other sessions are connected |
 | 25 | `state_projection` | Cross-session board | Merged focus/task view across all live sessions |
-| 26 | `state_prune` | Anti-orphaning GC | Surface/evict forgotten tasks untouched for N days |
-| 27 | `state_compact` | Bound the stream | Fold old active-context events into a summary |
+| 26 | `state_prune` | Anti-orphaning GC | READ-ONLY report of forgotten tasks untouched for N days |
+| 27 | `state_evict_orphans` | Anti-orphaning GC | DESTRUCTIVE soft-evict of surfaced orphans |
+| 28 | `state_compact` | Bound the stream | Fold old active-context events into a summary |
 
-Tools 1-8 are documented in full below; 9-14 predate this reference. The new decision & session-state tools (15-27) are documented in the [Decision & Session-State Tools](#decision--session-state-tools-detail) section.
+Tools 1-8 are documented in full below; 9-14 predate this reference. The new decision & session-state tools (15-28) are documented in the [Decision & Session-State Tools](#decision--session-state-tools-detail) section.
 
 ---
 
@@ -409,15 +410,25 @@ Merged cross-session focus/task board across all live sessions of the project.
 
 ### state_prune
 
-Surface or evict orphaned tasks/intentions not touched in N days (anti-orphaning GC). Plans and pinned rows are never orphaned.
+READ-ONLY. Report orphaned tasks/intentions not touched in N days (anti-orphaning GC). Does not modify anything — call `state_evict_orphans` to clear them. Plans and pinned rows are never orphaned.
 
 | Param | Type | Required | Description |
 |-------|------|----------|-------------|
-| `project_id` | string | no | Project to prune (defaults to current) |
+| `project_id` | string | no | Project to inspect (defaults to current) |
 | `older_than_days` | number | no | Age cutoff (default 7) |
-| `mode` | enum | no | `surface` (default, report-only) or `evict` (soft-evict, `active=false`) |
 
-**Returns**: `{ project_id, mode, older_than_days, cutoff, orphaned[], evicted_count?, message }`.
+**Returns**: `{ project_id, mode: 'surface', older_than_days, cutoff, orphaned[], evicted_count: 0, message }`.
+
+### state_evict_orphans
+
+DESTRUCTIVE (soft). Soft-evict (`active=false`) the orphans that `state_prune` surfaces, dropping them out of the working ledger. Pinned rows and plans are never touched.
+
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `project_id` | string | no | Project to evict from (defaults to current) |
+| `older_than_days` | number | no | Age cutoff (default 7) |
+
+**Returns**: `{ project_id, mode: 'evict', older_than_days, cutoff, orphaned[], evicted_count, message }`.
 
 ### state_compact
 
