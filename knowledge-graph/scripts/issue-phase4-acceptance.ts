@@ -88,8 +88,8 @@ async function main() {
     let show = await rpc('issue_show', { issue_ref: issue.issue_ref });
     assert(show.linked.some((l: any) => l.id === dec.id), 'decision linked to issue via auto-link', `${show.linked.length} linked`);
 
-    console.error('\n📋 Step 5: close the issue — knowledge is kept');
-    await rpc('issue_update', { issue_ref: issue.issue_ref, status: 'closed' });
+    console.error('\n📋 Step 5: close the issue (issue_close) — knowledge is kept');
+    await rpc('issue_close', { issue_ref: issue.issue_ref });
     const list = await rpc('issue_list', {});
     assert(!list.some((i: any) => i.issue_ref === issue.issue_ref), 'closed issue hidden from default list');
     show = await rpc('issue_show', { issue_ref: issue.issue_ref });

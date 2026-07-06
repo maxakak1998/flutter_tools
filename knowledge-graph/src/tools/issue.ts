@@ -187,6 +187,37 @@ export async function handleIssueUpdate(
 }
 
 // ============================================================
+// issue_close — dedicated close action (strong semantic verb, split from update)
+// ============================================================
+
+/**
+ * Close an issue. A distinct tool from issue_update because "close" is a
+ * high-frequency, strong-semantic action — the AI should reach for `issue_close`
+ * to finish work, not remember to pass status:'closed' to a generic updater.
+ * Closing HIDES the issue from default lists but PRESERVES its whole linked graph.
+ * Idempotent: closing an already-closed issue is a no-op success.
+ */
+export async function handleIssueClose(
+  storage: IStorage,
+  args: { issue_ref: string; expected_version?: number },
+): Promise<{ issue_ref: string; status: string; version: number; already_closed: boolean }> {
+  const issue = await findByRef(storage, args.issue_ref);
+  if (!issue) throw new Error(`Issue not found: ${args.issue_ref}`);
+
+  if (issue.issue_status === 'closed') {
+    return { issue_ref: args.issue_ref, status: 'closed', version: issue.version, already_closed: true };
+  }
+
+  const updated = await handleIssueUpdate(storage, {
+    issue_ref: args.issue_ref,
+    status: 'closed',
+    expected_version: args.expected_version,
+  });
+  log('Closed issue:', args.issue_ref);
+  return { issue_ref: args.issue_ref, status: updated.status, version: updated.version, already_closed: false };
+}
+
+// ============================================================
 // issue_list — filter by status/priority, hide closed by default
 // ============================================================
 

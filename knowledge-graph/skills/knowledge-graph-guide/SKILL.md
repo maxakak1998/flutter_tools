@@ -62,7 +62,8 @@ description: "Hub skill for Knowledge Graph MCP tools. Use when starting KG work
 | Tool | Purpose |
 |------|---------|
 | `issue_create` | Create a durable, team-synced issue with a short ref (e.g. `upcozm-a3f9`) |
-| `issue_update` | Change status (open/in_progress/blocked/closed) / priority (p0-p3) / blocked_by; optimistic CAS |
+| `issue_update` | Change priority (p0-p3) / blocked_by / status among open/in_progress/blocked; optimistic CAS |
+| `issue_close` | Close a done issue (dedicated verb; hides from lists but keeps the linked graph; idempotent) |
 | `issue_list` | List issues (hides closed by default), priority-sorted |
 | `issue_ready` | Ready-to-work: open issues whose blockers are all closed (like `bd ready`) |
 | `issue_show` | One issue + its linked decisions/insights/knowledge (closed-loop payoff) |

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Is
 
-A **domain knowledge** graph MCP server for Claude Code. Stores **business logic, domain rules, and workflow rationale** as atomic nodes with semantic embeddings (Ollama/bge-m3) in a graph database. This is NOT a code index — it captures the "why" behind code (business constraints, domain decisions, cross-feature relationships) that Claude infers by reasoning across code, docs, and user context. Supports two storage backends: **KuzuDB** (default) and **SurrealDB** (embedded mode). Features confidence scoring, lifecycle management, temporal decay, validation/refutation, and proactive surfacing. It also runs a **session-state subsystem** (volatile working memory: context, plans, tasks, checkpoints) and a **kg beads issue tracker** (bugs/tickets as first-class graph nodes that replace the external `beads` tool) alongside the durable knowledge graph. Exposes 36 tools via JSON-RPC.
+A **domain knowledge** graph MCP server for Claude Code. Stores **business logic, domain rules, and workflow rationale** as atomic nodes with semantic embeddings (Ollama/bge-m3) in a graph database. This is NOT a code index — it captures the "why" behind code (business constraints, domain decisions, cross-feature relationships) that Claude infers by reasoning across code, docs, and user context. Supports two storage backends: **KuzuDB** (default) and **SurrealDB** (embedded mode). Features confidence scoring, lifecycle management, temporal decay, validation/refutation, and proactive surfacing. It also runs a **session-state subsystem** (volatile working memory: context, plans, tasks, checkpoints) and a **kg beads issue tracker** (bugs/tickets as first-class graph nodes that replace the external `beads` tool) alongside the durable knowledge graph. Exposes 37 tools via JSON-RPC.
 
 ### Content Boundary: Domain Knowledge vs Code Knowledge
 
@@ -636,9 +636,9 @@ File: `~/.knowledge-graph/knowledge.json` (created by `knowledge-graph setup`)
 | Hypothesis initial confidence | 0.3 | `config.ts` |
 | Daemon idle timeout | 300s (5 min) | `project.ts` default |
 | Daemon startup timeout | 15s | `daemon-manager.ts` |
-| MCP tools exposed | 36 | `client.ts` |
+| MCP tools exposed | 37 | `client.ts` |
 | Chunk categories | 7 (`fact` `rule` `insight` `question` `workflow` `decision` `issue`) | `types.ts` |
-| Issue tools (kg beads) | 8 (`issue_create` `issue_update` `issue_list` `issue_ready` `issue_show` `issue_link` `issue_orphans` `issue_stale`) | `tools/issue.ts` |
+| Issue tools (kg beads) | 9 (`issue_create` `issue_update` `issue_close` `issue_list` `issue_ready` `issue_show` `issue_link` `issue_orphans` `issue_stale`) | `tools/issue.ts` |
 | Session-state artifact types | 4 (`active_context` `task` `event` `plan`) | `types.ts` |
 | Task statuses | 5 (pending/in_progress/blocked/done/deferred) | `client.ts` zod |
 | State compaction keep-recent | 50 events/session | `daemon.ts` |

@@ -28,7 +28,7 @@ Litmus: **issue = "must DO"; memory = "where am I"; chunk = "what I KNOW/DECIDED
 2. state_set_context {current_issue: "upcozm-a3f9"}   → anchor this session to it
 3. work → decision_record / knowledge_store / life_store
         → each chunk AUTO-LINKS back to upcozm-a3f9 (because the session is anchored)
-4. issue_update {status: "closed"}          → closed, but the graph is kept
+4. issue_close upcozm-a3f9                  → closed, but the graph is kept
 5. later:  issue_show upcozm-a3f9           → the bug + why we fixed it + what we learned + who
 ```
 
@@ -41,7 +41,8 @@ The anchor (`current_issue`) is the thread stitching memory + chunks back to the
 | User reports a bug / asks to track work | `issue_create` — but only on user request/confirmation, never speculative "resolve later" |
 | You start working an issue | `state_set_context {current_issue: <ref>}` — anchor so chunks auto-link |
 | You commit to a fix decision while working | `decision_record` (auto-links to the anchored issue) |
-| Status changes (start/block/finish) | `issue_update {status}` — update in place, do NOT create a new issue |
+| Status changes (start/block) | `issue_update {status}` — update in place, do NOT create a new issue |
+| Work is done | `issue_close <ref>` — dedicated close verb (not issue_update) |
 | "What can I pick up?" | `issue_ready` (open issues with no open blockers) |
 | "What have we forgotten?" | `issue_stale` (open issues untouched > N days) |
 | A decision/insight wasn't linked to its issue | `issue_orphans` → `issue_link` |

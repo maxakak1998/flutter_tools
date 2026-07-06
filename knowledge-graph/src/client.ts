@@ -562,15 +562,25 @@ export async function clientMain(
 
   proxyTool(
     'issue_update',
-    'Update an issue\'s status (open/in_progress/blocked/closed), priority (p0-p3), or blocked_by list. Closing an issue hides it from default lists but PRESERVES the whole knowledge graph linked to it. Pass expected_version for optimistic concurrency (rejects on stale writes).',
+    "Update an in-progress issue's priority (p0-p3), blocked_by list, or status among open/in_progress/blocked. To CLOSE an issue, prefer the dedicated issue_close tool. Pass expected_version for optimistic concurrency (rejects on stale writes).",
     {
       issue_ref: z.string().describe('The short issue ref to update'),
-      status: issueStatusEnum.optional().describe('New status'),
+      status: issueStatusEnum.optional().describe('New status (use issue_close to close)'),
       priority: issuePriorityEnum.optional().describe('New priority'),
       blocked_by: z.array(z.string()).optional().describe('Replace the blocked_by list (issue_refs)'),
       expected_version: z.number().int().optional().describe('Optimistic CAS — reject if the current version differs'),
     },
     'issue_update',
+  );
+
+  proxyTool(
+    'issue_close',
+    'Close an issue when its work is done. Hides it from default lists but PRESERVES its whole linked knowledge graph (decisions/insights stay queryable). Idempotent — closing an already-closed issue is a no-op. Reach for this to finish work instead of issue_update with status:closed.',
+    {
+      issue_ref: z.string().describe('The short issue ref to close'),
+      expected_version: z.number().int().optional().describe('Optimistic CAS — reject if the current version differs'),
+    },
+    'issue_close',
   );
 
   proxyTool(

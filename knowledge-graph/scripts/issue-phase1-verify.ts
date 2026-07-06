@@ -20,7 +20,7 @@ import { createStorage } from '../src/storage/interface.js';
 import { Embedder } from '../src/engine/embedder.js';
 import { Linker } from '../src/engine/linker.js';
 import { loadConfig } from '../src/config.js';
-import { handleIssueCreate, handleIssueUpdate, handleIssueList, handleIssueShow } from '../src/tools/issue.js';
+import { handleIssueCreate, handleIssueUpdate, handleIssueClose, handleIssueList, handleIssueShow } from '../src/tools/issue.js';
 import { exportAll } from '../src/sync/export.js';
 import { importAll } from '../src/sync/import.js';
 
@@ -77,8 +77,11 @@ async function main() {
     catch { casRejected = true; }
     assert(casRejected, 'stale expected_version rejected (CAS)');
 
-    console.error('\n📋 Test 4: issue_list hides closed by default');
-    await handleIssueUpdate(s1, { issue_ref: i2.issue_ref, status: 'closed' });
+    console.error('\n📋 Test 4: issue_close (dedicated verb) + hides from list + idempotent');
+    const closeRes = await handleIssueClose(s1, { issue_ref: i2.issue_ref });
+    assert(closeRes.status === 'closed' && !closeRes.already_closed, 'issue_close closes an open issue');
+    const closeAgain = await handleIssueClose(s1, { issue_ref: i2.issue_ref });
+    assert(closeAgain.already_closed === true, 'issue_close is idempotent (already_closed)');
     const openList = await handleIssueList(s1, {});
     assert(!openList.some(i => i.issue_ref === i2.issue_ref), 'closed issue hidden by default');
     const allList = await handleIssueList(s1, { include_closed: true });

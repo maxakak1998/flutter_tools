@@ -34,7 +34,7 @@ import { handleExport } from './tools/export.js';
 import { handleIngest } from './tools/ingest.js';
 import { handleLifeStore } from './tools/life-store.js';
 import { handleDecisionRecord } from './tools/decision.js';
-import { handleIssueCreate, handleIssueUpdate, handleIssueList, handleIssueShow, handleIssueLink, handleIssueOrphans, handleIssueReady, handleIssueStale, autoLinkToIssue } from './tools/issue.js';
+import { handleIssueCreate, handleIssueUpdate, handleIssueClose, handleIssueList, handleIssueShow, handleIssueLink, handleIssueOrphans, handleIssueReady, handleIssueStale, autoLinkToIssue } from './tools/issue.js';
 import { getCurrentIssue } from './tools/state-context.js';
 import { handleLifeFeedback } from './tools/life-feedback.js';
 import { handleLifeDraftSkill } from './tools/life-draft-skill.js';
@@ -645,6 +645,22 @@ async function daemonMain(): Promise<void> {
           })();
           if (updated) autoExporter.queueChunkExport(updated.id);
           result = iuResult;
+          break;
+        }
+
+        case 'issue_close': {
+          const closeResult = await handleIssueClose(storage, {
+            issue_ref: params.issue_ref,
+            expected_version: params.expected_version,
+          });
+          scheduleCacheRegen();
+          // Re-export the closed issue so its status syncs to the team.
+          const closed = await (async () => {
+            const { findByRef } = await import('./tools/issue.js');
+            return findByRef(storage, params.issue_ref);
+          })();
+          if (closed) autoExporter.queueChunkExport(closed.id);
+          result = closeResult;
           break;
         }
 
