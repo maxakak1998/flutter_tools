@@ -22,7 +22,7 @@ A **domain knowledge** graph MCP server for Claude Code. Stores **business logic
 - Framework behavior (Flutter, Bloc, GoRouter, Firestore)
 - Code syntax or technical implementation details
 
-**Interview Protocol**: When Claude infers business logic from code but isn't certain, it MUST ask the user to confirm before storing. See the knowledge-graph skill (`~/.claude/skills/knowledge-graph/SKILL.md`) for interview rules.
+**Interview Protocol**: When Claude infers business logic from code but isn't certain, it MUST ask the user to confirm before storing. The KG usage skills live per-project — run `kg setup-skills` to install them into `<project>/.claude/skills/knowledge-graph/` (guide + kg-storing/exploring/lifecycle/life-knowledge/session-state/troubleshooting), and `kg prime` injects their guidance at session start. See `kg-storing` for interview rules. (Not a user-level skill — each project opts in via `kg init` + `kg setup-skills`.)
 
 **Third boundary — session state**: The `state_*` tools store **volatile working memory** (current focus, plans, tasks, checkpoints) in a separate `SessionState` table. This is DISTINCT from both domain knowledge (durable `Chunk` truths, above) and operational learnings (`life:*` chunks — coding gotchas/patterns). Session state is transient per-work-session scratch: it is not embedded, not semantically searched, and not synced. Use it to answer "what was I doing / where did I leave off", never to record durable facts. Durable design decisions go through `decision_record` (a `Chunk`), not `state_*`. See [Session-State Subsystem](#session-state-subsystem).
 
