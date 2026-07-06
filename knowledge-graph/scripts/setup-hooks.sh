@@ -315,6 +315,22 @@ if [ -n "$KG_DIR" ]; then
 fi
 
 # KG was used — no nudge needed
+# Session-state nudge (independent of KG-knowledge usage): if meaningful work
+# happened this turn, suggest capturing working memory so the next session can
+# resume. This is a SUGGESTION, never a command — the AI decides whether the
+# work is worth a checkpoint. Only nudge when several files were touched (a
+# trivial one-file tweak rarely needs a checkpoint).
+STATE_USED="false"
+[ -f "$MARKER_DIR/kg-state-used-${SESSION_ID}" ] && STATE_USED="true"
+if [ "$STATE_USED" = "false" ] && [ "${EDIT_COUNT:-0}" -ge 3 ]; then
+  echo "" >&2
+  echo "[Session-State] Wrapping up after editing ${EDIT_COUNT} file(s) in: ${AREA_LIST}." >&2
+  echo "  If this work is worth resuming later, consider (your call — skip if trivial):" >&2
+  echo "    state_checkpoint — snapshot focus + tasks + plan so a future session can catch up" >&2
+  echo "    state_task_upsert — mark finished tasks done / note what's left" >&2
+fi
+
+# KG was used — no knowledge nudge needed
 if [ "$KG_USED" = "true" ]; then
   exit 0
 fi
@@ -329,6 +345,7 @@ echo "" >&2
 echo "SESSION END (still possible):" >&2
 echo "  life_store — store coding gotchas/patterns discovered during this session" >&2
 echo "  knowledge_store — store business rules confirmed by user" >&2
+echo "  state_checkpoint — save working memory for the next session" >&2
 
 exit 0
 HOOKEOF
@@ -766,23 +783,23 @@ esac
 
 # 5. BLOCK — not consulted, not failed, not exempt
 cat >&2 <<'BLOCKMSG'
-BLOCKED: Chưa tham vấn Knowledge Graph trước khi edit.
+BLOCKED: Knowledge Graph not consulted before editing.
 
-Trước khi edit, bạn PHẢI:
+Before editing, you MUST:
 
-  1. CONSULT KG — tìm knowledge liên quan đến file/feature đang edit:
-       kg query '<chủ-đề liên quan>'
-       kg list (nếu cần xem tổng quan domains)
+  1. CONSULT KG — find knowledge related to the file/feature being edited:
+       kg query '<related topic>'
+       kg list (if you need a domain overview)
 
-  2. GIẢI THÍCH — output cho user thấy:
-       • KG có gì liên quan (cite chunk ID hoặc tóm tắt)
-       • So sánh: edit này có conflict với KG knowledge không?
-       • Nếu KG không có gì liên quan, nói rõ "KG không có knowledge về topic này"
+  2. EXPLAIN — show the user:
+       - What the KG has that is relevant (cite chunk IDs or summarize)
+       - Does this edit conflict with KG knowledge?
+       - If the KG has nothing relevant, state clearly "KG has no knowledge on this topic"
 
-  Nếu KG không available: kg doctor → kg serve
+  If the KG is unavailable: kg doctor -> kg serve
 
-TẠI SAO: KG chứa business rules, domain constraints, gotchas từ sessions trước.
-Giải thích giúp user biết bạn đã cross-check trước khi sửa code.
+WHY: the KG holds business rules, domain constraints, and gotchas from prior sessions.
+Explaining shows the user you cross-checked before changing code.
 BLOCKMSG
 exit 2
 HOOKEOF
@@ -896,29 +913,29 @@ mkdir -m 700 -p "$MARKER_DIR" 2>/dev/null
 touch "$MARKER_DIR/kg-plan-reviewed-${SESSION_ID}"
 
 cat >&2 <<'BLOCKMSG'
-BLOCKED: Trước khi exit plan mode, review plan findings cho Knowledge Graph.
+BLOCKED: Before exiting plan mode, review plan findings for the Knowledge Graph.
 
-Trong quá trình plan, bạn có thể đã phát hiện:
-  • Business rules hoặc domain constraints (từ code, docs, user input)
-  • Cross-feature dependencies hoặc relationships
-  • Workflow rationale — tại sao flow phải chạy theo thứ tự này
-  • Edge cases hoặc gotchas mà plan phải handle
+During planning you may have discovered:
+  - Business rules or domain constraints (from code, docs, user input)
+  - Cross-feature dependencies or relationships
+  - Workflow rationale — why a flow must run in this order
+  - Edge cases or gotchas the plan must handle
 
-PHẢI LÀM:
-  1. QUERY KG — check xem findings đã tồn tại chưa:
-       kg query '<topic từ plan>'
+YOU MUST:
+  1. QUERY KG — check whether the findings already exist:
+       kg query '<topic from the plan>'
 
-  2. REVIEW — liệt kê cho user thấy:
-       • Những domain knowledge mới phát hiện trong plan
-       • Đã có trong KG rồi hay chưa
-       • Recommend: store, skip, hoặc hỏi user confirm
+  2. REVIEW — list for the user:
+       - New domain knowledge discovered during planning
+       - Whether it already exists in the KG
+       - Recommend: store, skip, or ask the user to confirm
 
-  3. STORE nếu có knowledge mới (sau khi user confirm):
-       knowledge_store với category phù hợp (fact/rule/insight/workflow)
+  3. STORE new knowledge (after user confirms):
+       knowledge_store with the right category (fact/rule/insight/workflow)
 
-  4. Nếu không có gì mới, nói rõ: "Plan không phát hiện domain knowledge mới"
+  4. If nothing new, state clearly: "Planning surfaced no new domain knowledge"
 
-Sau khi review xong, retry ExitPlanMode.
+After reviewing, retry ExitPlanMode.
 BLOCKMSG
 exit 2
 HOOKEOF
