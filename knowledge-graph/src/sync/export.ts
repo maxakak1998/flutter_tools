@@ -45,6 +45,11 @@ export function exportChunk(chunk: StoredChunk): SyncChunkFile {
     source: chunk.source,
     created_at: chunk.created_at,
     updated_at: chunk.updated_at,
+    // kg beads (issue) fields — carried so status/priority/blocked_by survive sync
+    issue_ref: chunk.issue_ref,
+    issue_status: chunk.issue_status,
+    issue_priority: chunk.issue_priority,
+    blocked_by: chunk.blocked_by,
   };
 }
 

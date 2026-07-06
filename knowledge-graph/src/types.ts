@@ -35,7 +35,14 @@ export type ChunkCategory =
   | 'insight'
   | 'question'
   | 'workflow'
-  | 'decision';
+  | 'decision'
+  | 'issue';
+
+/** Issue workflow status (kg beads). Only meaningful when category === 'issue'. */
+export type IssueStatus = 'open' | 'in_progress' | 'blocked' | 'closed';
+
+/** Issue priority (kg beads). p0 = highest. */
+export type IssuePriority = 'p0' | 'p1' | 'p2' | 'p3';
 
 export type ChunkLifecycle =
   | 'hypothesis'
@@ -91,6 +98,12 @@ export interface StoredChunk {
   last_validated_at: string;
   lifecycle: string;
   access_count: number;
+  // === kg beads (issue) fields — only meaningful when category === 'issue' ===
+  // Empty-string defaults for non-issue chunks (kept non-null for backend simplicity).
+  issue_ref: string;        // short human ID (e.g. "upcoz-a3f9"); STABLE across sync — blocked_by + commit/PR reference this, NEVER the UUID id
+  issue_status: string;     // IssueStatus: open | in_progress | blocked | closed
+  issue_priority: string;   // IssuePriority: p0 | p1 | p2 | p3
+  blocked_by: string[];     // issue_ref values (sync-stable IDs) this issue is blocked by
 }
 
 // === Session state types (volatile working-state — no embedding, no vector index) ===

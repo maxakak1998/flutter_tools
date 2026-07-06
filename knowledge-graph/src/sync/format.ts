@@ -25,6 +25,13 @@ export interface SyncChunkFile {
   source: string | null;
   created_at: string;
   updated_at: string;
+  // kg beads (issue) fields — MUST be synced or issue status/priority/blocked_by
+  // silently vanish across machines (fields not listed here are dropped on export).
+  // Omitted for non-issue chunks by leaving defaults; issue chunks carry real values.
+  issue_ref?: string;        // STABLE short ID — blocked_by references this, survives sync
+  issue_status?: string;
+  issue_priority?: string;
+  blocked_by?: string[];     // issue_ref values (never UUIDs)
 }
 
 /**

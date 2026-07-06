@@ -72,7 +72,9 @@ export async function callWithRevive(
 // Tool schemas (Zod validation before forwarding to daemon)
 // ============================================================
 
-const categoryEnum = z.enum(['fact', 'rule', 'insight', 'question', 'workflow', 'decision']);
+const categoryEnum = z.enum(['fact', 'rule', 'insight', 'question', 'workflow', 'decision', 'issue']);
+const issueStatusEnum = z.enum(['open', 'in_progress', 'blocked', 'closed']);
+const issuePriorityEnum = z.enum(['p0', 'p1', 'p2', 'p3']);
 const importanceEnum = z.enum(['critical', 'high', 'medium', 'low']);
 const lifecycleEnum = z.enum(['hypothesis', 'validated', 'promoted', 'canonical', 'refuted', 'active']);
 const relationEnum = z.enum(['relates_to', 'depends_on', 'contradicts', 'supersedes', 'triggers', 'requires', 'produces', 'is_part_of', 'constrains', 'precedes', 'transitions_to', 'governed_by']);
@@ -537,6 +539,57 @@ export async function clientMain(
       keep_recent: z.number().int().positive().optional().describe('Newest N active-context/event rows per session to always keep verbatim (default 50)'),
     },
     'state_compact',
+  );
+
+  // ============================================================
+  // kg beads — issue tracker (first-class graph nodes)
+  // ============================================================
+
+  proxyTool(
+    'issue_create',
+    "Create a durable, team-synced issue/bug/ticket as a first-class graph node (kg beads). Use for actionable work that must be DONE and tracked — NOT for 'what am I doing now' (that's state_set_context) or a design rationale (that's decision_record). Returns a short issue_ref (e.g. 'upcoz-a3f9') to cite in commits/PRs. Per project policy, create issues on user request/confirmation, not speculatively.",
+    {
+      title: z.string().min(1).max(200).describe('Short issue title (becomes the summary)'),
+      description: z.string().max(5000).optional().describe('Full issue detail: repro, root cause, scope'),
+      priority: issuePriorityEnum.optional().describe('p0 (highest) .. p3. Default p2'),
+      blocked_by: z.array(z.string()).optional().describe('issue_ref values (short IDs, NOT UUIDs) this issue is blocked by'),
+      domain: z.string().max(50).optional().describe('Topic area (default "issues")'),
+      keywords: z.array(z.string().min(2)).max(15).optional().describe('Search terms (auto-derived from title if omitted)'),
+    },
+    'issue_create',
+  );
+
+  proxyTool(
+    'issue_update',
+    'Update an issue\'s status (open/in_progress/blocked/closed), priority (p0-p3), or blocked_by list. Closing an issue hides it from default lists but PRESERVES the whole knowledge graph linked to it. Pass expected_version for optimistic concurrency (rejects on stale writes).',
+    {
+      issue_ref: z.string().describe('The short issue ref to update'),
+      status: issueStatusEnum.optional().describe('New status'),
+      priority: issuePriorityEnum.optional().describe('New priority'),
+      blocked_by: z.array(z.string()).optional().describe('Replace the blocked_by list (issue_refs)'),
+      expected_version: z.number().int().optional().describe('Optimistic CAS — reject if the current version differs'),
+    },
+    'issue_update',
+  );
+
+  proxyTool(
+    'issue_list',
+    "List issues filtered by status/priority, sorted by priority (p0 first). Closed issues are hidden unless include_closed is true. Answers 'what issues are open / what's the backlog'.",
+    {
+      status: issueStatusEnum.optional().describe('Filter to one status'),
+      priority: issuePriorityEnum.optional().describe('Filter to one priority'),
+      include_closed: z.boolean().optional().describe('Include closed issues (default false)'),
+    },
+    'issue_list',
+  );
+
+  proxyTool(
+    'issue_show',
+    "Show one issue plus its linked neighborhood — the decisions, insights, and knowledge chunks connected to it. This is the closed-loop payoff: 'what do we know about this bug, what did we decide, what was learned'.",
+    {
+      issue_ref: z.string().describe('The short issue ref to show'),
+    },
+    'issue_show',
   );
 
   // ============================================================

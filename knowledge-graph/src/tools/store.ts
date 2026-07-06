@@ -16,6 +16,7 @@ function inferLayer(category: ChunkCategory): ChunkLayer {
     case 'fact':
     case 'rule':
     case 'decision':
+    case 'issue':
       return 'core-knowledge';
     case 'insight':
     case 'question':
@@ -27,7 +28,7 @@ function inferLayer(category: ChunkCategory): ChunkLayer {
 
 // Target content sizes by category — warns (does not reject) when exceeded
 const CONTENT_SIZE_TARGETS: Record<string, number> = {
-  fact: 500, rule: 800, insight: 600, question: 400, workflow: 800, decision: 800,
+  fact: 500, rule: 800, insight: 600, question: 400, workflow: 800, decision: 800, issue: 2000,
 };
 
 /**
@@ -206,16 +207,17 @@ export async function handleStore(
   canonicalDomains?: string[],
   entityRegistry?: EntityAliasRegistry,
   skipDedup = false,
+  issueFields?: { issue_ref: string; issue_status: string; issue_priority: string; blocked_by: string[] },
 ): Promise<StoreResult> {
   // Generate embedding first (needed for both dedup check and storage)
   onStep?.('embedding', 'Generating embedding via Ollama');
   const embedding = await embedder.embed(content);
   onStep?.('embedding_done', 'Embedding generated', { dimensions: embedding.length });
 
-  // Decisions are durable, iterative knowledge — near-identical decisions
-  // ("lever A failed" vs "lever A retry") must each persist as distinct chunks,
-  // so the dedup check is bypassed entirely for them.
-  const bypassDedup = skipDedup || metadata.category === 'decision';
+  // Decisions and issues are durable, iterative knowledge — near-identical entries
+  // ("lever A failed" vs "lever A retry"; two bugs with similar titles) must each
+  // persist as distinct chunks, so the dedup check is bypassed entirely for them.
+  const bypassDedup = skipDedup || metadata.category === 'decision' || metadata.category === 'issue';
 
   // Semantic deduplication check (k=50 + post-filter to exclude operational/entity-index layer)
   if (!bypassDedup) {
@@ -324,6 +326,11 @@ export async function handleStore(
     last_validated_at: '',
     lifecycle,
     access_count: 0,
+    // kg beads fields — empty defaults for non-issue chunks
+    issue_ref: issueFields?.issue_ref ?? '',
+    issue_status: issueFields?.issue_status ?? '',
+    issue_priority: issueFields?.issue_priority ?? '',
+    blocked_by: issueFields?.blocked_by ?? [],
   });
 
   onStep?.('stored', 'Chunk created in KuzuDB', { id });

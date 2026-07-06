@@ -6,7 +6,7 @@ export interface IStorage {
   close(): Promise<void>;
 
   // Chunk CRUD
-  createChunk(chunk: Omit<StoredChunk, 'created_at' | 'updated_at'> & Partial<Pick<StoredChunk, 'created_at' | 'updated_at'>>): Promise<string>;
+  createChunk(chunk: Omit<StoredChunk, 'created_at' | 'updated_at' | 'issue_ref' | 'issue_status' | 'issue_priority' | 'blocked_by'> & Partial<Pick<StoredChunk, 'created_at' | 'updated_at' | 'issue_ref' | 'issue_status' | 'issue_priority' | 'blocked_by'>>): Promise<string>;
   getChunk(id: string): Promise<StoredChunk | null>;
   updateChunk(id: string, updates: Partial<StoredChunk>): Promise<void>;
   deleteChunk(id: string): Promise<void>;

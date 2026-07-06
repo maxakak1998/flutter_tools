@@ -110,6 +110,7 @@ export const DEFAULT_CONFIG: KnowledgeConfig = {
       question: 0.90,
       workflow: 0.98,
       decision: 1.0,
+      issue: 1.0,
     },
   },
   domains: { canonical: [], aliases: {} },

@@ -86,6 +86,10 @@ export class KuzuStorage implements IStorage {
         keywords STRING[],
         entities STRING[],
         tags STRING[],
+        issue_ref STRING DEFAULT '',
+        issue_status STRING DEFAULT '',
+        issue_priority STRING DEFAULT '',
+        blocked_by STRING[],
         created_at STRING,
         updated_at STRING,
         version INT64,
@@ -106,6 +110,12 @@ export class KuzuStorage implements IStorage {
     await this.run("ALTER TABLE Chunk ADD last_validated_at STRING DEFAULT ''");
     await this.run("ALTER TABLE Chunk ADD lifecycle STRING DEFAULT 'active'");
     await this.run("ALTER TABLE Chunk ADD access_count INT64 DEFAULT 0");
+
+    // Migration: kg beads (issue) fields — empty defaults for non-issue chunks
+    await this.run("ALTER TABLE Chunk ADD issue_ref STRING DEFAULT ''");
+    await this.run("ALTER TABLE Chunk ADD issue_status STRING DEFAULT ''");
+    await this.run("ALTER TABLE Chunk ADD issue_priority STRING DEFAULT ''");
+    await this.run("ALTER TABLE Chunk ADD blocked_by STRING[]");
 
     // Chunk → Chunk relationships
     await this.run('CREATE REL TABLE RELATES_TO (FROM Chunk TO Chunk, auto_created STRING)');
@@ -167,7 +177,7 @@ export class KuzuStorage implements IStorage {
 
   // === Chunk CRUD ===
 
-  async createChunk(chunk: Omit<StoredChunk, 'created_at' | 'updated_at'> & Partial<Pick<StoredChunk, 'created_at' | 'updated_at'>>): Promise<string> {
+  async createChunk(chunk: Omit<StoredChunk, 'created_at' | 'updated_at' | 'issue_ref' | 'issue_status' | 'issue_priority' | 'blocked_by'> & Partial<Pick<StoredChunk, 'created_at' | 'updated_at' | 'issue_ref' | 'issue_status' | 'issue_priority' | 'blocked_by'>>): Promise<string> {
     const now = new Date().toISOString();
     const createdAt = chunk.created_at ?? now;
     const updatedAt = chunk.updated_at ?? now;
@@ -186,6 +196,10 @@ export class KuzuStorage implements IStorage {
         keywords: $keywords,
         entities: $entities,
         tags: $tags,
+        issue_ref: $issue_ref,
+        issue_status: $issue_status,
+        issue_priority: $issue_priority,
+        blocked_by: $blocked_by,
         created_at: $created_at,
         updated_at: $updated_at,
         version: $version,
@@ -210,6 +224,10 @@ export class KuzuStorage implements IStorage {
         keywords: chunk.keywords,
         entities: chunk.entities,
         tags: chunk.tags,
+        issue_ref: chunk.issue_ref ?? '',
+        issue_status: chunk.issue_status ?? '',
+        issue_priority: chunk.issue_priority ?? '',
+        blocked_by: chunk.blocked_by ?? [],
         created_at: createdAt,
         updated_at: updatedAt,
         version: chunk.version,
@@ -270,6 +288,10 @@ export class KuzuStorage implements IStorage {
         keywords: merged.keywords,
         entities: merged.entities,
         tags: merged.tags,
+        issue_ref: merged.issue_ref,
+        issue_status: merged.issue_status,
+        issue_priority: merged.issue_priority,
+        blocked_by: merged.blocked_by,
         created_at: existing.created_at,
         updated_at: merged.updated_at,
         version: merged.version,
@@ -362,6 +384,22 @@ export class KuzuStorage implements IStorage {
       if (updates.access_count !== undefined) {
         setClauses.push('c.access_count = $access_count');
         params.access_count = updates.access_count;
+      }
+      if (updates.issue_ref !== undefined) {
+        setClauses.push('c.issue_ref = $issue_ref');
+        params.issue_ref = updates.issue_ref;
+      }
+      if (updates.issue_status !== undefined) {
+        setClauses.push('c.issue_status = $issue_status');
+        params.issue_status = updates.issue_status;
+      }
+      if (updates.issue_priority !== undefined) {
+        setClauses.push('c.issue_priority = $issue_priority');
+        params.issue_priority = updates.issue_priority;
+      }
+      if (updates.blocked_by !== undefined) {
+        setClauses.push('c.blocked_by = $blocked_by');
+        params.blocked_by = updates.blocked_by;
       }
       await this.queryParams(
         `MATCH (c:Chunk) WHERE c.id = $id SET ${setClauses.join(', ')}`,
@@ -628,6 +666,8 @@ export class KuzuStorage implements IStorage {
               node.confidence AS confidence, node.validation_count AS validation_count,
               node.refutation_count AS refutation_count, node.last_validated_at AS last_validated_at,
               node.lifecycle AS lifecycle, node.access_count AS access_count,
+              node.issue_ref AS issue_ref, node.issue_status AS issue_status,
+              node.issue_priority AS issue_priority, node.blocked_by AS blocked_by,
               distance`,
       { emb: embedding, k },
     );
@@ -683,6 +723,8 @@ export class KuzuStorage implements IStorage {
               node.confidence AS confidence, node.validation_count AS validation_count,
               node.refutation_count AS refutation_count, node.last_validated_at AS last_validated_at,
               node.lifecycle AS lifecycle, node.access_count AS access_count,
+              node.issue_ref AS issue_ref, node.issue_status AS issue_status,
+              node.issue_priority AS issue_priority, node.blocked_by AS blocked_by,
               distance`,
       { emb: embedding, k },
     );
@@ -847,6 +889,10 @@ export class KuzuStorage implements IStorage {
       last_validated_at: (row['c.last_validated_at'] ?? row['related.last_validated_at'] ?? '') as string,
       lifecycle: (row['c.lifecycle'] ?? row['related.lifecycle'] ?? 'active') as string,
       access_count: Number(row['c.access_count'] ?? row['related.access_count'] ?? 0),
+      issue_ref: (row['c.issue_ref'] ?? row['related.issue_ref'] ?? '') as string,
+      issue_status: (row['c.issue_status'] ?? row['related.issue_status'] ?? '') as string,
+      issue_priority: (row['c.issue_priority'] ?? row['related.issue_priority'] ?? '') as string,
+      blocked_by: (row['c.blocked_by'] ?? row['related.blocked_by'] ?? []) as string[],
     };
   }
 
@@ -875,6 +921,10 @@ export class KuzuStorage implements IStorage {
       last_validated_at: (row['last_validated_at'] ?? '') as string,
       lifecycle: (row['lifecycle'] ?? 'active') as string,
       access_count: Number(row['access_count'] ?? 0),
+      issue_ref: (row['issue_ref'] ?? '') as string,
+      issue_status: (row['issue_status'] ?? '') as string,
+      issue_priority: (row['issue_priority'] ?? '') as string,
+      blocked_by: (row['blocked_by'] ?? []) as string[],
     };
   }
 

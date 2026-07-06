@@ -376,6 +376,11 @@ async function importNewChunk(
     last_validated_at: '',
     lifecycle: remote.lifecycle,
     access_count: 0,
+    // kg beads fields — carried verbatim (issue_ref is sync-stable; blocked_by holds refs)
+    issue_ref: remote.issue_ref ?? '',
+    issue_status: remote.issue_status ?? '',
+    issue_priority: remote.issue_priority ?? '',
+    blocked_by: remote.blocked_by ?? [],
   });
 
   chunksToRelink.push({ id: localId, embedding, domain: remote.domain, layer: remote.layer });
@@ -410,6 +415,11 @@ async function importUpdatedChunk(
     tags: remote.tags,
     source: remote.source,
     version: remote.version,
+    // kg beads fields — sync-carried (issue status/priority/blocked_by are shared truth)
+    issue_ref: remote.issue_ref ?? '',
+    issue_status: remote.issue_status ?? '',
+    issue_priority: remote.issue_priority ?? '',
+    blocked_by: remote.blocked_by ?? [],
     // Do NOT update: confidence, validation_count, refutation_count,
     //   access_count, last_validated_at — these are local-only
   });
@@ -438,6 +448,11 @@ async function importMetadataUpdate(
     tags: remote.tags,
     source: remote.source,
     version: remote.version,
+    // kg beads fields — a status/priority/blocked_by change is a metadata-only update
+    issue_ref: remote.issue_ref ?? '',
+    issue_status: remote.issue_status ?? '',
+    issue_priority: remote.issue_priority ?? '',
+    blocked_by: remote.blocked_by ?? [],
   });
 
   log(`importAll: metadata update for chunk ${localId} (sync_id: ${remote.sync_id})`);
@@ -447,7 +462,7 @@ async function importMetadataUpdate(
  * Check if metadata (excluding content and lifecycle) differs between local and remote.
  */
 function hasMetadataChanged(
-  local: { summary: string; domain: string; category: string; importance: string; layer: string | null; keywords: string[]; entities: string[]; tags: string[]; source: string | null; version: number },
+  local: { summary: string; domain: string; category: string; importance: string; layer: string | null; keywords: string[]; entities: string[]; tags: string[]; source: string | null; version: number; issue_ref?: string; issue_status?: string; issue_priority?: string; blocked_by?: string[] },
   remote: SyncChunkFile,
 ): boolean {
   if (local.summary !== remote.summary) return true;
@@ -460,6 +475,11 @@ function hasMetadataChanged(
   if (JSON.stringify(local.keywords.slice().sort()) !== JSON.stringify(remote.keywords.slice().sort())) return true;
   if (JSON.stringify(local.entities.slice().sort()) !== JSON.stringify(remote.entities.slice().sort())) return true;
   if (JSON.stringify(local.tags.slice().sort()) !== JSON.stringify(remote.tags.slice().sort())) return true;
+  // kg beads fields — a status/priority/blocked_by change must trigger a metadata sync
+  if ((local.issue_ref ?? '') !== (remote.issue_ref ?? '')) return true;
+  if ((local.issue_status ?? '') !== (remote.issue_status ?? '')) return true;
+  if ((local.issue_priority ?? '') !== (remote.issue_priority ?? '')) return true;
+  if (JSON.stringify((local.blocked_by ?? []).slice().sort()) !== JSON.stringify((remote.blocked_by ?? []).slice().sort())) return true;
   return false;
 }
 

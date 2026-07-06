@@ -107,6 +107,12 @@ export class SurrealStorage implements IStorage {
     await db.query(`DEFINE FIELD IF NOT EXISTS last_validated_at ON chunk TYPE string DEFAULT ''`);
     await db.query(`DEFINE FIELD IF NOT EXISTS lifecycle ON chunk TYPE string DEFAULT 'active'`);
     await db.query(`DEFINE FIELD IF NOT EXISTS access_count ON chunk TYPE int DEFAULT 0`);
+    // kg beads (issue) fields — empty defaults for non-issue chunks
+    await db.query(`DEFINE FIELD IF NOT EXISTS issue_ref ON chunk TYPE string DEFAULT ''`);
+    await db.query(`DEFINE FIELD IF NOT EXISTS issue_status ON chunk TYPE string DEFAULT ''`);
+    await db.query(`DEFINE FIELD IF NOT EXISTS issue_priority ON chunk TYPE string DEFAULT ''`);
+    await db.query(`DEFINE FIELD IF NOT EXISTS blocked_by ON chunk TYPE array DEFAULT []`);
+    await db.query(`DEFINE FIELD IF NOT EXISTS blocked_by.* ON chunk TYPE string`);
 
     // HNSW vector index
     await db.query(
@@ -158,7 +164,7 @@ export class SurrealStorage implements IStorage {
   // Chunk CRUD
   // ============================================================
 
-  async createChunk(chunk: Omit<StoredChunk, 'created_at' | 'updated_at'> & Partial<Pick<StoredChunk, 'created_at' | 'updated_at'>>): Promise<string> {
+  async createChunk(chunk: Omit<StoredChunk, 'created_at' | 'updated_at' | 'issue_ref' | 'issue_status' | 'issue_priority' | 'blocked_by'> & Partial<Pick<StoredChunk, 'created_at' | 'updated_at' | 'issue_ref' | 'issue_status' | 'issue_priority' | 'blocked_by'>>): Promise<string> {
     const db = this.getDb();
     const now = new Date().toISOString();
     const createdAt = chunk.created_at ?? now;
@@ -186,7 +192,11 @@ export class SurrealStorage implements IStorage {
         refutation_count: $refutation_count,
         last_validated_at: $last_validated_at,
         lifecycle: $lifecycle,
-        access_count: $access_count
+        access_count: $access_count,
+        issue_ref: $issue_ref,
+        issue_status: $issue_status,
+        issue_priority: $issue_priority,
+        blocked_by: $blocked_by
       }`,
       {
         id: chunk.id,
@@ -211,6 +221,10 @@ export class SurrealStorage implements IStorage {
         last_validated_at: chunk.last_validated_at ?? '',
         lifecycle: chunk.lifecycle ?? 'active',
         access_count: chunk.access_count ?? 0,
+        issue_ref: chunk.issue_ref ?? '',
+        issue_status: chunk.issue_status ?? '',
+        issue_priority: chunk.issue_priority ?? '',
+        blocked_by: chunk.blocked_by ?? [],
       },
     );
     return chunk.id;
@@ -243,6 +257,8 @@ export class SurrealStorage implements IStorage {
       ['confidence', 'confidence'], ['validation_count', 'validation_count'],
       ['refutation_count', 'refutation_count'], ['last_validated_at', 'last_validated_at'],
       ['lifecycle', 'lifecycle'], ['access_count', 'access_count'],
+      ['issue_ref', 'issue_ref'], ['issue_status', 'issue_status'],
+      ['issue_priority', 'issue_priority'], ['blocked_by', 'blocked_by'],
     ];
 
     for (const [key, paramName] of fields) {
@@ -681,6 +697,10 @@ export class SurrealStorage implements IStorage {
       last_validated_at: (row.last_validated_at ?? '') as string,
       lifecycle: (row.lifecycle ?? 'active') as string,
       access_count: Number(row.access_count ?? 0),
+      issue_ref: (row.issue_ref ?? '') as string,
+      issue_status: (row.issue_status ?? '') as string,
+      issue_priority: (row.issue_priority ?? '') as string,
+      blocked_by: (row.blocked_by ?? []) as string[],
     };
   }
 

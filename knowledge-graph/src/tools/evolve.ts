@@ -12,6 +12,7 @@ function inferLayer(category: ChunkCategory): ChunkLayer {
     case 'fact':
     case 'rule':
     case 'decision':
+    case 'issue':
       return 'core-knowledge';
     case 'insight':
     case 'question':

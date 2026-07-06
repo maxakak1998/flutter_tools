@@ -9,7 +9,7 @@
 
 import { createServer, IncomingMessage, ServerResponse } from 'http';
 import { writeFileSync, unlinkSync, existsSync, readFileSync, readdirSync, statSync } from 'fs';
-import { join } from 'path';
+import { join, basename, dirname } from 'path';
 import { createCore, CoreComponents } from './core.js';
 import { parseRpcRequest, formatResult, formatError } from './rpc.js';
 import { KnowledgeConfig } from './config.js';
@@ -34,6 +34,7 @@ import { handleExport } from './tools/export.js';
 import { handleIngest } from './tools/ingest.js';
 import { handleLifeStore } from './tools/life-store.js';
 import { handleDecisionRecord } from './tools/decision.js';
+import { handleIssueCreate, handleIssueUpdate, handleIssueList, handleIssueShow } from './tools/issue.js';
 import { handleLifeFeedback } from './tools/life-feedback.js';
 import { handleLifeDraftSkill } from './tools/life-draft-skill.js';
 import { handleStateSetContext, handleStateGetContext } from './tools/state-context.js';
@@ -68,6 +69,9 @@ async function daemonMain(): Promise<void> {
   }
 
   const config: KnowledgeConfig = JSON.parse(configJson);
+  // Project name = basename of the dir containing .knowledge-graph — used as the
+  // kg beads issue-ref prefix (e.g. "upcoz-mobile" → "upcozm-a3f9").
+  const projectName = basename(dirname(kgDir));
   const portFile = join(kgDir, 'daemon.port');
   const pidFile = join(kgDir, 'daemon.pid');
   const idleTimeoutMs = parseInt(process.env.KG_IDLE_TIMEOUT_MS || '300000', 10);
@@ -587,6 +591,63 @@ async function daemonMain(): Promise<void> {
             autoExporter.queueEdgeRefresh();
           }
           result = drResult;
+          break;
+        }
+
+        // kg beads — issue tracker (durable, synced, first-class graph nodes)
+        case 'issue_create': {
+          onStep('start', `Issue: "${(params.title || '').slice(0, 50)}"`);
+          const icResult = await handleIssueCreate(
+            storage, embedder, linker,
+            {
+              title: params.title,
+              description: params.description,
+              priority: params.priority,
+              blocked_by: params.blocked_by,
+              domain: params.domain,
+              keywords: params.keywords,
+            },
+            projectName,
+            onStep,
+            config.dedup.similarityThreshold,
+          );
+          scheduleCacheRegen();
+          onStep('complete', `Created ${icResult.issue_ref}`, { duration_ms: Math.round(performance.now() - t0), id: icResult.id, issue_ref: icResult.issue_ref });
+          autoExporter.queueChunkExport(icResult.id); // durable + synced
+          result = icResult;
+          break;
+        }
+
+        case 'issue_update': {
+          const iuResult = await handleIssueUpdate(storage, {
+            issue_ref: params.issue_ref,
+            status: params.status,
+            priority: params.priority,
+            blocked_by: params.blocked_by,
+            expected_version: params.expected_version,
+          });
+          scheduleCacheRegen();
+          // Re-export the changed issue chunk so status/priority/blocked_by sync.
+          const updated = await (async () => {
+            const { findByRef } = await import('./tools/issue.js');
+            return findByRef(storage, params.issue_ref);
+          })();
+          if (updated) autoExporter.queueChunkExport(updated.id);
+          result = iuResult;
+          break;
+        }
+
+        case 'issue_list': {
+          result = await handleIssueList(storage, {
+            status: params.status,
+            priority: params.priority,
+            include_closed: params.include_closed,
+          });
+          break;
+        }
+
+        case 'issue_show': {
+          result = await handleIssueShow(storage, { issue_ref: params.issue_ref });
           break;
         }
 
