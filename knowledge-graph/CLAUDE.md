@@ -108,13 +108,13 @@ CLI (cli.ts) → discover project → ensureDaemon() → clientMain()
                                         ↓
   daemon-manager.ts  → ensures daemon is running, spawns if needed
   daemon.ts          → HTTP server, owns DB lock, hosts dashboard
-  client.ts          → stdio MCP proxy, forwards tool calls to daemon via HTTP
+  client.ts          → stdio MCP proxy, forwards tool calls to daemon; self-heals (respawn+retry) on daemon death
   http-utils.ts      → shared localhost CORS/origin checks, body reading, HTTP request errors
   version.ts         → reads runtime version from package.json
   rpc.ts             → JSON-RPC 2.0 request/response utilities
   core.ts            → creates and wires engine components (used by daemon)
   project.ts         → per-project .knowledge-graph/ management, discovery, registry
-  engine/embedder.ts → Ollama bge-m3, SHA256-keyed LRU cache
+  engine/embedder.ts → Ollama bge-m3, SHA256-keyed LRU cache, retry-with-backoff on transient failures
   engine/retriever.ts → hybrid search: vector + keyword + graph + confidence boost
   engine/linker.ts    → auto-link by vector similarity, match suggested_relations
   engine/confidence.ts → confirmation/refutation formulas, temporal decay
@@ -153,6 +153,7 @@ CLI (cli.ts) → discover project → ensureDaemon() → clientMain()
 
 - Speaks MCP protocol (stdio) to Claude Code
 - Forwards all tool calls to daemon via HTTP `POST /rpc`
+- **Self-healing**: `daemonUrl` is mutable. When an RPC's `fetch` fails at the transport layer (daemon dead from idle-timeout / `kg stop` / crash), `rpcCall` throws a `DaemonUnreachableError`; the `callWithRevive` wrapper then runs `ensureDaemon()` (respawn + rediscover), re-registers the session via `/rpc/connect`, and retries the RPC **once**. A well-formed JSON-RPC error (validation, unknown method) is a real caller failure and propagates immediately — it does NOT trigger a revive. This removes the old failure mode where a dead daemon forced a manual MCP reconnect. Re-registering on revive is essential: without it the fresh daemon would count `clients=0` and idle-shut-down again.
 - On `SIGINT` (Ctrl+C): kills daemon via `/rpc/shutdown`
 - On `SIGTERM` (Claude Code exit): disconnects via `/rpc/disconnect`, preserves daemon
 

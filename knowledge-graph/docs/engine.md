@@ -27,6 +27,10 @@ Response: { embeddings: [number[1024]] }
 
 For batch: pass `input: ["text1", "text2", ...]` — returns `embeddings: [vec1, vec2, ...]`.
 
+### Retry with Backoff
+
+Both `doEmbed` (single) and `embedBatch` route through a shared `embedFetch(input, label)` helper that retries transient Ollama failures. Ollama returns 5xx / EOF errors under load (e.g. a large `import-memory-bank` run) and `fetch` itself rejects on connection resets — both are retried up to **3 attempts** with exponential backoff (250ms → 500ms → 1000ms). Permanent errors fail fast with no retry: a `not found` model error (throws `Run: ollama pull <model>`) and any 4xx (bad request). Each retry is logged via `log()` (never `console.log` — that would corrupt JSON-RPC stdio). This prevents the silent import-data-loss where one Ollama hiccup dropped a `decision_record` / `knowledge_store` write.
+
 ### SHA256 Embedding Cache (LRU)
 
 In-memory LRU cache keyed by SHA256 hash of the input text. Prevents redundant Ollama API calls for repeated texts. Max size is configurable via `cache.embeddingCacheSize` (default: 10,000 entries). Evicts oldest entries when full.

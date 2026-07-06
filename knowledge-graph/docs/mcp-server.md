@@ -135,6 +135,17 @@ Priority: CLI flags > env vars > `knowledge.json` > hard defaults.
 
 ---
 
+## Client Self-Heal (daemon revive)
+
+The client resolves the daemon URL once at startup, but keeps it **mutable**. `rpcCall` distinguishes two failure kinds:
+
+- **Transport failure** — `fetch` rejects (`ECONNREFUSED` / "fetch failed") because the daemon is gone (idle-timeout, `kg stop`, crash). `rpcCall` wraps this as a `DaemonUnreachableError`.
+- **JSON-RPC error** — the daemon responded with a well-formed `error` (validation, unknown method). This is a real caller failure.
+
+`callWithRevive(call, revive)` retries only on `DaemonUnreachableError`: it runs `revive()` (→ `ensureDaemon()` respawns/rediscovers the daemon, updates `daemonUrl`, and re-POSTs `/rpc/connect` to re-register the session), then retries the RPC **once**. A JSON-RPC error propagates immediately with no revive.
+
+Re-registering the session on revive is required: a freshly respawned daemon starts its idle timer with `clients=0`, so without a re-`connect` it would idle-shut-down again in ~5min mid-session. `callWithRevive` and `rpcCall` are exported from `client.ts` so `scripts/self-heal-test.ts` can exercise them against a real daemon killed mid-run.
+
 ## Graceful Shutdown
 
 ### Client shutdown
@@ -162,6 +173,8 @@ Triggered by `/rpc/shutdown`, SIGTERM, SIGINT, or idle timeout:
 ### Idle auto-shutdown
 
 The daemon starts an idle timer immediately on startup (before any client connects). On `/rpc/connect`, the timer is reset (cleared). On `/rpc/disconnect`, if no clients remain (`clientCount <= 0`), the timer restarts. If no client connects or reconnects before the timer expires (default 300s, configurable via `daemon.idle_timeout_ms` in `.knowledge-graph/config.json`), the daemon shuts itself down.
+
+Idle auto-shutdown is now harmless to a live session: if the daemon dies while a client still needs it, the client's self-heal (above) respawns and re-registers it on the next RPC. Before self-heal existed, this idle-death was the root cause of the "MCP crashed, reconnect required" symptom.
 
 ---
 

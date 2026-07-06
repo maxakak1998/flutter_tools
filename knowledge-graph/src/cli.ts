@@ -820,7 +820,7 @@ async function runServe(parsed: ParsedArgs): Promise<void> {
   const daemonUrl = await ensureDaemon(project, config, parsed.port);
 
   const { clientMain } = await import('./client.js');
-  await clientMain(daemonUrl, project.projectId);
+  await clientMain(daemonUrl, project, config);
 }
 
 // ============================================================

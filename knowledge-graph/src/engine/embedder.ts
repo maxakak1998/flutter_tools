@@ -77,24 +77,67 @@ export class Embedder {
     }
   }
 
-  /** Internal: perform the actual Ollama embed call and cache the result. */
-  private async doEmbed(text: string, hash: string): Promise<number[]> {
-    const response = await fetch(`${this.ollamaUrl}/api/embed`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: this.model, input: text }),
-    });
+  /**
+   * POST to Ollama /api/embed with bounded retry.
+   *
+   * Ollama returns transient 5xx / EOF errors under load (e.g. during a large
+   * import) and `fetch` itself rejects on connection resets. Both are retried
+   * with exponential backoff. A `not found` model error and any 4xx are permanent
+   * — they throw immediately without retry, since retrying can never fix them.
+   */
+  private async embedFetch(input: string | string[], label: string): Promise<number[][]> {
+    const maxAttempts = 3;
+    const backoffMs = [250, 500, 1000];
+    let lastErr: unknown;
 
-    if (!response.ok) {
-      const body = await response.text();
-      if (body.includes('not found')) {
-        throw new Error(`Model ${this.model} not found. Run: ollama pull ${this.model}`);
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      try {
+        const response = await fetch(`${this.ollamaUrl}/api/embed`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model: this.model, input }),
+        });
+
+        if (!response.ok) {
+          const body = await response.text();
+          // Permanent: missing model — no amount of retry helps.
+          if (body.includes('not found')) {
+            throw new Error(`Model ${this.model} not found. Run: ollama pull ${this.model}`);
+          }
+          // Permanent: 4xx is a bad request; only 5xx is worth retrying.
+          if (response.status < 500) {
+            throw new Error(`Ollama ${label} failed: ${response.status} ${body}`);
+          }
+          lastErr = new Error(`Ollama ${label} failed: ${response.status} ${body}`);
+        } else {
+          const data = (await response.json()) as { embeddings: number[][] };
+          return data.embeddings;
+        }
+      } catch (e) {
+        // A thrown Error with "not found" / 4xx message above is permanent — rethrow.
+        if (e instanceof Error && (e.message.includes('not found') || /failed: 4\d\d/.test(e.message))) {
+          throw e;
+        }
+        lastErr = e; // network reject (EOF/ECONNRESET) or a 5xx captured above
       }
-      throw new Error(`Ollama embed failed: ${response.status} ${body}`);
+
+      // Backoff before the next attempt (skip after the final one).
+      if (attempt < maxAttempts - 1) {
+        const wait = backoffMs[attempt];
+        log(`Ollama ${label} attempt ${attempt + 1}/${maxAttempts} failed, retrying in ${wait}ms`);
+        await new Promise((r) => setTimeout(r, wait));
+      }
     }
 
-    const data = (await response.json()) as { embeddings: number[][] };
-    const embedding = data.embeddings[0];
+    throw lastErr instanceof Error
+      ? lastErr
+      : new Error(`Ollama ${label} failed after ${maxAttempts} attempts`);
+  }
+
+  /** Internal: perform the actual Ollama embed call and cache the result. */
+  private async doEmbed(text: string, hash: string): Promise<number[]> {
+    const embeddings = await this.embedFetch(text, 'embed');
+    const embedding = embeddings[0];
 
     if (embedding.length !== EMBEDDING_DIMENSIONS) {
       log(`Warning: expected ${EMBEDDING_DIMENSIONS} dimensions, got ${embedding.length}`);
@@ -124,24 +167,10 @@ export class Embedder {
 
     if (uncachedTexts.length === 0) return results;
 
-    const response = await fetch(`${this.ollamaUrl}/api/embed`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: this.model, input: uncachedTexts }),
-    });
-
-    if (!response.ok) {
-      const body = await response.text();
-      if (body.includes('not found')) {
-        throw new Error(`Model ${this.model} not found. Run: ollama pull ${this.model}`);
-      }
-      throw new Error(`Ollama embed batch failed: ${response.status} ${body}`);
-    }
-
-    const data = (await response.json()) as { embeddings: number[][] };
+    const embeddings = await this.embedFetch(uncachedTexts, 'embed batch');
 
     for (let i = 0; i < uncachedIndices.length; i++) {
-      const embedding = data.embeddings[i];
+      const embedding = embeddings[i];
       const hash = createHash('sha256').update(uncachedTexts[i]).digest('hex');
       this.cache.set(hash, embedding);
       results[uncachedIndices[i]] = embedding;

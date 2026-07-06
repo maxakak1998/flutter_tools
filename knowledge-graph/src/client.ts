@@ -10,21 +10,62 @@ import { randomUUID } from 'crypto';
 import { makeRpcRequest } from './rpc.js';
 import { log } from './types.js';
 import { getRuntimeVersion } from './version.js';
+import { ensureDaemon } from './daemon-manager.js';
+import type { ProjectInfo } from './project.js';
+import type { KnowledgeConfig } from './config.js';
 
 // ============================================================
 // RPC call to daemon
 // ============================================================
 
-async function rpcCall(daemonUrl: string, method: string, params: unknown): Promise<unknown> {
+/**
+ * Marker error for a failed HTTP hop to the daemon (daemon dead / port closed /
+ * connection refused). Distinct from a well-formed JSON-RPC error, which is a
+ * real caller-side failure (e.g. validation) and must NOT trigger a daemon revive.
+ */
+export class DaemonUnreachableError extends Error {
+  constructor(public readonly cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause));
+    this.name = 'DaemonUnreachableError';
+  }
+}
+
+export async function rpcCall(daemonUrl: string, method: string, params: unknown): Promise<unknown> {
   const req = makeRpcRequest(method, params);
-  const res = await fetch(`${daemonUrl}/rpc`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(req),
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${daemonUrl}/rpc`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req),
+    });
+  } catch (e) {
+    // fetch() rejects (ECONNREFUSED / "fetch failed") only when the transport
+    // itself failed — the daemon is unreachable. Surface as a revive signal.
+    throw new DaemonUnreachableError(e);
+  }
   const json = await res.json() as { result?: unknown; error?: { message: string } };
   if (json.error) throw new Error(json.error.message);
   return json.result;
+}
+
+/**
+ * Single self-heal retry around an RPC. If `call` throws DaemonUnreachableError,
+ * run `revive` once and retry; anything else (a real JSON-RPC error) propagates
+ * immediately. Extracted as a pure, injectable function so it is testable without
+ * a live stdio transport.
+ */
+export async function callWithRevive(
+  call: () => Promise<unknown>,
+  revive: () => Promise<void>,
+): Promise<unknown> {
+  try {
+    return await call();
+  } catch (e) {
+    if (!(e instanceof DaemonUnreachableError)) throw e;
+    await revive();
+    return call();
+  }
 }
 
 // ============================================================
@@ -69,17 +110,47 @@ const metadataSchema = z.object({
 // Client main
 // ============================================================
 
-export async function clientMain(daemonUrl: string, projectId: string): Promise<void> {
+export async function clientMain(
+  initialDaemonUrl: string,
+  project: ProjectInfo,
+  config: KnowledgeConfig,
+): Promise<void> {
+  const projectId = project.projectId;
+  // Mutable so a self-heal can repoint every subsequent RPC at a freshly
+  // respawned daemon (new port) without restarting the client.
+  let daemonUrl = initialDaemonUrl;
+
   // Mint a stable per-process session id. A client restart = new session id
   // (documented tradeoff — session identity is per-process, not persisted).
   const sessionId = randomUUID();
 
-  // Register with daemon, identifying this session
-  await fetch(`${daemonUrl}/rpc/connect`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ session_id: sessionId }),
-  }).catch(() => {});
+  // Register (or re-register) this session with the daemon. Called at startup and
+  // again after every revive — without re-connecting, the freshly respawned daemon
+  // would count clients=0 and idle-shut-down in ~5min even while we're working.
+  async function connectSession(): Promise<void> {
+    await fetch(`${daemonUrl}/rpc/connect`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: sessionId }),
+    }).catch(() => {});
+  }
+
+  // Respawn/rediscover the daemon and re-register. ensureDaemon() already handles
+  // health-check → cleanup stale files → fork a new daemon, returning a live URL.
+  async function reviveDaemon(): Promise<void> {
+    log('Daemon unreachable — reviving via ensureDaemon()');
+    daemonUrl = await ensureDaemon(project, config);
+    await connectSession();
+    log(`Daemon revived at ${daemonUrl}`);
+  }
+
+  // RPC wrapper with single self-heal retry (delegates to the pure helper). Note
+  // the `daemonUrl` closure is re-read on retry, so the second attempt targets the
+  // freshly revived daemon.
+  const callRpc = (method: string, params: unknown) =>
+    callWithRevive(() => rpcCall(daemonUrl, method, params), reviveDaemon);
+
+  await connectSession();
 
   const server = new McpServer({ name: 'knowledge-graph', version: getRuntimeVersion() });
 
@@ -97,7 +168,7 @@ export async function clientMain(daemonUrl: string, projectId: string): Promise<
         // session_id wins (e.g. state_get_context/state_get_plan reading another
         // session, or '' to span all project sessions); otherwise use the minted id.
         const callerSessionId = (params as { session_id?: string }).session_id;
-        const result = await rpcCall(daemonUrl, methodName, {
+        const result = await callRpc(methodName, {
           ...params,
           session_id: callerSessionId ?? sessionId,
         });
