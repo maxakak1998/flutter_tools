@@ -20,6 +20,7 @@ description: "Hub skill for Knowledge Graph MCP tools. Use when starting KG work
 | Validate or promote knowledge lifecycle | `kg-lifecycle` |
 | Store coding mistake/gotcha/workaround | `kg-life-knowledge` |
 | Track working state / resume across sessions ("what was I doing?") | `kg-session-state` |
+| Track a bug/ticket/issue to DO ("what needs fixing", "what's ready to work") | `kg-beads` |
 | Debug KG tool errors | `kg-troubleshooting` |
 
 ## Tool Quick Reference
@@ -57,7 +58,26 @@ description: "Hub skill for Knowledge Graph MCP tools. Use when starting KG work
 | `state_sessions` | List currently-connected sessions |
 | `decision_record` | Durable design decision → Chunk (queryable, SUPERSEDES lineage, bypasses dedup) |
 
-**Three-boundary rule:** business WHY → `knowledge_store` (Chunk, durable). Coding HOW → `life_store` (operational). "What am I doing right now / where did I leave off" → `state_*` (volatile, not synced, not embedded). A design decision you want to find later → `decision_record` (durable Chunk, NOT `state_*`).
+### Issue Tools (kg beads — bug/ticket tracker as first-class graph nodes)
+| Tool | Purpose |
+|------|---------|
+| `issue_create` | Create a durable, team-synced issue with a short ref (e.g. `upcozm-a3f9`) |
+| `issue_update` | Change status (open/in_progress/blocked/closed) / priority (p0-p3) / blocked_by; optimistic CAS |
+| `issue_list` | List issues (hides closed by default), priority-sorted |
+| `issue_ready` | Ready-to-work: open issues whose blockers are all closed (like `bd ready`) |
+| `issue_show` | One issue + its linked decisions/insights/knowledge (closed-loop payoff) |
+| `issue_link` | Manually attach a chunk to an issue (for orphans auto-link missed) |
+| `issue_orphans` | READ-ONLY: decisions/insights linked to no issue (chunk-side blind spot) |
+| `issue_stale` | READ-ONLY: open issues untouched >N days (anti-graveyard, like `state_prune`) |
+
+**Four-boundary rule** (which module owns a piece of content):
+- **Must DO** (bug, ticket, actionable task with an owner) → `issue_create` (**kg beads** — durable, synced, has an ID + status).
+- **Where am I** (current focus, resume, "what was I doing") → `state_*` (**kg memory** — volatile, local-only, not embedded).
+- **What I KNOW** — business WHY → `knowledge_store`; coding HOW → `life_store`; a design decision → `decision_record` (**kg chunks** — durable, embedded/queryable).
+
+Common mis-routing: a TODO in `state_*` (vanishes, team can't see it) → should be an issue. "Currently fixing X" as an issue (backlog rot) → should be `state_set_context`. Anchor a session to the issue you're working (`state_set_context current_issue:<ref>`) so decisions/insights auto-link back to it — that is the closed loop.
+
+**Anti-graveyard rule for kg beads:** create issues on user request or explicit confirmation — never spawn them speculatively "to resolve later" (that is exactly how the old beads tracker became a 200-item graveyard). Use `issue_stale` to catch backlog nobody returned to.
 
 ## Domain vs Life Knowledge — Decision Guide
 

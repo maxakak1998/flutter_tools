@@ -493,6 +493,7 @@ async function runDoctor(parsed: ParsedArgs): Promise<void> {
     'kg-lifecycle',
     'kg-life-knowledge',
     'kg-session-state',
+    'kg-beads',
     'kg-troubleshooting',
   ];
   const foundSkills = expectedSkills.filter((s) => existsSync(join(skillsDir, s, 'SKILL.md')));
@@ -1245,6 +1246,7 @@ For complete workflows, read the sub-skills in .claude/skills/knowledge-graph/:
 - kg-lifecycle/SKILL.md — validation, promotion, golden evidence details
 - kg-life-knowledge/SKILL.md — operational learnings (coding gotchas, patterns)
 - kg-session-state/SKILL.md — working memory across sessions (resume, context, plans, tasks, decisions)
+- kg-beads/SKILL.md — issues/bugs as first-class graph nodes (create, ready-work, closed loop, replaces beads)
 - kg-troubleshooting/SKILL.md — error diagnosis, common failures`);
 
   return sections.join('\n\n');
@@ -1782,6 +1784,7 @@ const EXPECTED_SKILLS = [
   'kg-lifecycle',
   'kg-life-knowledge',
   'kg-session-state',
+  'kg-beads',
   'kg-troubleshooting',
 ];
 
