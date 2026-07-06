@@ -52,6 +52,10 @@ npx tsx scripts/daemon-integration-test.ts
 
 # Build artifact test — verifies dist/ contains expected compiled outputs + copied assets
 npx tsx scripts/build-artifact-test.ts
+
+# Response-envelope test — classifyError() over REAL handler messages + wrap helpers.
+# Pure (no daemon, no Ollama). Runs against source via tsx.
+npx tsx scripts/envelope-test.ts
 ```
 
 **Prerequisites**: Node.js >= 18, Ollama running (`ollama serve`), bge-m3 model (`ollama pull bge-m3`)
@@ -180,6 +184,38 @@ Per-project knowledge graphs via `.knowledge-graph/` directories:
 - **No batch store** — all stores are single-chunk to ensure dedup feedback is processed per-chunk.
 - **CLI auto-kills stale processes** during `reset-db` (checks via `ps`, only kills `node cli.js serve` processes). The `serve` and `serve-standalone` commands call `ensureDaemon()` from `cli.ts`; after the daemon URL is resolved, `client.ts` runs as the stdio proxy.
 - **Storage abstraction** — All storage access goes through `IStorage` interface (`storage/interface.ts`). Backend is selected by `createStorage(backend, dbPath)` factory. Tool handlers and engine components are backend-agnostic.
+
+### Response Envelope (unified, client-side)
+
+Every tool response is wrapped in a **unified envelope** at a single chokepoint — `proxyTool` in `client.ts` — so the MCP consumer (Claude) reads one shape and can classify failures without string-matching:
+
+```jsonc
+// success — every tool
+{ "ok": true, "data": <tool payload, unchanged; null if the tool returns void> }
+
+// error — every tool
+{ "ok": false, "error": { "code": "not_found", "message": "<original message>", "retryable": false, "hint": "<static, per-code>" } }
+```
+
+The envelope lives **only inside the MCP `text` content**. The daemon `/rpc` contract and all handlers are untouched — this is client-side, at the MCP boundary, and does NOT change the internal JSON-RPC shape (`body.result`) that CLI hooks and tests read. On the error path `isError: true` stays (MCP standard); the `{ok:false}` sits inside the text.
+
+**Error codes** (`classifyError`, ordered — first match wins):
+
+| code | retryable | when |
+|---|---|---|
+| `daemon_unreachable` | true | `DaemonUnreachableError` — transport hop failed; self-heal already retried once |
+| `version_conflict` | true | optimistic-concurrency `expected_version` mismatch — re-read, then retry |
+| `ollama_failed` | true | embedding backend down/5xx (checked **before** `not_found` — embedder throws "Model … not found. Run: ollama pull") |
+| `not_found` | false | target id/ref does not exist |
+| `validation` | false | caller-fixable precondition/arg error (Cannot promote/delete/link, requires …, across layers, …) |
+| `internal` | false | anything unrecognized — do not blindly retry |
+
+**Two boundary limits Claude must know** (cannot be fixed in code — they are architectural):
+
+1. **Zod-validation errors bypass the envelope.** The MCP SDK validates tool params *before* the `proxyTool` callback runs, so a wrong-type argument yields an SDK error whose text does NOT parse as `{ok:...}`. Treat any `isError:true` whose text is not a `{ok:false}` envelope as a **validation** failure (fix the params) — do not over-trust a missing `retryable`.
+2. **The envelope unifies only the outer wrapper.** `data` still differs per tool (bare array vs `{results,total}` vs `{latest,trail}`). The big win is on the error path; success shape is not unified. Also `ok:true` does NOT guarantee a mutation — `data.duplicate_of` (store dedup no-op) and `data.warnings` (advisory) still appear on success, so read them.
+
+Do **not** register an `outputSchema` for these tools — it would force `structuredContent` onto every success path and break the text-only envelope. `classifyError`/`wrapSuccess`/`wrapError` are pure exported functions (tested by `scripts/envelope-test.ts` without a daemon).
 
 ### Session-State Subsystem
 
@@ -720,6 +756,7 @@ Both backends implement the `IStorage` interface (`storage/interface.ts`). Backe
 | `scripts/regression-test.ts` | Regression suite covering all tool features |
 | `scripts/daemon-integration-test.ts` | Verifies daemon startup, health/connect/disconnect/shutdown against built `dist/` |
 | `scripts/build-artifact-test.ts` | Verifies `dist/` contains expected compiled outputs and copied assets |
+| `scripts/envelope-test.ts` | Verifies `classifyError`/`wrapSuccess`/`wrapError` map real handler messages to the right code+retryable (pure, no daemon) |
 | `scripts/setup-hooks.sh` | Installs KG enforcement hooks into `.claude/hooks/` |
 | `scripts/remove-hooks.sh` | Removes KG enforcement hooks from `.claude/hooks/` |
 | `docs/architecture.md` | 4-layer architecture overview, data flows, config, limitations |

@@ -69,6 +69,100 @@ export async function callWithRevive(
 }
 
 // ============================================================
+// Unified response envelope
+// ============================================================
+//
+// Every tool response is wrapped at the proxyTool chokepoint so the MCP consumer
+// (Claude) reads ONE shape and can classify failures without string-matching:
+//   success → { ok: true,  data }
+//   error   → { ok: false, error: { code, message, retryable, hint } }
+//
+// The envelope lives ONLY inside the MCP `text` content — the daemon `/rpc`
+// contract and all 27 handlers are untouched. Do NOT register an outputSchema
+// for these tools: an outputSchema forces `structuredContent` onto every success
+// path and would break the text-only envelope.
+//
+// IMPORTANT boundary: Zod validates tool params BEFORE this callback runs, so a
+// bad-type argument produces an SDK error that never reaches wrapError — its text
+// will NOT parse as `{ok:false}`. Consumers must treat an `isError:true` whose
+// text is not a `{ok:...}` envelope as a validation failure (fix the params).
+
+export type ErrorCode =
+  | 'daemon_unreachable'
+  | 'version_conflict'
+  | 'ollama_failed'
+  | 'not_found'
+  | 'validation'
+  | 'internal';
+
+export interface EnvelopeError {
+  code: ErrorCode;
+  message: string;
+  retryable: boolean;
+  hint: string;
+}
+
+const HINTS: Record<ErrorCode, string> = {
+  daemon_unreachable:
+    'Daemon was unreachable; auto-restart already retried once. Try the call again.',
+  version_conflict:
+    'Re-read (issue_show/issue_list) for the current version, then retry.',
+  ollama_failed: 'Embedding backend (Ollama) failed; retry shortly.',
+  not_found:
+    'Target id/ref does not exist — check with issue_list/knowledge_list.',
+  validation:
+    'Caller-fixable: fix the arguments/preconditions and call again.',
+  internal: 'Unexpected internal error; do not blindly retry.',
+};
+
+const RETRYABLE: Record<ErrorCode, boolean> = {
+  daemon_unreachable: true,
+  version_conflict: true,
+  ollama_failed: true,
+  not_found: false,
+  validation: false,
+  internal: false,
+};
+
+/**
+ * Classify a thrown error into a stable code + retryable + hint.
+ *
+ * ORDER MATTERS — the first matching branch wins. Two ordering rules were found
+ * by adversarial review against the REAL handler messages:
+ *  - ollama MUST be checked before not_found: embedder throws
+ *    "Model bge-m3 not found. Run: ollama pull" which would otherwise be
+ *    mis-tagged not_found (no-retry) instead of ollama_failed (retryable).
+ *  - the validation regex uses `require` (matches require/requires/required) plus
+ *    the precondition verbs handlers actually emit (Cannot promote/delete/link,
+ *    "does not exist" is claimed by not_found, "across layers", "not an
+ *    operational"), because the old `/required/` missed ~10 caller-fixable errors.
+ */
+export function classifyError(e: unknown): EnvelopeError {
+  const message = e instanceof Error ? e.message : String(e);
+  const code = classifyCode(e, message);
+  return { code, message, retryable: RETRYABLE[code], hint: HINTS[code] };
+}
+
+function classifyCode(e: unknown, message: string): ErrorCode {
+  if (e instanceof DaemonUnreachableError) return 'daemon_unreachable';
+  if (/version conflict/i.test(message)) return 'version_conflict';
+  if (/ollama|embed|ollama pull|model .* not found/i.test(message)) return 'ollama_failed';
+  if (/not found|does not exist/i.test(message)) return 'not_found';
+  if (/invalid|must be|require|needs?|not enough|already|too_big|cannot (promote|delete|link|record)|without a reason|not an operational|across layers/i.test(message)) return 'validation';
+  return 'internal';
+}
+
+/** Wrap a successful tool result. Coalesces undefined → null so ok:true ALWAYS carries a `data` key. */
+export function wrapSuccess(data: unknown): { ok: true; data: unknown } {
+  return { ok: true, data: data ?? null };
+}
+
+/** Wrap a thrown error into the failure envelope. */
+export function wrapError(e: unknown): { ok: false; error: EnvelopeError } {
+  return { ok: false, error: classifyError(e) };
+}
+
+// ============================================================
 // Tool schemas (Zod validation before forwarding to daemon)
 // ============================================================
 
@@ -174,10 +268,13 @@ export async function clientMain(
           ...params,
           session_id: callerSessionId ?? sessionId,
         });
-        return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
+        // Success envelope: { ok:true, data }. See "Unified response envelope".
+        return { content: [{ type: 'text' as const, text: JSON.stringify(wrapSuccess(result), null, 2) }] };
       } catch (e) {
+        // Error envelope: { ok:false, error:{code,message,retryable,hint} }.
+        // isError:true stays (MCP standard) — the {ok:false} lives inside text.
         return {
-          content: [{ type: 'text' as const, text: `Error: ${e instanceof Error ? e.message : String(e)}` }],
+          content: [{ type: 'text' as const, text: JSON.stringify(wrapError(e), null, 2) }],
           isError: true,
         };
       }
@@ -562,7 +659,7 @@ export async function clientMain(
 
   proxyTool(
     'issue_update',
-    "Update an in-progress issue's priority (p0-p3), blocked_by list, or status among open/in_progress/blocked. To CLOSE an issue, prefer the dedicated issue_close tool. Pass expected_version for optimistic concurrency (rejects on stale writes).",
+    "Change an existing issue's priority (p0-p3), status (open/in_progress/blocked), or blocked_by list. blocked_by must contain issue_refs (short IDs like 'upcozm-a3f9'), NEVER chunk UUIDs — refs stay stable across team sync. To CLOSE a done issue, use issue_close instead. Pass expected_version (from issue_show/issue_list) for optimistic concurrency — the write is rejected if someone else changed the issue first.",
     {
       issue_ref: z.string().describe('The short issue ref to update'),
       status: issueStatusEnum.optional().describe('New status (use issue_close to close)'),
@@ -585,7 +682,7 @@ export async function clientMain(
 
   proxyTool(
     'issue_list',
-    "List issues filtered by status/priority, sorted by priority (p0 first). Closed issues are hidden unless include_closed is true. Answers 'what issues are open / what's the backlog'.",
+    "List issues (each: issue_ref, title, status, priority, blocked_by, version, updated_at), sorted by priority (p0 first). Closed issues are hidden unless include_closed is true. Answers 'what issues are open / what's the backlog'. For only the unblocked ones, use issue_ready instead.",
     {
       status: issueStatusEnum.optional().describe('Filter to one status'),
       priority: issuePriorityEnum.optional().describe('Filter to one priority'),
@@ -596,20 +693,20 @@ export async function clientMain(
 
   proxyTool(
     'issue_show',
-    "Show one issue plus its linked neighborhood — the decisions, insights, and knowledge chunks connected to it. This is the closed-loop payoff: 'what do we know about this bug, what did we decide, what was learned'.",
+    "Show one issue (full content + status/priority/blocked_by) plus its linked neighborhood: the decisions, insights, and knowledge chunks connected to it by graph edges (auto-linked while working, or attached via issue_link). This is the closed-loop payoff — 'what do we know about this bug, what did we decide, what was learned, even after it's closed'.",
     {
-      issue_ref: z.string().describe('The short issue ref to show'),
+      issue_ref: z.string().describe("The issue to show (short ref, e.g. 'upcozm-a3f9')"),
     },
     'issue_show',
   );
 
   proxyTool(
     'issue_link',
-    'Manually link a knowledge chunk (decision/insight/fact) to an issue when auto-link did not capture it — e.g. a chunk found via issue_orphans. Creates a relationship edge so issue_show surfaces it.',
+    "Manually attach an existing knowledge chunk (decision/insight/fact/knowledge) to an issue by creating a graph edge, so issue_show surfaces it. Use when auto-link missed it: a chunk written while the session had no current_issue anchor (find these via issue_orphans), or an older chunk from before the issue existed. The chunk_id is a Chunk UUID from issue_orphans results or knowledge_query results (NOT an issue_ref). Default relation is relates_to.",
     {
-      issue_ref: z.string().describe('The issue to link to'),
-      chunk_id: z.string().describe('The chunk id (decision/insight/etc) to link'),
-      relation: relationEnum.optional().describe('Relationship type (default relates_to)'),
+      issue_ref: z.string().describe("The issue to attach to (short ref, e.g. 'upcozm-a3f9')"),
+      chunk_id: z.string().describe('Chunk UUID to attach — copy the "id" field from issue_orphans or knowledge_query results'),
+      relation: relationEnum.optional().describe('Edge type (default relates_to; e.g. depends_on, contradicts)'),
     },
     'issue_link',
   );

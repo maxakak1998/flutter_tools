@@ -80,6 +80,24 @@ Common mis-routing: a TODO in `state_*` (vanishes, team can't see it) → should
 
 **Anti-graveyard rule for kg beads:** create issues on user request or explicit confirmation — never spawn them speculatively "to resolve later" (that is exactly how the old beads tracker became a 200-item graveyard). Use `issue_stale` to catch backlog nobody returned to.
 
+## Response Format (every tool)
+
+Every tool returns a **unified envelope** — read `ok` first:
+
+```jsonc
+{ "ok": true,  "data": <payload> }                                  // success
+{ "ok": false, "error": { "code", "message", "retryable", "hint" } } // failure
+```
+
+On failure, branch on `error.retryable`:
+- **`retryable: true`** (`daemon_unreachable`, `version_conflict`, `ollama_failed`) — transient. For `version_conflict`, re-read (`issue_show`/`issue_list`) to get the current version, THEN retry. Others: just retry shortly.
+- **`retryable: false`** (`not_found`, `validation`, `internal`) — do NOT retry blindly. Fix the ref/args/preconditions (`validation`, `not_found`) or surface the error (`internal`). `error.hint` says what to do.
+
+Three things to remember:
+1. **`ok:true` ≠ mutation happened.** `data.duplicate_of` (store hit an existing chunk, no-op) and `data.warnings` (advisory, e.g. content too long) still appear on success — read them.
+2. **`data` shape still differs per tool** (bare array vs `{results,total}` vs `{latest,trail}`). The envelope unifies only the outer `ok`/`error`/`data` wrapper.
+3. **A schema/type error bypasses the envelope.** If you get `isError` but the text is NOT a `{ok:false}` envelope, you passed a wrong-typed param (Zod rejected it before the tool ran) — treat it as a validation failure and fix the argument.
+
 ## Domain vs Life Knowledge — Decision Guide
 
 **Litmus test**: Ask "Does this explain a BUSINESS reason, or a CODING technique?"
