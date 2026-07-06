@@ -615,6 +615,24 @@ export async function clientMain(
     'issue_orphans',
   );
 
+  proxyTool(
+    'issue_ready',
+    "List ready-to-work issues: open/in_progress issues whose every blocker is closed (like `bd ready`). Priority-sorted (p0 first). Answers 'what can I pick up next that isn't blocked'.",
+    {
+      priority: issuePriorityEnum.optional().describe('Filter to one priority'),
+    },
+    'issue_ready',
+  );
+
+  proxyTool(
+    'issue_stale',
+    "Read-only anti-graveyard report: open/in_progress issues untouched for N days (default 14), oldest first. Symmetric to state_prune for session memory. Answers 'what backlog have we forgotten'.",
+    {
+      days: z.number().int().positive().optional().describe('Staleness threshold in days (default 14)'),
+    },
+    'issue_stale',
+  );
+
   // ============================================================
   // Connect to stdio transport
   // ============================================================

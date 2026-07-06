@@ -34,7 +34,7 @@ import { handleExport } from './tools/export.js';
 import { handleIngest } from './tools/ingest.js';
 import { handleLifeStore } from './tools/life-store.js';
 import { handleDecisionRecord } from './tools/decision.js';
-import { handleIssueCreate, handleIssueUpdate, handleIssueList, handleIssueShow, handleIssueLink, handleIssueOrphans, autoLinkToIssue } from './tools/issue.js';
+import { handleIssueCreate, handleIssueUpdate, handleIssueList, handleIssueShow, handleIssueLink, handleIssueOrphans, handleIssueReady, handleIssueStale, autoLinkToIssue } from './tools/issue.js';
 import { getCurrentIssue } from './tools/state-context.js';
 import { handleLifeFeedback } from './tools/life-feedback.js';
 import { handleLifeDraftSkill } from './tools/life-draft-skill.js';
@@ -678,6 +678,16 @@ async function daemonMain(): Promise<void> {
             limit: params.limit,
             since: params.since,
           });
+          break;
+        }
+
+        case 'issue_ready': {
+          result = await handleIssueReady(storage, { priority: params.priority });
+          break;
+        }
+
+        case 'issue_stale': {
+          result = await handleIssueStale(storage, { days: params.days });
           break;
         }
 

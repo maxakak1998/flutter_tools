@@ -229,6 +229,77 @@ export async function handleIssueShow(
 }
 
 // ============================================================
+// issue_ready — issues with no unresolved blockers (like `bd ready`)
+// ============================================================
+
+/**
+ * Ready-work: open/in_progress issues whose every blocked_by ref resolves to a
+ * CLOSED issue (or an unknown ref, treated as not-blocking). Pure in-memory join
+ * over listChunks keyed on issue_ref — sync-stable, no graph traversal needed,
+ * and uncapped by the default-50 list limit so a 200+ tracker works.
+ */
+export async function handleIssueReady(
+  storage: IStorage,
+  args: { priority?: IssuePriority } = {},
+): Promise<Array<{ issue_ref: string; title: string; status: string; priority: string; blocked_by: string[]; version: number; updated_at: string }>> {
+  const all = await listAllIssues(storage);
+
+  // Map ref → status for O(1) blocker resolution.
+  const statusByRef = new Map<string, string>();
+  for (const i of all) statusByRef.set(i.issue_ref, i.issue_status);
+
+  const isBlocking = (ref: string): boolean => {
+    const st = statusByRef.get(ref);
+    // Unknown ref → not blocking (may sync in later; do not hide ready work on it).
+    if (st === undefined) return false;
+    return st !== 'closed';
+  };
+
+  let ready = all.filter(i =>
+    (i.issue_status === 'open' || i.issue_status === 'in_progress') &&
+    !(i.blocked_by ?? []).some(isBlocking)
+  );
+
+  if (args.priority) ready = ready.filter(i => i.issue_priority === args.priority);
+  ready.sort((a, b) => (PRIORITY_ORDER[a.issue_priority] ?? 4) - (PRIORITY_ORDER[b.issue_priority] ?? 4));
+  return ready.map(toIssueSummary);
+}
+
+// ============================================================
+// issue_stale — open issues untouched for N days (anti-graveyard)
+// ============================================================
+
+/**
+ * Read-only anti-graveyard report, symmetric to state_prune: open/in_progress
+ * issues whose updated_at is older than `days` (default 14). Surfaces backlog
+ * that nobody has returned to so it does not silently rot.
+ */
+export async function handleIssueStale(
+  storage: IStorage,
+  args: { days?: number; now?: string } = {},
+): Promise<Array<{ issue_ref: string; title: string; status: string; priority: string; days_stale: number; updated_at: string }>> {
+  const days = args.days ?? 14;
+  const nowMs = args.now ? Date.parse(args.now) : Date.now();
+  const cutoffMs = nowMs - days * 24 * 60 * 60 * 1000;
+
+  const all = await listAllIssues(storage);
+  const stale = all.filter(i =>
+    (i.issue_status === 'open' || i.issue_status === 'in_progress') &&
+    Date.parse(i.updated_at) < cutoffMs
+  );
+
+  stale.sort((a, b) => (Date.parse(a.updated_at) - Date.parse(b.updated_at))); // oldest first
+  return stale.map(i => ({
+    issue_ref: i.issue_ref,
+    title: i.summary,
+    status: i.issue_status,
+    priority: i.issue_priority,
+    days_stale: Math.floor((nowMs - Date.parse(i.updated_at)) / (24 * 60 * 60 * 1000)),
+    updated_at: i.updated_at,
+  }));
+}
+
+// ============================================================
 // issue_link — manually link an issue to a chunk (decision/insight/knowledge)
 // ============================================================
 
