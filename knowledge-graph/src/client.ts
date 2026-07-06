@@ -396,12 +396,13 @@ export async function clientMain(
 
   proxyTool(
     'state_set_context',
-    'Record what you are currently working on: focus, the file/feature being touched, the immediate next step. Call when you start or pivot a task so a future session can resume.',
+    'Record what you are currently working on: focus, the file/feature being touched, the immediate next step. Call when you start or pivot a task so a future session can resume. Pass current_issue with an issue_ref to anchor this session to a kg beads issue — decisions/insights/knowledge you write afterward will auto-link back to that issue (the closed loop). Pass an empty string to clear the anchor.',
     {
       focus: z.string().min(1).describe('What you are currently working on (short focus statement)'),
       next_step: z.string().optional().describe('The immediate next step to take'),
       refs: z.array(z.string()).optional().describe('Files/features being touched'),
       note: z.string().optional().describe('Optional extra context'),
+      current_issue: z.string().optional().describe('issue_ref to anchor this session to (chunks written afterward auto-link to it); empty string clears it'),
     },
     'state_set_context',
   );
@@ -590,6 +591,28 @@ export async function clientMain(
       issue_ref: z.string().describe('The short issue ref to show'),
     },
     'issue_show',
+  );
+
+  proxyTool(
+    'issue_link',
+    'Manually link a knowledge chunk (decision/insight/fact) to an issue when auto-link did not capture it — e.g. a chunk found via issue_orphans. Creates a relationship edge so issue_show surfaces it.',
+    {
+      issue_ref: z.string().describe('The issue to link to'),
+      chunk_id: z.string().describe('The chunk id (decision/insight/etc) to link'),
+      relation: relationEnum.optional().describe('Relationship type (default relates_to)'),
+    },
+    'issue_link',
+  );
+
+  proxyTool(
+    'issue_orphans',
+    "Surface recent decision/insight chunks NOT linked to any issue — the chunk-side blind spot when current_issue was unset while writing them. Read-only; use issue_link to attach the ones that belong to an issue. Answers 'what knowledge did I capture that isn't tied to a ticket'.",
+    {
+      categories: z.array(z.string()).optional().describe('Chunk categories to scan (default: decision, insight)'),
+      limit: z.number().int().positive().optional().describe('Max orphans to return (default 20)'),
+      since: z.string().optional().describe('Only consider chunks created at/after this ISO timestamp'),
+    },
+    'issue_orphans',
   );
 
   // ============================================================

@@ -34,7 +34,8 @@ import { handleExport } from './tools/export.js';
 import { handleIngest } from './tools/ingest.js';
 import { handleLifeStore } from './tools/life-store.js';
 import { handleDecisionRecord } from './tools/decision.js';
-import { handleIssueCreate, handleIssueUpdate, handleIssueList, handleIssueShow } from './tools/issue.js';
+import { handleIssueCreate, handleIssueUpdate, handleIssueList, handleIssueShow, handleIssueLink, handleIssueOrphans, autoLinkToIssue } from './tools/issue.js';
+import { getCurrentIssue } from './tools/state-context.js';
 import { handleLifeFeedback } from './tools/life-feedback.js';
 import { handleLifeDraftSkill } from './tools/life-draft-skill.js';
 import { handleStateSetContext, handleStateGetContext } from './tools/state-context.js';
@@ -457,6 +458,13 @@ async function daemonMain(): Promise<void> {
           if (!sResult.duplicate_of) {
             autoExporter.queueChunkExport(sResult.id);
           }
+          // Auto-link to the session's current issue (closed loop). Skip for
+          // issues themselves and duplicates. No-ops if no anchor is set.
+          if (!sResult.duplicate_of && params.metadata?.category !== 'issue') {
+            const anchor = await getCurrentIssue(storage, params.session_id ?? '', projectId ?? '');
+            const linkedIssueId = await autoLinkToIssue(storage, sResult.id, anchor);
+            if (linkedIssueId) autoExporter.queueEdgeRefresh();
+          }
           result = sResult;
           break;
         }
@@ -586,8 +594,11 @@ async function daemonMain(): Promise<void> {
           onStep('complete', `Recorded ${drResult.id}`, { duration_ms: Math.round(performance.now() - t0), id: drResult.id, auto_links: drResult.auto_links.length });
           // Auto-export: decisions are durable knowledge and never deduped
           autoExporter.queueChunkExport(drResult.id);
-          // If a SUPERSEDES edge was created, refresh edge files too
-          if (drResult.superseded_id) {
+          // Auto-link the decision to the session's current issue (closed loop).
+          const drAnchor = await getCurrentIssue(storage, params.session_id ?? '', projectId ?? '');
+          const drLinkedIssueId = await autoLinkToIssue(storage, drResult.id, drAnchor);
+          // If a SUPERSEDES edge or an auto-link was created, refresh edge files too
+          if (drResult.superseded_id || drLinkedIssueId) {
             autoExporter.queueEdgeRefresh();
           }
           result = drResult;
@@ -651,6 +662,25 @@ async function daemonMain(): Promise<void> {
           break;
         }
 
+        case 'issue_link': {
+          result = await handleIssueLink(storage, {
+            issue_ref: params.issue_ref,
+            chunk_id: params.chunk_id,
+            relation: params.relation,
+          });
+          autoExporter.queueEdgeRefresh();
+          break;
+        }
+
+        case 'issue_orphans': {
+          result = await handleIssueOrphans(storage, {
+            categories: params.categories,
+            limit: params.limit,
+            since: params.since,
+          });
+          break;
+        }
+
         // Session state tools (active_context — append-only working focus)
         case 'state_set_context': {
           const setSessionId = params.session_id ?? '';
@@ -662,6 +692,7 @@ async function daemonMain(): Promise<void> {
             params.next_step,
             params.refs,
             params.note,
+            params.current_issue,
           );
           invalidateProjection(projectId ?? '');
           // Opportunistic compaction: keep the append-only active_context stream

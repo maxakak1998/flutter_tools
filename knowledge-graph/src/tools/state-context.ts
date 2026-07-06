@@ -31,6 +31,38 @@ export interface StateGetContextResult {
 
 const ARTIFACT_TYPE = 'active_context';
 
+/** Prefix marking a current-issue anchor inside an active_context row's refs. */
+const CURRENT_ISSUE_PREFIX = 'current_issue:';
+
+/**
+ * Read the issue_ref this session is currently anchored to, if any.
+ * Scans active_context rows newest-first for a `current_issue:<ref>` marker.
+ * Returns null if the session never set one (→ chunks written now are NOT
+ * auto-linked, and surface via issue_orphans instead).
+ */
+export async function getCurrentIssue(
+  storage: IStorage,
+  sessionId: string,
+  projectId: string,
+): Promise<string | null> {
+  const rows = await storage.listSessionState({
+    project_id: projectId,
+    artifact_type: ARTIFACT_TYPE,
+    active: true,
+    session_id: sessionId,
+  });
+  const sorted = rows.sort((a, b) => (a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : 0));
+  for (const row of sorted) {
+    const marker = (row.refs ?? []).find(r => r.startsWith(CURRENT_ISSUE_PREFIX));
+    if (marker) {
+      const ref = marker.slice(CURRENT_ISSUE_PREFIX.length).trim();
+      // An explicit empty marker clears the anchor.
+      return ref || null;
+    }
+  }
+  return null;
+}
+
 /** Parse the JSON body of an active_context row into next_step + note (tolerant of malformed bodies). */
 function parseContextBody(body: string): { next_step: string | null; note: string | null } {
   if (!body) return { next_step: null, note: null };
@@ -72,12 +104,18 @@ export async function handleStateSetContext(
   nextStep?: string,
   refs?: string[],
   note?: string,
+  currentIssue?: string,
 ): Promise<StateSetContextResult> {
   const now = new Date().toISOString();
   const id = randomUUID();
   const normalizedNextStep = nextStep?.trim() || null;
   const normalizedNote = note?.trim() || null;
-  const normalizedRefs = refs ?? [];
+  const normalizedRefs = [...(refs ?? [])];
+  // Anchor this session to an issue so chunks written now auto-link back to it.
+  // Pass an empty string to explicitly clear the anchor.
+  if (currentIssue !== undefined) {
+    normalizedRefs.push(`${CURRENT_ISSUE_PREFIX}${currentIssue.trim()}`);
+  }
 
   await storage.createSessionState({
     id,

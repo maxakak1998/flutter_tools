@@ -55,6 +55,36 @@ async function listAllIssues(storage: IStorage): Promise<StoredChunk[]> {
 }
 
 // ============================================================
+// Auto-link — anchor a freshly written chunk to the session's current issue
+// ============================================================
+
+/**
+ * If `issueRef` names a real issue, create a RELATES_TO edge from the new chunk
+ * to that issue. Called by the daemon after a decision/knowledge/life chunk is
+ * stored while the session has a current_issue anchor. No-ops silently if the
+ * ref is empty or unknown (the chunk then surfaces via issue_orphans instead).
+ * Returns the issue's chunk id if linked, else null.
+ */
+export async function autoLinkToIssue(
+  storage: IStorage,
+  newChunkId: string,
+  issueRef: string | null,
+): Promise<string | null> {
+  if (!issueRef) return null;
+  const issue = await findByRef(storage, issueRef);
+  if (!issue) return null;
+  if (issue.id === newChunkId) return null; // never self-link (e.g. issue_create itself)
+  try {
+    await storage.createRelation(newChunkId, issue.id, 'RELATES_TO', { auto_created: 'true' });
+    log('auto-linked chunk', newChunkId, '→ issue', issueRef);
+    return issue.id;
+  } catch (e) {
+    log('auto-link failed:', newChunkId, '→', issueRef, e);
+    return null;
+  }
+}
+
+// ============================================================
 // issue_create
 // ============================================================
 
@@ -196,6 +226,64 @@ export async function handleIssueShow(
     issue: { ...toIssueSummary(issue), content: issue.content },
     linked,
   };
+}
+
+// ============================================================
+// issue_link — manually link an issue to a chunk (decision/insight/knowledge)
+// ============================================================
+
+export async function handleIssueLink(
+  storage: IStorage,
+  args: { issue_ref: string; chunk_id: string; relation?: string },
+): Promise<{ issue_ref: string; chunk_id: string; relation: string }> {
+  const issue = await findByRef(storage, args.issue_ref);
+  if (!issue) throw new Error(`Issue not found: ${args.issue_ref}`);
+  const target = await storage.getChunk(args.chunk_id);
+  if (!target) throw new Error(`Chunk not found: ${args.chunk_id}`);
+
+  const relation = (args.relation ?? 'relates_to').toUpperCase();
+  await storage.createRelation(args.chunk_id, issue.id, relation, { auto_created: 'false' });
+  log('linked chunk', args.chunk_id, '→ issue', args.issue_ref, `(${relation})`);
+  return { issue_ref: args.issue_ref, chunk_id: args.chunk_id, relation };
+}
+
+// ============================================================
+// issue_orphans — chunks that look issue-worthy but link to no issue
+// ============================================================
+
+/**
+ * Surface recent decision/insight chunks that have NO edge to any issue — the
+ * chunk-side blind spot (a decision written while current_issue was unset).
+ * issue_show is issue-centric and cannot see these. Read-only: the AI/user then
+ * links them manually via issue_link.
+ */
+export async function handleIssueOrphans(
+  storage: IStorage,
+  args: { categories?: string[]; limit?: number; since?: string } = {},
+): Promise<Array<{ id: string; category: string; summary: string; created_at: string }>> {
+  const categories = args.categories ?? ['decision', 'insight'];
+  const limit = args.limit ?? 20;
+
+  // Build the set of issue chunk ids so we can tell if a neighbor is an issue.
+  const issues = await listAllIssues(storage);
+  const issueIds = new Set(issues.map(i => i.id));
+
+  const orphans: Array<{ id: string; category: string; summary: string; created_at: string }> = [];
+  for (const category of categories) {
+    const chunks = await storage.listChunks({ category }, ISSUE_LIST_CAP);
+    for (const c of chunks) {
+      if (args.since && c.created_at < args.since) continue;
+      const neighbors = await storage.getRelatedChunks(c.id, 1);
+      const linksToIssue = neighbors.some(n => issueIds.has(n.id));
+      if (!linksToIssue) {
+        orphans.push({ id: c.id, category: c.category, summary: c.summary, created_at: c.created_at });
+      }
+    }
+  }
+
+  // Newest first, capped.
+  orphans.sort((a, b) => (a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : 0));
+  return orphans.slice(0, limit);
 }
 
 // ============================================================
