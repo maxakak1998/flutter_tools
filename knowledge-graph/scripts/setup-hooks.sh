@@ -281,20 +281,7 @@ MARKER_DIR="${TMPDIR:-/tmp}/claude-kg-hooks-$(id -u)"
 TOOL_MARKER="$MARKER_DIR/kg-tool-used-${SESSION_ID}"
 EDITS_FILE="$MARKER_DIR/kg-code-edits-${SESSION_ID}"
 
-# No code edits this session — nothing to nudge about
-if [ ! -f "$EDITS_FILE" ]; then
-  exit 0
-fi
-
-# Count unique areas edited
-AREAS=$(sort -u "$EDITS_FILE" | head -5)
-EDIT_COUNT=$(wc -l < "$EDITS_FILE" | tr -d ' ')
-AREA_LIST=$(echo "$AREAS" | tr '\n' ', ' | sed 's/,$//')
-
-KG_USED="false"
-[ -f "$TOOL_MARKER" ] && KG_USED="true"
-
-# Log session summary to activity.log (always, regardless of KG usage)
+# Locate the .knowledge-graph dir (needed for activity log + research signal).
 KG_DIR=""
 CHECK_DIR="$PWD"
 while [ "$CHECK_DIR" != "/" ]; do
@@ -304,6 +291,32 @@ while [ "$CHECK_DIR" != "/" ]; do
   fi
   CHECK_DIR=$(dirname "$CHECK_DIR")
 done
+
+# Edit signal (may be zero for a pure research/investigation session).
+EDIT_COUNT=0
+AREA_LIST=""
+if [ -f "$EDITS_FILE" ]; then
+  EDIT_COUNT=$(wc -l < "$EDITS_FILE" | tr -d ' ')
+  AREA_LIST=$(sort -u "$EDITS_FILE" | head -5 | tr '\n' ', ' | sed 's/,$//')
+fi
+
+# Research signal: how many tool calls this session logged (Read/Grep/Bash/query/
+# etc.). A high-activity, zero-edit turn is exactly an investigation session whose
+# findings deserve capture — the previous edit-only gate silently missed these.
+RESEARCH_ACTIVITY=0
+if [ -n "$KG_DIR" ] && [ -f "$KG_DIR/activity.log" ]; then
+  RESEARCH_ACTIVITY=$(tail -c 200000 "$KG_DIR/activity.log" 2>/dev/null | grep -c "\"session\":\"${SESSION_ID}\"" 2>/dev/null || echo 0)
+fi
+
+KG_USED="false"
+[ -f "$TOOL_MARKER" ] && KG_USED="true"
+
+# Nothing happened at all this turn — no edits, no tracked activity. Stay silent.
+if [ "$EDIT_COUNT" -eq 0 ] && [ "$RESEARCH_ACTIVITY" -eq 0 ]; then
+  exit 0
+fi
+
+# Log session summary to activity.log (always).
 if [ -n "$KG_DIR" ]; then
   TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   jq -n -c \
@@ -314,20 +327,29 @@ if [ -n "$KG_DIR" ]; then
     >> "$KG_DIR/activity.log"
 fi
 
-# KG was used — no nudge needed
 # Session-state nudge (independent of KG-knowledge usage): if meaningful work
 # happened this turn, suggest capturing working memory so the next session can
-# resume. This is a SUGGESTION, never a command — the AI decides whether the
-# work is worth a checkpoint. Only nudge when several files were touched (a
-# trivial one-file tweak rarely needs a checkpoint).
+# resume. SUGGESTION only — the AI decides. Two triggers so we never miss a
+# capture-worthy turn: (a) code work (>=3 files edited), OR (b) a research/
+# investigation turn (zero edits but heavy tool activity — the finding-rich case
+# the user most wants tracked). Suppressed once state was already captured.
 STATE_USED="false"
 [ -f "$MARKER_DIR/kg-state-used-${SESSION_ID}" ] && STATE_USED="true"
-if [ "$STATE_USED" = "false" ] && [ "${EDIT_COUNT:-0}" -ge 3 ]; then
-  echo "" >&2
-  echo "[Session-State] Wrapping up after editing ${EDIT_COUNT} file(s) in: ${AREA_LIST}." >&2
-  echo "  If this work is worth resuming later, consider (your call — skip if trivial):" >&2
-  echo "    state_checkpoint — snapshot focus + tasks + plan so a future session can catch up" >&2
-  echo "    state_task_upsert — mark finished tasks done / note what's left" >&2
+if [ "$STATE_USED" = "false" ]; then
+  if [ "${EDIT_COUNT:-0}" -ge 3 ]; then
+    echo "" >&2
+    echo "[Session-State] Wrapping up after editing ${EDIT_COUNT} file(s) in: ${AREA_LIST}." >&2
+    echo "  If this work is worth resuming later, consider (your call — skip if trivial):" >&2
+    echo "    state_checkpoint — snapshot focus + tasks + plan so a future session can catch up" >&2
+    echo "    state_task_upsert — mark finished tasks done / note what's left" >&2
+  elif [ "${EDIT_COUNT:-0}" -eq 0 ] && [ "${RESEARCH_ACTIVITY:-0}" -ge 12 ]; then
+    echo "" >&2
+    echo "[Session-State] That was a research-heavy turn (${RESEARCH_ACTIVITY} tool calls, no edits)." >&2
+    echo "  If you uncovered findings worth keeping, consider (your call):" >&2
+    echo "    state_checkpoint — snapshot what you learned + next step so it isn't lost" >&2
+    echo "    decision_record — a design decision the investigation settled" >&2
+    echo "    knowledge_store / life_store — a durable business rule or reusable gotcha you found" >&2
+  fi
 fi
 
 # KG was used — no knowledge nudge needed
@@ -688,7 +710,7 @@ elif echo "$ERROR" | grep -qi 'lock\|locked\|busy\|database'; then
 elif echo "$ERROR" | grep -qi 'cannot delete.*without.*reason\|lifecycle.*guard\|policy.*reject'; then
   HINT="Delete blocked by lifecycle guard. Add a 'reason' field explaining why this validated/promoted/canonical chunk should be removed."
 else
-  HINT="KG tool failed unexpectedly. Run: kg doctor"
+  HINT="KG tool failed unexpectedly. Run: kg doctor. If you were applying a stored learning that did not work, consider life_feedback(outcome='failure') so its score drops."
 fi
 
 # Truncate error for context (max 200 chars)
@@ -726,6 +748,7 @@ rm -f "$MARKER_DIR/kg-session-reminder-${SESSION_ID}" 2>/dev/null
 rm -f "$MARKER_DIR/kg-consulted-${SESSION_ID}" 2>/dev/null
 rm -f "$MARKER_DIR/kg-consult-failed-${SESSION_ID}" 2>/dev/null
 rm -f "$MARKER_DIR/kg-plan-reviewed-${SESSION_ID}" 2>/dev/null
+rm -f "$MARKER_DIR/kg-state-used-${SESSION_ID}" 2>/dev/null
 
 exit 0
 HOOKEOF
@@ -957,6 +980,62 @@ rm -f "$MARKER_DIR/kg-plan-reviewed-${SESSION_ID}" 2>/dev/null
 exit 0
 HOOKEOF
 
+# --------------------------------------------------------------------------
+# Hook 17: kg-nudge-plan-capture.sh (NEW)
+# PostToolUse on ExitPlanMode — after a plan is finalized, NUDGE (never blocks,
+# always exit 0) the AI to snapshot the plan and record any design decision.
+# This is the golden moment: the plan .md now exists on disk.
+# --------------------------------------------------------------------------
+cat > "$HOOKS_DIR/kg-nudge-plan-capture.sh" <<'HOOKEOF'
+#!/bin/bash
+# PostToolUse hook for ExitPlanMode — session-state capture nudge (exit 0, non-blocking).
+INPUT=$(cat)
+SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // ""')
+
+echo "" >&2
+echo "[Session-State] Plan finalized — this is the moment to capture it (your call):" >&2
+echo "  state_save_plan — clone the plan .md immutably (version 1 = the original plan)" >&2
+echo "  decision_record — record any design decision + rationale you committed to" >&2
+echo "  state_task_upsert — seed the task ledger from the plan's steps" >&2
+exit 0
+HOOKEOF
+
+# --------------------------------------------------------------------------
+# Hook 18: kg-nudge-subagent-learning.sh (NEW)
+# SubagentStop — when a subagent returns, NUDGE (exit 0) the AI to harvest any
+# reusable learning the subagent surfaced. Golden moment: the findings exist now.
+# --------------------------------------------------------------------------
+cat > "$HOOKS_DIR/kg-nudge-subagent-learning.sh" <<'HOOKEOF'
+#!/bin/bash
+# SubagentStop hook — nudge to harvest learnings (exit 0, non-blocking).
+INPUT=$(cat)
+echo "" >&2
+echo "[Session-State] A subagent just finished. If it surfaced anything reusable, capture it (your call):" >&2
+echo "  life_store — a coding gotcha/pattern/workaround the subagent discovered" >&2
+echo "  decision_record — a design decision it settled" >&2
+echo "  knowledge_store — a business rule it confirmed with the user" >&2
+exit 0
+HOOKEOF
+
+# --------------------------------------------------------------------------
+# Hook 19: kg-mark-state-used.sh (NEW)
+# PostToolUse on state_*/decision_record — CREATES the kg-state-used marker the
+# Stop hook checks, so the checkpoint nudge is suppressed once state was captured.
+# (Completes the marker triad: this creates, Stop checks, SessionEnd cleans.)
+# --------------------------------------------------------------------------
+cat > "$HOOKS_DIR/kg-mark-state-used.sh" <<'HOOKEOF'
+#!/bin/bash
+# PostToolUse hook for session-state tools — marks that working memory was captured.
+INPUT=$(cat)
+SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // ""')
+[ -z "$SESSION_ID" ] && exit 0
+
+MARKER_DIR="${TMPDIR:-/tmp}/claude-kg-hooks-$(id -u)"
+mkdir -m 700 -p "$MARKER_DIR" 2>/dev/null
+touch "$MARKER_DIR/kg-state-used-${SESSION_ID}"
+exit 0
+HOOKEOF
+
 # ============================================================================
 # Part 1.5: Clean up legacy hooks
 # ============================================================================
@@ -1088,6 +1167,16 @@ add_hook "PostToolUse" "mcp__knowledge-graph__life_draft_skill" ".claude/hooks/k
 # --- Plan gate cleanup (successful ExitPlanMode re-arms next plan) ---
 add_hook "PostToolUse" "ExitPlanMode" ".claude/hooks/kg-clear-plan-reviewed-after-exit.sh"
 
+# --- Plan capture nudge (after a plan is finalized — save_plan + decision_record) ---
+add_hook "PostToolUse" "ExitPlanMode" ".claude/hooks/kg-nudge-plan-capture.sh"
+
+# --- State-captured marker creator (feeds the Stop checkpoint-nudge suppression) ---
+add_hook "PostToolUse" "mcp__knowledge-graph__state_set_context" ".claude/hooks/kg-mark-state-used.sh"
+add_hook "PostToolUse" "mcp__knowledge-graph__state_checkpoint" ".claude/hooks/kg-mark-state-used.sh"
+add_hook "PostToolUse" "mcp__knowledge-graph__state_task_upsert" ".claude/hooks/kg-mark-state-used.sh"
+add_hook "PostToolUse" "mcp__knowledge-graph__state_save_plan" ".claude/hooks/kg-mark-state-used.sh"
+add_hook "PostToolUse" "mcp__knowledge-graph__decision_record" ".claude/hooks/kg-mark-state-used.sh"
+
 # --- Code edit tracking (for Stop nudge) ---
 add_hook "PostToolUse" "Edit" ".claude/hooks/kg-track-code-edits.sh"
 add_hook "PostToolUse" "Edit" ".claude/hooks/kg-clear-consulted-after-edit.sh"
@@ -1111,8 +1200,11 @@ add_hook "PostToolUseFailure" "" ".claude/hooks/kg-activity-tracker.sh"
 # --- SessionStart (kg prime replaces kg-session-start.sh) ---
 add_hook "SessionStart" "" "kg prime"
 
-# --- PreCompact (kg prime restores KG context after compaction) ---
-add_hook "PreCompact" "" "kg prime"
+# --- PreCompact: intentionally NO AI-facing hook ---
+# PreCompact is observe-only — the AI has stopped, so anything emitted here never
+# reaches it. Compaction RECOVERY happens at SessionStart(trigger=compact), where
+# `kg prime` already re-injects the resume packet (see runPrime source='compact').
+# (Previously `kg prime` was mis-wired here, where its output was silently dropped.)
 
 # --- UserPromptSubmit (sync conflict detection — BEFORE kg context so conflicts show first) ---
 add_hook "UserPromptSubmit" "" ".claude/hooks/kg-sync-conflict-check.sh"
@@ -1125,6 +1217,9 @@ add_hook "SessionEnd" "" ".claude/hooks/kg-session-end-cleanup.sh"
 
 # --- Stop ---
 add_hook "Stop" "" ".claude/hooks/kg-learning-capture-check.sh"
+
+# --- SubagentStop (harvest learnings when a subagent returns) ---
+add_hook "SubagentStop" "" ".claude/hooks/kg-nudge-subagent-learning.sh"
 
 # --- Legacy cleanup: remove old hooks from settings ---
 SETTINGS=$(echo "$SETTINGS" | jq '
@@ -1162,7 +1257,10 @@ echo "$SETTINGS" | jq '.' > "$SETTINGS_FILE"
 info "Hooks installed to $HOOKS_DIR"
 info "Settings merged into $SETTINGS_FILE"
 echo ""
-echo "Hooks installed (20 scripts + kg prime + kg context, 9 events):"
+echo "Hooks installed (23 scripts + kg prime + kg context, 10 events):"
+echo "  [PostToolUse]         kg-nudge-plan-capture.sh (ExitPlanMode → save_plan + decision_record nudge)"
+echo "  [PostToolUse]         kg-mark-state-used.sh (state_*/decision → suppress Stop checkpoint nudge)"
+echo "  [SubagentStop]        kg-nudge-subagent-learning.sh (harvest life_store from subagent)"
 echo "  [PreToolUse]          kg-require-domain-check.sh"
 echo "  [PreToolUse]          kg-source-category-check.sh (evolve: category only, no source)"
 echo "  [PreToolUse]          kg-entity-decomposition-check.sh (2+ entities → require relations)"

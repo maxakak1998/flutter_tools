@@ -42,6 +42,9 @@ NEW_HOOKS=(
   "kg-sync-conflict-check.sh"
   "kg-collect-plan-findings.sh"
   "kg-clear-plan-reviewed-after-exit.sh"
+  "kg-nudge-plan-capture.sh"
+  "kg-nudge-subagent-learning.sh"
+  "kg-mark-state-used.sh"
 )
 
 info "Removing new hook scripts..."
@@ -222,6 +225,14 @@ echo "  Removed kg-session-end-cleanup.sh from SessionEnd"
 # Remove kg-learning-capture-check.sh from Stop
 remove_hook_command "Stop" ".claude/hooks/kg-learning-capture-check.sh"
 echo "  Removed kg-learning-capture-check.sh from Stop"
+
+# Remove Phase-E session-state hooks
+remove_hook_command "PostToolUse" ".claude/hooks/kg-nudge-plan-capture.sh"
+remove_hook_command "PostToolUse" ".claude/hooks/kg-mark-state-used.sh"
+echo "  Removed kg-nudge-plan-capture.sh + kg-mark-state-used.sh from PostToolUse"
+remove_hook_command "SubagentStop" ".claude/hooks/kg-nudge-subagent-learning.sh"
+remove_matcher_entry "SubagentStop" ""
+echo "  Removed kg-nudge-subagent-learning.sh from SubagentStop"
 
 # Revert hook paths: .claude/hooks/kg-* -> ./hooks/kg-* for the 3 original hooks
 SETTINGS=$(echo "$SETTINGS" | jq '
