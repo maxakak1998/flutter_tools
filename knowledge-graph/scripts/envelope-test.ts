@@ -129,6 +129,26 @@ const CASES: Case[] = [
     code: 'validation',
     retryable: false,
   },
+  // 5b. attachment source errors — caller-fixable, must beat not_found despite
+  //     "(not found)" substring (attachment.ts:126/135)
+  {
+    name: 'attachment.ts:135 "file too large (max …)" → validation/no-retry',
+    error: new Error('file too large (max 10485760 bytes, got 20000000 bytes): /tmp/big.png'),
+    code: 'validation',
+    retryable: false,
+  },
+  {
+    name: 'attachment.ts:126 "invalid source: … (not found)" → validation/no-retry (beats not_found)',
+    error: new Error('invalid source: /tmp/nope.png (not found)'),
+    code: 'validation',
+    retryable: false,
+  },
+  {
+    name: 'attachment.ts:129 "invalid source: … (is a directory …)" → validation/no-retry',
+    error: new Error('invalid source: /tmp/somedir (is a directory, not a file)'),
+    code: 'validation',
+    retryable: false,
+  },
   // 6. internal — anything unrecognized
   {
     name: 'unrecognized "boom" → internal/no-retry',

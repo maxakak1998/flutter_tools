@@ -1,7 +1,7 @@
 import { Database, Connection } from 'kuzu';
 import { mkdirSync } from 'fs';
 import { dirname } from 'path';
-import { StoredChunk, GraphEdge, QueryFilters, ListFilters, SessionStateRow, SessionStateFilters, EMBEDDING_DIMENSIONS, log } from '../types.js';
+import { StoredChunk, GraphEdge, QueryFilters, ListFilters, SessionStateRow, SessionStateFilters, AttachmentRow, AttachmentFilters, EMBEDDING_DIMENSIONS, log } from '../types.js';
 import { IStorage } from './interface.js';
 
 interface SavedRelation {
@@ -90,6 +90,7 @@ export class KuzuStorage implements IStorage {
         issue_status STRING DEFAULT '',
         issue_priority STRING DEFAULT '',
         blocked_by STRING[],
+        attachment_refs STRING[],
         created_at STRING,
         updated_at STRING,
         version INT64,
@@ -116,6 +117,9 @@ export class KuzuStorage implements IStorage {
     await this.run("ALTER TABLE Chunk ADD issue_status STRING DEFAULT ''");
     await this.run("ALTER TABLE Chunk ADD issue_priority STRING DEFAULT ''");
     await this.run("ALTER TABLE Chunk ADD blocked_by STRING[]");
+
+    // Migration: attachment linkage — "<sha256>|<caption>" refs live on the chunk
+    await this.run("ALTER TABLE Chunk ADD attachment_refs STRING[]");
 
     // Chunk → Chunk relationships
     await this.run('CREATE REL TABLE RELATES_TO (FROM Chunk TO Chunk, auto_created STRING)');
@@ -163,6 +167,21 @@ export class KuzuStorage implements IStorage {
       )
     `);
 
+    // Attachment node table — content-addressed bytes index for image evidence.
+    // NO embedding, NO vector index (mirrors SessionState). Keyed by sha256.
+    // Holds only immutable byte metadata; chunk linkage lives on Chunk.attachment_refs.
+    await this.run(`
+      CREATE NODE TABLE Attachment (
+        sha256 STRING,
+        filename STRING DEFAULT '',
+        mime STRING DEFAULT '',
+        size_bytes INT64 DEFAULT 0,
+        created_at STRING,
+        updated_at STRING,
+        PRIMARY KEY (sha256)
+      )
+    `);
+
   }
 
   private async createIndices(): Promise<void> {
@@ -177,7 +196,7 @@ export class KuzuStorage implements IStorage {
 
   // === Chunk CRUD ===
 
-  async createChunk(chunk: Omit<StoredChunk, 'created_at' | 'updated_at' | 'issue_ref' | 'issue_status' | 'issue_priority' | 'blocked_by'> & Partial<Pick<StoredChunk, 'created_at' | 'updated_at' | 'issue_ref' | 'issue_status' | 'issue_priority' | 'blocked_by'>>): Promise<string> {
+  async createChunk(chunk: Omit<StoredChunk, 'created_at' | 'updated_at' | 'issue_ref' | 'issue_status' | 'issue_priority' | 'blocked_by' | 'attachment_refs'> & Partial<Pick<StoredChunk, 'created_at' | 'updated_at' | 'issue_ref' | 'issue_status' | 'issue_priority' | 'blocked_by' | 'attachment_refs'>>): Promise<string> {
     const now = new Date().toISOString();
     const createdAt = chunk.created_at ?? now;
     const updatedAt = chunk.updated_at ?? now;
@@ -200,6 +219,7 @@ export class KuzuStorage implements IStorage {
         issue_status: $issue_status,
         issue_priority: $issue_priority,
         blocked_by: $blocked_by,
+        attachment_refs: $attachment_refs,
         created_at: $created_at,
         updated_at: $updated_at,
         version: $version,
@@ -228,6 +248,7 @@ export class KuzuStorage implements IStorage {
         issue_status: chunk.issue_status ?? '',
         issue_priority: chunk.issue_priority ?? '',
         blocked_by: chunk.blocked_by ?? [],
+        attachment_refs: chunk.attachment_refs ?? [],
         created_at: createdAt,
         updated_at: updatedAt,
         version: chunk.version,
@@ -292,6 +313,7 @@ export class KuzuStorage implements IStorage {
         issue_status: merged.issue_status,
         issue_priority: merged.issue_priority,
         blocked_by: merged.blocked_by,
+        attachment_refs: merged.attachment_refs,
         created_at: existing.created_at,
         updated_at: merged.updated_at,
         version: merged.version,
@@ -400,6 +422,10 @@ export class KuzuStorage implements IStorage {
       if (updates.blocked_by !== undefined) {
         setClauses.push('c.blocked_by = $blocked_by');
         params.blocked_by = updates.blocked_by;
+      }
+      if (updates.attachment_refs !== undefined) {
+        setClauses.push('c.attachment_refs = $attachment_refs');
+        params.attachment_refs = updates.attachment_refs;
       }
       await this.queryParams(
         `MATCH (c:Chunk) WHERE c.id = $id SET ${setClauses.join(', ')}`,
@@ -668,6 +694,7 @@ export class KuzuStorage implements IStorage {
               node.lifecycle AS lifecycle, node.access_count AS access_count,
               node.issue_ref AS issue_ref, node.issue_status AS issue_status,
               node.issue_priority AS issue_priority, node.blocked_by AS blocked_by,
+              node.attachment_refs AS attachment_refs,
               distance`,
       { emb: embedding, k },
     );
@@ -725,6 +752,7 @@ export class KuzuStorage implements IStorage {
               node.lifecycle AS lifecycle, node.access_count AS access_count,
               node.issue_ref AS issue_ref, node.issue_status AS issue_status,
               node.issue_priority AS issue_priority, node.blocked_by AS blocked_by,
+              node.attachment_refs AS attachment_refs,
               distance`,
       { emb: embedding, k },
     );
@@ -893,6 +921,7 @@ export class KuzuStorage implements IStorage {
       issue_status: (row['c.issue_status'] ?? row['related.issue_status'] ?? '') as string,
       issue_priority: (row['c.issue_priority'] ?? row['related.issue_priority'] ?? '') as string,
       blocked_by: (row['c.blocked_by'] ?? row['related.blocked_by'] ?? []) as string[],
+      attachment_refs: (row['c.attachment_refs'] ?? row['related.attachment_refs'] ?? []) as string[],
     };
   }
 
@@ -925,6 +954,7 @@ export class KuzuStorage implements IStorage {
       issue_status: (row['issue_status'] ?? '') as string,
       issue_priority: (row['issue_priority'] ?? '') as string,
       blocked_by: (row['blocked_by'] ?? []) as string[],
+      attachment_refs: (row['attachment_refs'] ?? []) as string[],
     };
   }
 
@@ -1112,6 +1142,97 @@ export class KuzuStorage implements IStorage {
       created_at: (row['s.created_at'] ?? '') as string,
       updated_at: (row['s.updated_at'] ?? '') as string,
       last_touched_at: (row['s.last_touched_at'] ?? '') as string,
+    };
+  }
+
+  // === Attachment CRUD (content-addressed bytes index — no embedding, no vector index) ===
+
+  async createAttachment(
+    row: Omit<AttachmentRow, 'created_at' | 'updated_at'> & Partial<Pick<AttachmentRow, 'created_at' | 'updated_at'>>,
+  ): Promise<string> {
+    const now = new Date().toISOString();
+    const createdAt = row.created_at ?? now;
+    const updatedAt = row.updated_at ?? now;
+    await this.queryParams(
+      `CREATE (a:Attachment {
+        sha256: $sha256,
+        filename: $filename,
+        mime: $mime,
+        size_bytes: $size_bytes,
+        created_at: $created_at,
+        updated_at: $updated_at
+      })`,
+      {
+        sha256: row.sha256,
+        filename: row.filename ?? '',
+        mime: row.mime ?? '',
+        size_bytes: row.size_bytes ?? 0,
+        created_at: createdAt,
+        updated_at: updatedAt,
+      },
+    );
+    return row.sha256;
+  }
+
+  async getAttachment(sha256: string): Promise<AttachmentRow | null> {
+    const rows = await this.queryParams(
+      'MATCH (a:Attachment) WHERE a.sha256 = $sha256 RETURN a.*',
+      { sha256 },
+    );
+    if (rows.length === 0) return null;
+    return this.rowToAttachment(rows[0]);
+  }
+
+  async listAttachments(filters: AttachmentFilters): Promise<AttachmentRow[]> {
+    const conditions: string[] = [];
+    const params: Record<string, unknown> = {};
+    if (filters.sha256 !== undefined) {
+      conditions.push('a.sha256 = $sha256');
+      params.sha256 = filters.sha256;
+    }
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+    const rows = await this.queryParams(
+      `MATCH (a:Attachment) ${where} RETURN a.*`,
+      params,
+    );
+    return rows.map((r) => this.rowToAttachment(r));
+  }
+
+  async deleteAttachment(sha256: string): Promise<void> {
+    await this.queryParams(
+      'MATCH (a:Attachment) WHERE a.sha256 = $sha256 DELETE a',
+      { sha256 },
+    );
+  }
+
+  /** Count how many chunks reference this sha256 via their attachment_refs ("<sha>|<caption>"). */
+  async countAttachmentRefs(sha256: string): Promise<number> {
+    // Kuzu does not support parameters inside an any(... WHERE ...) predicate, so we
+    // fetch non-empty ref arrays and match in JS: exact sha or "<sha>|<caption>" prefix.
+    const rows = await this.queryParams(
+      `MATCH (c:Chunk)
+       WHERE size(c.attachment_refs) > 0
+       RETURN c.attachment_refs AS refs`,
+      {},
+    );
+    const prefix = sha256 + '|';
+    let count = 0;
+    for (const row of rows) {
+      const refs = (row['refs'] ?? []) as string[];
+      if (refs.some((r) => r === sha256 || r.startsWith(prefix))) count++;
+    }
+    return count;
+  }
+
+  /** Map a row from `RETURN a.*` (a.sha256, a.filename, ...) to AttachmentRow */
+  private rowToAttachment(row: Record<string, unknown>): AttachmentRow {
+    return {
+      sha256: (row['a.sha256'] ?? '') as string,
+      filename: (row['a.filename'] ?? '') as string,
+      mime: (row['a.mime'] ?? '') as string,
+      size_bytes: Number(row['a.size_bytes'] ?? 0),
+      created_at: (row['a.created_at'] ?? '') as string,
+      updated_at: (row['a.updated_at'] ?? '') as string,
     };
   }
 }

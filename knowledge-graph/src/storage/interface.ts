@@ -1,4 +1,4 @@
-import { StoredChunk, GraphEdge, QueryFilters, ListFilters, SessionStateRow, SessionStateFilters } from '../types.js';
+import { StoredChunk, GraphEdge, QueryFilters, ListFilters, SessionStateRow, SessionStateFilters, AttachmentRow, AttachmentFilters } from '../types.js';
 
 export interface IStorage {
   // Lifecycle
@@ -6,7 +6,7 @@ export interface IStorage {
   close(): Promise<void>;
 
   // Chunk CRUD
-  createChunk(chunk: Omit<StoredChunk, 'created_at' | 'updated_at' | 'issue_ref' | 'issue_status' | 'issue_priority' | 'blocked_by'> & Partial<Pick<StoredChunk, 'created_at' | 'updated_at' | 'issue_ref' | 'issue_status' | 'issue_priority' | 'blocked_by'>>): Promise<string>;
+  createChunk(chunk: Omit<StoredChunk, 'created_at' | 'updated_at' | 'issue_ref' | 'issue_status' | 'issue_priority' | 'blocked_by' | 'attachment_refs'> & Partial<Pick<StoredChunk, 'created_at' | 'updated_at' | 'issue_ref' | 'issue_status' | 'issue_priority' | 'blocked_by' | 'attachment_refs'>>): Promise<string>;
   getChunk(id: string): Promise<StoredChunk | null>;
   updateChunk(id: string, updates: Partial<StoredChunk>): Promise<void>;
   deleteChunk(id: string): Promise<void>;
@@ -39,6 +39,15 @@ export interface IStorage {
   updateSessionState(id: string, updates: Partial<SessionStateRow>): Promise<void>;
   listSessionState(filters: SessionStateFilters): Promise<SessionStateRow[]>;
   deleteSessionState(id: string): Promise<void>;
+
+  // Attachment CRUD (content-addressed bytes index — no embedding, no vector index).
+  // Bytes are immutable, so there is no updateAttachment. Linkage lives on the chunk
+  // via attachment_refs; countAttachmentRefs tallies how many chunks reference a sha.
+  createAttachment(row: Omit<AttachmentRow, 'created_at' | 'updated_at'> & Partial<Pick<AttachmentRow, 'created_at' | 'updated_at'>>): Promise<string>;
+  getAttachment(sha256: string): Promise<AttachmentRow | null>;
+  listAttachments(filters: AttachmentFilters): Promise<AttachmentRow[]>;
+  deleteAttachment(sha256: string): Promise<void>;
+  countAttachmentRefs(sha256: string): Promise<number>;
 }
 
 export type StorageBackend = 'kuzu' | 'surreal';

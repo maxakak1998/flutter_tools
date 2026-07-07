@@ -147,8 +147,12 @@ function classifyCode(e: unknown, message: string): ErrorCode {
   if (e instanceof DaemonUnreachableError) return 'daemon_unreachable';
   if (/version conflict/i.test(message)) return 'version_conflict';
   if (/ollama|embed|ollama pull|model .* not found/i.test(message)) return 'ollama_failed';
+  // Attachment source errors are caller-fixable (bad path / oversize file), not
+  // missing graph targets — classify validation even though "invalid source:
+  // <path> (not found)" carries the "not found" substring the next branch claims.
+  if (/invalid source|too large|exceeds/i.test(message)) return 'validation';
   if (/not found|does not exist/i.test(message)) return 'not_found';
-  if (/invalid|must be|require|needs?|not enough|already|too_big|cannot (promote|delete|link|record)|without a reason|not an operational|across layers/i.test(message)) return 'validation';
+  if (/invalid|must be|require|needs?|not enough|already|too_big|too large|exceeds|cannot (promote|delete|link|record)|without a reason|not an operational|across layers/i.test(message)) return 'validation';
   return 'internal';
 }
 
@@ -738,6 +742,54 @@ export async function clientMain(
       days: z.number().int().positive().optional().describe('Staleness threshold in days (default 14)'),
     },
     'issue_stale',
+  );
+
+  // ============================================================
+  // Attachment tools — content-addressed image evidence
+  // ============================================================
+
+  const attachTargetSchema = {
+    chunk_id: z.string().optional().describe('Target chunk UUID (mutually exclusive with issue_ref)'),
+    issue_ref: z.string().optional().describe("Target issue ref, e.g. 'upcozm-a3f9' (mutually exclusive with chunk_id)"),
+  };
+
+  proxyTool(
+    'attachment_add',
+    "Attach an evidence IMAGE (screenshot/photo/pdf) to an existing chunk or issue. The KG COPIES the file's bytes into itself (content-addressed by sha256), so the original can be deleted and the team gets it via git. Use for VISUAL proof of something already captured as a chunk/issue (e.g. 6 dialog screenshots proving a bug) — the image never stands alone, it always attaches to a chunk/issue. Caption is display-only (NOT searched). Returns rel_path you can then Read to view the image.",
+    {
+      source: z.string().min(1).describe('Absolute/relative path to a local image or pdf file to copy into the KG'),
+      ...attachTargetSchema,
+      caption: z.string().max(500).optional().describe('Display-only caption (NOT indexed for search)'),
+    },
+    'attachment_add',
+  );
+
+  proxyTool(
+    'attachment_list',
+    "List the evidence images attached to a chunk or issue: each with sha256, rel_path (Read it to view), filename, caption, mime, size. Answers 'what screenshots are on this issue/decision'. Missing bytes are skipped with a warning.",
+    {
+      ...attachTargetSchema,
+    },
+    'attachment_list',
+  );
+
+  proxyTool(
+    'attachment_remove',
+    'Detach an image (by sha256) from a chunk or issue. When no chunk references the image anymore, its bytes-index row and on-disk bytes are garbage-collected. Other chunks that still reference the same image keep it.',
+    {
+      sha256: z.string().min(1).describe('The content hash of the attachment to remove (from attachment_list)'),
+      ...attachTargetSchema,
+    },
+    'attachment_remove',
+  );
+
+  proxyTool(
+    'attachment_gc',
+    "Report (and optionally evict) orphaned attachments: index rows referenced by zero chunks, and on-disk bytes files with no index row. Read-only by default (parity with issue_orphans/state_prune) — pass evict:true to actually delete.",
+    {
+      evict: z.boolean().optional().describe('Actually delete the orphans (default false = report only)'),
+    },
+    'attachment_gc',
   );
 
   // ============================================================

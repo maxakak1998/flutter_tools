@@ -4,6 +4,7 @@ import { IStorage } from '../storage/interface.js';
 import { log } from '../types.js';
 import { exportChunkToFile, removeChunkFile, exportEdge } from './export.js';
 import { SyncManifest, computeEdgeHash, stableStringify } from './format.js';
+import { exportAttachment, removeAttachmentSyncFile } from './attachment-sync.js';
 
 // ============================================================
 // Auto-exporter interface
@@ -16,6 +17,10 @@ export interface AutoExporter {
   queueChunkRemoval(syncId: string): void;
   /** Queue re-export of all manual edges. */
   queueEdgeRefresh(): void;
+  /** Queue export of an attachment's byte-metadata JSON by sha256 (on add). */
+  queueAttachmentExport(sha256: string): void;
+  /** Queue removal of an attachment's byte-metadata JSON by sha256 (on GC/remove). */
+  queueAttachmentRemoval(sha256: string): void;
   /** Force flush all pending exports immediately. */
   flush(): Promise<void>;
   /** Cancel pending timers and clear state. */
@@ -40,6 +45,8 @@ export function createAutoExporter(
 ): AutoExporter {
   const pendingExports = new Set<string>();       // local chunk IDs to export
   const pendingRemovals = new Set<string>();       // sync_ids to remove
+  const pendingAttachExports = new Set<string>();  // attachment sha256s to export
+  const pendingAttachRemovals = new Set<string>(); // attachment sha256s to remove
   let edgeRefreshNeeded = false;
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
   let destroyed = false;
@@ -66,12 +73,22 @@ export function createAutoExporter(
     // Snapshot and clear pending sets atomically
     const chunkIds = [...pendingExports];
     const removalSyncIds = [...pendingRemovals];
+    const attachExports = [...pendingAttachExports];
+    const attachRemovals = [...pendingAttachRemovals];
     const doEdgeRefresh = edgeRefreshNeeded;
     pendingExports.clear();
     pendingRemovals.clear();
+    pendingAttachExports.clear();
+    pendingAttachRemovals.clear();
     edgeRefreshNeeded = false;
 
-    if (chunkIds.length === 0 && removalSyncIds.length === 0 && !doEdgeRefresh) {
+    if (
+      chunkIds.length === 0 &&
+      removalSyncIds.length === 0 &&
+      attachExports.length === 0 &&
+      attachRemovals.length === 0 &&
+      !doEdgeRefresh
+    ) {
       return; // Nothing to do
     }
 
@@ -143,6 +160,30 @@ export function createAutoExporter(
       }
     }
 
+    // 3b. Export / remove attachment byte-metadata JSON files.
+    // On add: publish sync/attachments/<sha>.json so teammates can rebuild the row.
+    // On GC/remove: drop the JSON (bytes are content-addressed & GC'd separately).
+    for (const sha of attachExports) {
+      try {
+        const row = await storage.getAttachment(sha);
+        if (row) {
+          exportAttachment(row, syncDir);
+        } else {
+          // Row already gone (e.g. immediately GC'd) — ensure no stale JSON lingers.
+          removeAttachmentSyncFile(sha, syncDir);
+        }
+      } catch (e) {
+        log(`AutoExporter: failed to export attachment ${sha.slice(0, 12)}…:`, e);
+      }
+    }
+    for (const sha of attachRemovals) {
+      try {
+        removeAttachmentSyncFile(sha, syncDir);
+      } catch (e) {
+        log(`AutoExporter: failed to remove attachment sync file ${sha.slice(0, 12)}…:`, e);
+      }
+    }
+
     // 4. Update manifest
     try {
       await updateManifest(syncDir);
@@ -174,6 +215,21 @@ export function createAutoExporter(
       scheduleFlush();
     },
 
+    queueAttachmentExport(sha256: string): void {
+      if (destroyed) return;
+      pendingAttachExports.add(sha256);
+      // If a removal was queued for the same sha in this window, the export wins.
+      pendingAttachRemovals.delete(sha256);
+      scheduleFlush();
+    },
+
+    queueAttachmentRemoval(sha256: string): void {
+      if (destroyed) return;
+      pendingAttachRemovals.add(sha256);
+      pendingAttachExports.delete(sha256);
+      scheduleFlush();
+    },
+
     async flush(): Promise<void> {
       resetTimer();
       await runFlush();
@@ -184,6 +240,8 @@ export function createAutoExporter(
       resetTimer();
       pendingExports.clear();
       pendingRemovals.clear();
+      pendingAttachExports.clear();
+      pendingAttachRemovals.clear();
       edgeRefreshNeeded = false;
     },
   };

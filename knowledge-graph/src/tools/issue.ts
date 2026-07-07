@@ -244,7 +244,11 @@ export async function handleIssueList(
 export async function handleIssueShow(
   storage: IStorage,
   args: { issue_ref: string },
-): Promise<{ issue: ReturnType<typeof toIssueSummary> & { content: string }; linked: Array<{ id: string; category: string; summary: string }> }> {
+): Promise<{
+  issue: ReturnType<typeof toIssueSummary> & { content: string };
+  linked: Array<{ id: string; category: string; summary: string }>;
+  attachments: Array<{ sha256: string; caption: string; rel_path: string; filename?: string }>;
+}> {
   const issue = await findByRef(storage, args.issue_ref);
   if (!issue) throw new Error(`Issue not found: ${args.issue_ref}`);
 
@@ -253,10 +257,36 @@ export async function handleIssueShow(
     .filter(n => n.id !== issue.id)
     .map(n => ({ id: n.id, category: n.category, summary: n.summary }));
 
+  // Parse evidence-image linkage from the issue chunk's attachment_refs, joining
+  // the bytes-index row for the real (ext-bearing) filename + rel_path. Bytes are
+  // never embedded; this is a pure metadata read (like blocked_by).
+  const attachments: Array<{ sha256: string; caption: string; rel_path: string; filename?: string }> = [];
+  for (const ref of issue.attachment_refs ?? []) {
+    const idx = ref.indexOf('|');
+    const sha256 = idx === -1 ? ref : ref.slice(0, idx);
+    const caption = idx === -1 ? '' : ref.slice(idx + 1);
+    const row = await storage.getAttachment(sha256);
+    const disk = row?.filename ? `${sha256}.${extOf(row.filename)}` : sha256;
+    attachments.push({
+      sha256,
+      caption,
+      rel_path: `.knowledge-graph/attachments/${disk}`,
+      ...(row?.filename ? { filename: row.filename } : {}),
+    });
+  }
+
   return {
     issue: { ...toIssueSummary(issue), content: issue.content },
     linked,
+    attachments,
   };
+}
+
+/** Extract a sanitized extension from an original filename (default png). */
+function extOf(filename: string): string {
+  const m = /\.([a-z0-9]+)$/i.exec(filename);
+  const ext = m ? m[1].toLowerCase() : '';
+  return ext === 'jpeg' ? 'jpg' : (ext || 'png');
 }
 
 // ============================================================

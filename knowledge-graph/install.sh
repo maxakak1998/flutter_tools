@@ -90,6 +90,18 @@ npm run build
 
 chmod +x "$KG_HOME/src/dist/cli.js"
 
+# ── Restart running daemons so they load the freshly-built dist ──
+# A KG daemon loads its code into memory once at fork() and lives on
+# (idle-timeout ~5 min, reset by every connected session). If a daemon
+# was spawned BEFORE this build, it keeps serving the OLD code — new
+# tools/methods report "Unknown method" until it dies. Every project's
+# daemon is stale after a rebuild, so kill them ALL (not `kg stop`, which
+# is single-project and must run from inside that project). Each live
+# client proxy self-heals: it re-spawns a daemon from the new dist on its
+# next RPC (client.ts callWithRevive). Safe no-op if none are running.
+info "Restarting stale KG daemons (they cache code in memory)..."
+pkill -f "dist/daemon.js" 2>/dev/null && info "Stopped running daemon(s) — they will respawn with new code." || info "No daemon was running."
+
 # ── Step 4: Copy hook scripts ────────────────────────────────────
 # setup-hooks.sh and remove-hooks.sh → ~/.knowledge-graph/scripts/
 # These are run by `kg setup-hooks` in target projects

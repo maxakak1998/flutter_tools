@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Is
 
-A **domain knowledge** graph MCP server for Claude Code. Stores **business logic, domain rules, and workflow rationale** as atomic nodes with semantic embeddings (Ollama/bge-m3) in a graph database. This is NOT a code index — it captures the "why" behind code (business constraints, domain decisions, cross-feature relationships) that Claude infers by reasoning across code, docs, and user context. Supports two storage backends: **KuzuDB** (default) and **SurrealDB** (embedded mode). Features confidence scoring, lifecycle management, temporal decay, validation/refutation, and proactive surfacing. It also runs a **session-state subsystem** (volatile working memory: context, plans, tasks, checkpoints) and a **kg beads issue tracker** (bugs/tickets as first-class graph nodes that replace the external `beads` tool) alongside the durable knowledge graph. Exposes 37 tools via JSON-RPC.
+A **domain knowledge** graph MCP server for Claude Code. Stores **business logic, domain rules, and workflow rationale** as atomic nodes with semantic embeddings (Ollama/bge-m3) in a graph database. This is NOT a code index — it captures the "why" behind code (business constraints, domain decisions, cross-feature relationships) that Claude infers by reasoning across code, docs, and user context. Supports two storage backends: **KuzuDB** (default) and **SurrealDB** (embedded mode). Features confidence scoring, lifecycle management, temporal decay, validation/refutation, and proactive surfacing. It also runs a **session-state subsystem** (volatile working memory: context, plans, tasks, checkpoints) and a **kg beads issue tracker** (bugs/tickets as first-class graph nodes that replace the external `beads` tool) alongside the durable knowledge graph. Exposes 41 tools via JSON-RPC.
 
 ### Content Boundary: Domain Knowledge vs Code Knowledge
 
@@ -229,6 +229,16 @@ Alongside the durable knowledge graph, the daemon runs a **session-state subsyst
 - **Anti-orphaning** — `state_prune` (read-only) surfaces tasks/intentions untouched past a cutoff (default 7 days); `state_evict_orphans` clears them; `deferred` tasks are prime orphan candidates. Plans and pinned rows are never orphaned.
 - **Compaction** — `state_compact` folds old `active_context` events into a summary snapshot to keep the stream bounded; pinned rows, plans, tasks, and the newest N events per session are never compacted. `state_set_context` also opportunistically compacts when a session runs far over the keep-recent window.
 
+### Attachment Subsystem
+
+Alongside the durable knowledge graph and the volatile session-state subsystem, the daemon runs an **attachment subsystem** for content-addressed **image evidence** — screenshots/photos/pdfs that visually prove a chunk or issue (e.g. 6 dialog screenshots documenting a bug). This is a **fifth content boundary**, orthogonal to the four routed by the `knowledge-graph-guide` skill (kg beads / session-state / knowledge chunks / life learnings): an attachment never stands alone — it always attaches to an already-existing chunk/issue. Images are NOT embedded (bge-m3 only embeds text), captions are display-only (NOT indexed for search).
+
+- **Bytes storage** — the KG COPIES the source file's bytes into `.knowledge-graph/attachments/<sha256>.<ext>` (content-addressed → natural dedup; adding the same image twice = one file). This directory is git-committed (NOT gitignored), so it is simultaneously the working store and the synced store — the team gets the evidence via git, and the original source file can be deleted. Claude views an image by calling `Read` on the returned `rel_path`.
+- **`Attachment` node table** — a separate node table (KuzuDB) / SCHEMAFULL table (SurrealDB), mirroring `SessionState`: **no embedding, no vector index**, cheap in-place `SET`. It is a pure **bytes index** (`sha256` PK, `filename`, `mime`, `size_bytes`, timestamps) used only for dedup + ref-count GC. It holds NO chunk linkage.
+- **Linkage lives on the chunk, not the attachment** — the relationship + caption are stored as `attachment_refs: string[]` on the `Chunk`, each element `"<sha256>|<caption>"` (synced through the existing chunk sync file, exactly like kg beads' `blocked_by`). This is deliberate: (a) sha256 is stable while `chunk.id` is re-minted per machine on import; (b) two machines attaching the same image to two different chunks touch two different chunk sync files → no merge conflict; (c) same-chunk edits set-union `attachment_refs` on import (never last-writer-wins); (d) deleting a chunk drops its `attachment_refs`, so linkage never dangles — only orphaned bytes need GC. There is NO Chunk→Attachment graph edge (graph edges are Chunk→Chunk only and would not sync).
+- **Sync path** — bytes are already git-committed; only per-sha bytes-metadata JSON (`sync/attachments/<sha256>.json`, no caption/linkage) is exported. `checkForNewerSyncFiles` also stats `sync/attachments/` so an attachment-only pull triggers import. `importAttachments` rebuilds rows and does delete-by-absence (a row whose sync JSON is gone → row + bytes removed). Orphaned bytes are GC'd by ref-count on chunk delete, import-delete, and `attachment_gc`.
+- **Query** — "images of chunk X" = read `X.attachment_refs`; `attachment_list` and `issue_show` parse them and join the `Attachment` row for filename/size.
+
 ### Graph Schema
 
 **Node Tables**: `Chunk` (all durable knowledge — chunks with metadata + learning fields) and `SessionState` (volatile working memory, no embedding — see [Session-State Subsystem](#session-state-subsystem)). KuzuDB uses node tables; SurrealDB uses SCHEMAFULL tables with the same fields.
@@ -423,7 +433,7 @@ Before storing, the system checks for semantic duplicates:
 
 When a duplicate is detected (similarity >= 0.88), the store returns the existing chunk ID with `duplicate_of`, `similarity`, `existing_content`, `existing_summary`, and `action_hint` fields. No new chunk is created. The hint suggests using `knowledge_evolve` to merge new information into the existing chunk.
 
-## Tools (28 total)
+## Tools (32 total)
 
 ### Domain-Knowledge Tools
 
@@ -469,6 +479,17 @@ When a duplicate is detected (similarity >= 0.88), the store returns the existin
 | `state_prune` | READ-ONLY: report orphaned tasks/intentions untouched for N days |
 | `state_evict_orphans` | DESTRUCTIVE: soft-evict the orphans state_prune surfaces |
 | `state_compact` | Fold old active-context events into a summary snapshot to keep the stream bounded |
+
+### Attachment Tools
+
+`attachment_*` tools attach content-addressed **image evidence** to an existing chunk or issue. Bytes are copied into the KG (never a bare path), keyed by sha256, and git-synced. Linkage + caption live on the chunk (`attachment_refs`), not on the attachment row. See [Attachment Subsystem](#attachment-subsystem).
+
+| Tool | Purpose |
+|------|---------|
+| `attachment_add` | Copy an image/pdf into the KG (content-addressed by sha256, deduped) and attach it to a chunk/issue with a display-only caption; returns `rel_path` to `Read` |
+| `attachment_list` | List images attached to a chunk/issue (`sha256`, `rel_path`, `filename`, `caption`, `mime`, `size`); missing bytes skipped with a warning |
+| `attachment_remove` | Detach an image (by sha256) from a chunk/issue; ref-count GC removes the row + bytes when no chunk references it anymore |
+| `attachment_gc` | Report (and optionally `evict`) orphaned attachments: rows with zero refs + on-disk bytes with no row (read-only by default) |
 
 
 ### knowledge_validate
@@ -672,7 +693,7 @@ File: `~/.knowledge-graph/knowledge.json` (created by `knowledge-graph setup`)
 | Hypothesis initial confidence | 0.3 | `config.ts` |
 | Daemon idle timeout | 300s (5 min) | `project.ts` default |
 | Daemon startup timeout | 15s | `daemon-manager.ts` |
-| MCP tools exposed | 37 | `client.ts` |
+| MCP tools exposed | 41 | `client.ts` |
 | Chunk categories | 7 (`fact` `rule` `insight` `question` `workflow` `decision` `issue`) | `types.ts` |
 | Issue tools (kg beads) | 9 (`issue_create` `issue_update` `issue_close` `issue_list` `issue_ready` `issue_show` `issue_link` `issue_orphans` `issue_stale`) | `tools/issue.ts` |
 | Session-state artifact types | 4 (`active_context` `task` `event` `plan`) | `types.ts` |

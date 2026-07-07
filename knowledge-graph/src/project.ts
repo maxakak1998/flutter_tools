@@ -133,6 +133,11 @@ export function initProject(targetDir: string, name?: string, force?: boolean): 
   // Create sync directory structure for team sync via git
   mkdirSync(join(kgDir, 'sync', 'chunks'), { recursive: true });
   mkdirSync(join(kgDir, 'sync', 'edges'), { recursive: true });
+
+  // Attachment content store — bytes live here (git-committed = synced with the team);
+  // sync/attachments/ carries the per-sha bytes metadata JSON (wired in P3).
+  mkdirSync(join(kgDir, 'attachments'), { recursive: true });
+  mkdirSync(join(kgDir, 'sync', 'attachments'), { recursive: true });
   writeFileSync(join(kgDir, 'sync', 'manifest.json'), JSON.stringify({
     format_version: 1,
     last_export_at: '',

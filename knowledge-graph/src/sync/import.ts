@@ -16,6 +16,7 @@ import {
   computeEdgeHash,
 } from './format.js';
 import { detectLifecycleConflict } from './merge.js';
+import { importAttachments, gcOrphanBytesForRefs } from './attachment-sync.js';
 
 // ============================================================
 // File reading helpers
@@ -92,6 +93,9 @@ export async function importAll(
     new_edges: 0,
     removed_edges: 0,
     relinked_chunks: 0,
+    new_attachments: 0,
+    deleted_attachments: 0,
+    gc_attachment_bytes: 0,
   };
 
   const chunksDir = join(syncDir, 'chunks');
@@ -142,14 +146,14 @@ export async function importAll(
 
     // 3c. Check if content changed
     if (localContentHash !== remoteContentHash) {
-      await importUpdatedChunk(remoteChunk, localChunk.id, storage, embedder, chunksToRelink);
+      await importUpdatedChunk(remoteChunk, localChunk.id, localChunk.attachment_refs, storage, embedder, chunksToRelink);
       result.updated_chunks++;
       continue;
     }
 
     // 3e. Content same, lifecycle same — check metadata changes
     if (hasMetadataChanged(localChunk, remoteChunk)) {
-      await importMetadataUpdate(remoteChunk, localChunk.id, storage);
+      await importMetadataUpdate(remoteChunk, localChunk.id, localChunk.attachment_refs, storage);
       result.updated_chunks++;
       continue;
     }
@@ -166,8 +170,16 @@ export async function importAll(
     if (localChunk.layer === 'operational' || localChunk.layer === 'entity-index') continue;
     // If this sync_id is NOT in remote, the chunk was deleted by a teammate
     if (!remoteSyncIds.has(localChunk.sync_id)) {
+      // [11] cascade: capture the chunk's attachment_refs BEFORE deletion so we can
+      // ref-count-GC any bytes that become orphaned by this delete.
+      const cascadeRefs = localChunk.attachment_refs ?? [];
       await storage.deleteChunk(localChunk.id);
       result.deleted_chunks++;
+      if (cascadeRefs.length > 0) {
+        const gc = await gcOrphanBytesForRefs(storage, syncDir, cascadeRefs);
+        result.deleted_attachments += gc.rows_deleted;
+        result.gc_attachment_bytes += gc.bytes_deleted;
+      }
       log(`importAll: deleted local chunk ${localChunk.id} (sync_id: ${localChunk.sync_id}) — removed from sync`);
     }
   }
@@ -233,6 +245,17 @@ export async function importAll(
     }
   }
 
+  // 6b. Import attachment byte-metadata rows (rebuild + delete-by-absence + byte GC).
+  // Order-independent w.r.t. chunk import — linkage is lazy via chunk.attachment_refs.
+  try {
+    const attachResult = await importAttachments(syncDir, storage);
+    result.new_attachments += attachResult.new_rows;
+    result.deleted_attachments += attachResult.deleted_rows;
+    result.gc_attachment_bytes += attachResult.gc_bytes;
+  } catch (e) {
+    log('importAll: attachment import failed (non-fatal):', e);
+  }
+
   // 7. Update manifest with import timestamp
   const updatedManifest: SyncManifest = {
     format_version: manifest?.format_version ?? 1,
@@ -249,7 +272,8 @@ export async function importAll(
 
   log(`importAll: ${result.new_chunks} new, ${result.updated_chunks} updated, ` +
     `${result.deleted_chunks} deleted, ${result.blocked_chunks.length} blocked, ` +
-    `${result.new_edges} edges, ${result.relinked_chunks} relinked`);
+    `${result.new_edges} edges, ${result.relinked_chunks} relinked, ` +
+    `${result.new_attachments} attachments (+${result.deleted_attachments} removed, ${result.gc_attachment_bytes} bytes GC'd)`);
 
   // 8. Persist lifecycle conflicts to .conflicts.json for hook detection
   persistConflicts(syncDir, result.blocked_chunks);
@@ -381,10 +405,44 @@ async function importNewChunk(
     issue_status: remote.issue_status ?? '',
     issue_priority: remote.issue_priority ?? '',
     blocked_by: remote.blocked_by ?? [],
+    // Attachment linkage — new chunk has no local refs, take remote verbatim.
+    attachment_refs: remote.attachment_refs ?? [],
   });
 
   chunksToRelink.push({ id: localId, embedding, domain: remote.domain, layer: remote.layer });
   log(`importAll: created new chunk ${localId} (sync_id: ${remote.sync_id})`);
+}
+
+/**
+ * SET-UNION two attachment_refs arrays, deduplicated by sha256 ([19] cross-machine merge).
+ *
+ * Each element is "<sha256>|<caption>". Two machines may attach the SAME image to the
+ * SAME chunk with DIFFERENT captions; the per-chunk invariant is one ref per sha, so we
+ * union by sha (NOT by full string) and keep the LOCAL caption when both sides carry the
+ * sha (local wins for stability), otherwise the remote one. This is NOT last-writer-wins:
+ * a sha present on either side survives. Order: local refs first (stable), then
+ * remote-only refs appended.
+ */
+function unionAttachmentRefs(local: string[] = [], remote: string[] = []): string[] {
+  const shaOf = (ref: string): string => {
+    const i = ref.indexOf('|');
+    return i === -1 ? ref : ref.slice(0, i);
+  };
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const ref of local) {
+    const sha = shaOf(ref);
+    if (seen.has(sha)) continue;
+    seen.add(sha);
+    out.push(ref);
+  }
+  for (const ref of remote) {
+    const sha = shaOf(ref);
+    if (seen.has(sha)) continue;
+    seen.add(sha);
+    out.push(ref);
+  }
+  return out;
 }
 
 /**
@@ -395,6 +453,7 @@ async function importNewChunk(
 async function importUpdatedChunk(
   remote: SyncChunkFile,
   localId: string,
+  localAttachmentRefs: string[] | undefined,
   storage: IStorage,
   embedder: Embedder,
   chunksToRelink: Array<{ id: string; embedding: number[]; domain: string; layer: string | null }>,
@@ -420,6 +479,8 @@ async function importUpdatedChunk(
     issue_status: remote.issue_status ?? '',
     issue_priority: remote.issue_priority ?? '',
     blocked_by: remote.blocked_by ?? [],
+    // [19] Attachment linkage — SET-UNION local + remote (dedup by sha), never overwrite.
+    attachment_refs: unionAttachmentRefs(localAttachmentRefs, remote.attachment_refs),
     // Do NOT update: confidence, validation_count, refutation_count,
     //   access_count, last_validated_at — these are local-only
   });
@@ -435,6 +496,7 @@ async function importUpdatedChunk(
 async function importMetadataUpdate(
   remote: SyncChunkFile,
   localId: string,
+  localAttachmentRefs: string[] | undefined,
   storage: IStorage,
 ): Promise<void> {
   await storage.updateChunk(localId, {
@@ -453,6 +515,9 @@ async function importMetadataUpdate(
     issue_status: remote.issue_status ?? '',
     issue_priority: remote.issue_priority ?? '',
     blocked_by: remote.blocked_by ?? [],
+    // [19] Attachment linkage — SET-UNION so a remote attach + a local attach on the
+    // same chunk both survive. NOT last-writer-wins overwrite.
+    attachment_refs: unionAttachmentRefs(localAttachmentRefs, remote.attachment_refs),
   });
 
   log(`importAll: metadata update for chunk ${localId} (sync_id: ${remote.sync_id})`);
@@ -462,7 +527,7 @@ async function importMetadataUpdate(
  * Check if metadata (excluding content and lifecycle) differs between local and remote.
  */
 function hasMetadataChanged(
-  local: { summary: string; domain: string; category: string; importance: string; layer: string | null; keywords: string[]; entities: string[]; tags: string[]; source: string | null; version: number; issue_ref?: string; issue_status?: string; issue_priority?: string; blocked_by?: string[] },
+  local: { summary: string; domain: string; category: string; importance: string; layer: string | null; keywords: string[]; entities: string[]; tags: string[]; source: string | null; version: number; issue_ref?: string; issue_status?: string; issue_priority?: string; blocked_by?: string[]; attachment_refs?: string[] },
   remote: SyncChunkFile,
 ): boolean {
   if (local.summary !== remote.summary) return true;
@@ -480,6 +545,12 @@ function hasMetadataChanged(
   if ((local.issue_status ?? '') !== (remote.issue_status ?? '')) return true;
   if ((local.issue_priority ?? '') !== (remote.issue_priority ?? '')) return true;
   if (JSON.stringify((local.blocked_by ?? []).slice().sort()) !== JSON.stringify((remote.blocked_by ?? []).slice().sort())) return true;
+  // [19] Attachment linkage — a change is needed iff the SET-UNION would differ from
+  // local (i.e. remote introduces a sha local doesn't have). Comparing against the union
+  // (not a raw symmetric diff) avoids caption churn re-importing the same sha every pass.
+  const localRefs = (local.attachment_refs ?? []).slice().sort();
+  const merged = unionAttachmentRefs(local.attachment_refs, remote.attachment_refs).slice().sort();
+  if (JSON.stringify(localRefs) !== JSON.stringify(merged)) return true;
   return false;
 }
 

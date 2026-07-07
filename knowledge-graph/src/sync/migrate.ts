@@ -42,6 +42,11 @@ export async function migrateV1toV2(
   // 2. Create sync directory structure if not exists
   mkdirSync(join(syncDir, 'chunks'), { recursive: true });
   mkdirSync(join(syncDir, 'edges'), { recursive: true });
+  // Attachment dirs for repos created before the attachment subsystem: the bytes
+  // store (sibling of syncDir under .knowledge-graph/) and the bytes-metadata
+  // sync dir. Mirrors initProject's attachment setup.
+  mkdirSync(join(syncDir, '..', 'attachments'), { recursive: true });
+  mkdirSync(join(syncDir, 'attachments'), { recursive: true });
 
   // 3. Full export
   const exportResult = await exportAll(storage, syncDir);

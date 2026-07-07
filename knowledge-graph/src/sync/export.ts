@@ -50,6 +50,8 @@ export function exportChunk(chunk: StoredChunk): SyncChunkFile {
     issue_status: chunk.issue_status,
     issue_priority: chunk.issue_priority,
     blocked_by: chunk.blocked_by,
+    // Attachment linkage — carried so evidence images survive sync (round-trip).
+    attachment_refs: chunk.attachment_refs,
   };
 }
 

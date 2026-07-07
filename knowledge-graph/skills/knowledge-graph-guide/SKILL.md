@@ -21,6 +21,7 @@ description: "Hub skill for Knowledge Graph MCP tools. Use when starting KG work
 | Store coding mistake/gotcha/workaround | `kg-life-knowledge` |
 | Track working state / resume across sessions ("what was I doing?") | `kg-session-state` |
 | Track a bug/ticket/issue to DO ("what needs fixing", "what's ready to work") | `kg-beads` |
+| Attach VISUAL evidence (screenshot/photo/pdf) to an existing chunk/issue | `attachment_*` tools (see below) |
 | Debug KG tool errors | `kg-troubleshooting` |
 
 ## Tool Quick Reference
@@ -71,10 +72,29 @@ description: "Hub skill for Knowledge Graph MCP tools. Use when starting KG work
 | `issue_orphans` | READ-ONLY: decisions/insights linked to no issue (chunk-side blind spot) |
 | `issue_stale` | READ-ONLY: open issues untouched >N days (anti-graveyard, like `state_prune`) |
 
-**Four-boundary rule** (which module owns a piece of content):
+### Attachment Tools (content-addressed image evidence)
+| Tool | Purpose |
+|------|---------|
+| `attachment_add` | Copy an image/pdf into the KG (dedup by sha256) and attach it to a chunk/issue with a display-only caption; returns `rel_path` to `Read` |
+| `attachment_list` | List images on a chunk/issue (`sha256`, `rel_path`, `filename`, `caption`, `mime`, `size`) |
+| `attachment_remove` | Detach an image by sha256; bytes are ref-count GC'd when no chunk references it |
+| `attachment_gc` | Report (or `evict:true`) orphaned rows/bytes |
+
+**Five-boundary rule** (which module owns a piece of content):
 - **Must DO** (bug, ticket, actionable task with an owner) → `issue_create` (**kg beads** — durable, synced, has an ID + status).
 - **Where am I** (current focus, resume, "what was I doing") → `state_*` (**kg memory** — volatile, local-only, not embedded).
 - **What I KNOW** — business WHY → `knowledge_store`; coding HOW → `life_store`; a design decision → `decision_record` (**kg chunks** — durable, embedded/queryable).
+- **Visual EVIDENCE** (screenshot/photo/pdf proving one of the above) → `attachment_add` (**attachment** — content-addressed bytes, git-synced). This is orthogonal to the other four: an attachment NEVER stands alone — it always attaches to a chunk/issue that already exists. Litmus: "what does this image prove?" → that thing is the chunk/issue; the image is evidence. If there's nothing to attach to yet, create it first (`issue_create` / `decision_record`), THEN attach.
+
+**Closed loop (6 screenshots proving one bug):**
+```
+1. issue_create {title:"force-update dialog wrong copy", priority:"p1"}   → upcozm-xxxx
+2. state_set_context {current_issue:"upcozm-xxxx"}                         → anchor the session
+3. attachment_add {source:"30_force.png", attach_to:{issue_ref:"upcozm-xxxx"}, caption:"Force EN"}   ×6
+4. issue_show upcozm-xxxx  → issue + linked decisions + attachments[].rel_path
+5. Read each rel_path to view the image
+```
+The issue (the work), the attachments (the visual proof), and any decision (what was decided) all orbit one `issue_ref`, and `issue_show` gathers them.
 
 Common mis-routing: a TODO in `state_*` (vanishes, team can't see it) → should be an issue. "Currently fixing X" as an issue (backlog rot) → should be `state_set_context`. Anchor a session to the issue you're working (`state_set_context current_issue:<ref>`) so decisions/insights auto-link back to it — that is the closed loop.
 

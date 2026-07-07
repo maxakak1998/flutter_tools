@@ -38,7 +38,7 @@ function proxyTool(name, description, schema, methodName) {
 
 Zod schemas in `client.ts` validate input before forwarding. The daemon dispatches to the actual handler via `dispatchRpc()` in `daemon.ts`.
 
-27 tools are registered: 11 domain-knowledge (`knowledge_*`), 3 operational-learning (`life_*`), `decision_record`, and 12 session-state (`state_*`). See `docs/tools.md` for the full list.
+31 tools are registered: 11 domain-knowledge (`knowledge_*`), 3 operational-learning (`life_*`), `decision_record`, 12 session-state (`state_*`), and 4 attachment (`attachment_*`). See `docs/tools.md` for the full list.
 
 **Session identity**: `proxyTool()` threads a client-minted `session_id` (a per-process UUID, see [Session Registry](#session-registry)) into every RPC. A caller-supplied `session_id` in the tool params wins over the minted id (e.g. `state_get_context`/`state_get_plan` reading another session, or `''` to span all project sessions).
 
@@ -102,7 +102,7 @@ Priority: CLI flags > env vars > `knowledge.json` > hard defaults.
    ├─ Mint a per-process session_id (UUID)
    ├─ POST /rpc/connect { session_id } to register with daemon
    ├─ Create McpServer instance
-   ├─ Register all 27 tools via proxyTool() (with Zod schemas; each threads session_id)
+   ├─ Register all 31 tools via proxyTool() (with Zod schemas; each threads session_id)
    ├─ Connect StdioServerTransport
    └─ Register SIGINT/SIGTERM handlers (SIGTERM POSTs /rpc/disconnect { session_id })
 ```

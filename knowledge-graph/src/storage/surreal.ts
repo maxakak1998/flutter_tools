@@ -2,7 +2,7 @@ import { Surreal, RecordId, Table } from 'surrealdb';
 import { createNodeEngines } from '@surrealdb/node';
 import { mkdirSync } from 'fs';
 import { dirname } from 'path';
-import { StoredChunk, GraphEdge, QueryFilters, ListFilters, SessionStateRow, SessionStateFilters, EMBEDDING_DIMENSIONS, log } from '../types.js';
+import { StoredChunk, GraphEdge, QueryFilters, ListFilters, SessionStateRow, SessionStateFilters, AttachmentRow, AttachmentFilters, EMBEDDING_DIMENSIONS, log } from '../types.js';
 import { IStorage } from './interface.js';
 
 // ============================================================
@@ -113,6 +113,9 @@ export class SurrealStorage implements IStorage {
     await db.query(`DEFINE FIELD IF NOT EXISTS issue_priority ON chunk TYPE string DEFAULT ''`);
     await db.query(`DEFINE FIELD IF NOT EXISTS blocked_by ON chunk TYPE array DEFAULT []`);
     await db.query(`DEFINE FIELD IF NOT EXISTS blocked_by.* ON chunk TYPE string`);
+    // Attachment linkage — "<sha256>|<caption>" refs live on the chunk (synced via chunk sync file)
+    await db.query(`DEFINE FIELD IF NOT EXISTS attachment_refs ON chunk TYPE array DEFAULT []`);
+    await db.query(`DEFINE FIELD IF NOT EXISTS attachment_refs.* ON chunk TYPE string`);
 
     // HNSW vector index
     await db.query(
@@ -158,13 +161,23 @@ export class SurrealStorage implements IStorage {
     await db.query(`DEFINE FIELD IF NOT EXISTS created_at ON session_state TYPE string`);
     await db.query(`DEFINE FIELD IF NOT EXISTS updated_at ON session_state TYPE string`);
     await db.query(`DEFINE FIELD IF NOT EXISTS last_touched_at ON session_state TYPE string DEFAULT ''`);
+
+    // Attachment table (SCHEMAFULL) — content-addressed bytes index for image evidence.
+    // No embedding, no vector index (mirrors session_state). Keyed by sha256.
+    await db.query(`DEFINE TABLE IF NOT EXISTS attachment SCHEMAFULL`);
+    await db.query(`DEFINE FIELD IF NOT EXISTS sha256 ON attachment TYPE string`);
+    await db.query(`DEFINE FIELD IF NOT EXISTS filename ON attachment TYPE string DEFAULT ''`);
+    await db.query(`DEFINE FIELD IF NOT EXISTS mime ON attachment TYPE string DEFAULT ''`);
+    await db.query(`DEFINE FIELD IF NOT EXISTS size_bytes ON attachment TYPE int DEFAULT 0`);
+    await db.query(`DEFINE FIELD IF NOT EXISTS created_at ON attachment TYPE string`);
+    await db.query(`DEFINE FIELD IF NOT EXISTS updated_at ON attachment TYPE string`);
   }
 
   // ============================================================
   // Chunk CRUD
   // ============================================================
 
-  async createChunk(chunk: Omit<StoredChunk, 'created_at' | 'updated_at' | 'issue_ref' | 'issue_status' | 'issue_priority' | 'blocked_by'> & Partial<Pick<StoredChunk, 'created_at' | 'updated_at' | 'issue_ref' | 'issue_status' | 'issue_priority' | 'blocked_by'>>): Promise<string> {
+  async createChunk(chunk: Omit<StoredChunk, 'created_at' | 'updated_at' | 'issue_ref' | 'issue_status' | 'issue_priority' | 'blocked_by' | 'attachment_refs'> & Partial<Pick<StoredChunk, 'created_at' | 'updated_at' | 'issue_ref' | 'issue_status' | 'issue_priority' | 'blocked_by' | 'attachment_refs'>>): Promise<string> {
     const db = this.getDb();
     const now = new Date().toISOString();
     const createdAt = chunk.created_at ?? now;
@@ -196,7 +209,8 @@ export class SurrealStorage implements IStorage {
         issue_ref: $issue_ref,
         issue_status: $issue_status,
         issue_priority: $issue_priority,
-        blocked_by: $blocked_by
+        blocked_by: $blocked_by,
+        attachment_refs: $attachment_refs
       }`,
       {
         id: chunk.id,
@@ -225,6 +239,7 @@ export class SurrealStorage implements IStorage {
         issue_status: chunk.issue_status ?? '',
         issue_priority: chunk.issue_priority ?? '',
         blocked_by: chunk.blocked_by ?? [],
+        attachment_refs: chunk.attachment_refs ?? [],
       },
     );
     return chunk.id;
@@ -259,6 +274,7 @@ export class SurrealStorage implements IStorage {
       ['lifecycle', 'lifecycle'], ['access_count', 'access_count'],
       ['issue_ref', 'issue_ref'], ['issue_status', 'issue_status'],
       ['issue_priority', 'issue_priority'], ['blocked_by', 'blocked_by'],
+      ['attachment_refs', 'attachment_refs'],
     ];
 
     for (const [key, paramName] of fields) {
@@ -701,6 +717,7 @@ export class SurrealStorage implements IStorage {
       issue_status: (row.issue_status ?? '') as string,
       issue_priority: (row.issue_priority ?? '') as string,
       blocked_by: (row.blocked_by ?? []) as string[],
+      attachment_refs: (row.attachment_refs ?? []) as string[],
     };
   }
 
@@ -851,6 +868,101 @@ export class SurrealStorage implements IStorage {
       created_at: (row.created_at ?? '') as string,
       updated_at: (row.updated_at ?? '') as string,
       last_touched_at: (row.last_touched_at ?? '') as string,
+    };
+  }
+
+  // ============================================================
+  // Attachment CRUD (content-addressed bytes index — no embedding, direct UPDATE/DELETE)
+  // ============================================================
+
+  async createAttachment(
+    row: Omit<AttachmentRow, 'created_at' | 'updated_at'> & Partial<Pick<AttachmentRow, 'created_at' | 'updated_at'>>,
+  ): Promise<string> {
+    const db = this.getDb();
+    const now = new Date().toISOString();
+    const createdAt = row.created_at ?? now;
+    const updatedAt = row.updated_at ?? now;
+
+    await db.query(
+      `CREATE type::thing('attachment', $sha256) CONTENT {
+        sha256: $sha256,
+        filename: $filename,
+        mime: $mime,
+        size_bytes: $size_bytes,
+        created_at: $created_at,
+        updated_at: $updated_at
+      }`,
+      {
+        sha256: row.sha256,
+        filename: row.filename ?? '',
+        mime: row.mime ?? '',
+        size_bytes: row.size_bytes ?? 0,
+        created_at: createdAt,
+        updated_at: updatedAt,
+      },
+    );
+    return row.sha256;
+  }
+
+  async getAttachment(sha256: string): Promise<AttachmentRow | null> {
+    const db = this.getDb();
+    const [rows] = await db.query<[unknown[]]>(
+      `SELECT * FROM type::thing('attachment', $sha256)`,
+      { sha256 },
+    );
+    if (!rows || rows.length === 0) return null;
+    return this.rowToAttachment(rows[0] as Record<string, unknown>);
+  }
+
+  async listAttachments(filters: AttachmentFilters): Promise<AttachmentRow[]> {
+    const db = this.getDb();
+    const conditions: string[] = [];
+    const params: Record<string, unknown> = {};
+    if (filters.sha256 !== undefined) {
+      conditions.push('sha256 = $sha256');
+      params.sha256 = filters.sha256;
+    }
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+    const [rows] = await db.query<[unknown[]]>(
+      `SELECT * FROM attachment ${where}`,
+      params,
+    );
+    if (!rows) return [];
+    return rows.map((r) => this.rowToAttachment(r as Record<string, unknown>));
+  }
+
+  async deleteAttachment(sha256: string): Promise<void> {
+    const db = this.getDb();
+    await db.query(`DELETE type::thing('attachment', $sha256)`, { sha256 });
+  }
+
+  /** Count how many chunks reference this sha256 via their attachment_refs ("<sha>|<caption>"). */
+  async countAttachmentRefs(sha256: string): Promise<number> {
+    const db = this.getDb();
+    // Fetch the ref arrays and count matches in JS — a ref matches when it is exactly
+    // the sha or begins with "<sha>|" (caption suffix). Robust across SurrealDB versions.
+    const [rows] = await db.query<[unknown[]]>(
+      `SELECT VALUE attachment_refs FROM chunk WHERE array::len(attachment_refs) > 0`,
+    );
+    if (!rows) return 0;
+    const prefix = sha256 + '|';
+    let count = 0;
+    for (const refs of rows) {
+      if (Array.isArray(refs) && refs.some((r) => r === sha256 || (typeof r === 'string' && r.startsWith(prefix)))) {
+        count++;
+      }
+    }
+    return count;
+  }
+
+  private rowToAttachment(row: Record<string, unknown>): AttachmentRow {
+    return {
+      sha256: (row.sha256 ?? extractId(row.id)) as string,
+      filename: (row.filename ?? '') as string,
+      mime: (row.mime ?? '') as string,
+      size_bytes: Number(row.size_bytes ?? 0),
+      created_at: (row.created_at ?? '') as string,
+      updated_at: (row.updated_at ?? '') as string,
     };
   }
 }

@@ -32,6 +32,11 @@ export interface SyncChunkFile {
   issue_status?: string;
   issue_priority?: string;
   blocked_by?: string[];     // issue_ref values (never UUIDs)
+  // Attachment linkage — evidence images attached to this chunk. Each element is
+  // "<sha256>|<caption>". MUST be listed here or it is DROPPED on export (see warning
+  // above) — that would silently break attachment round-trip. Linkage lives on the
+  // CHUNK (like blocked_by), NOT on the attachment row, NOT as a graph edge.
+  attachment_refs?: string[];
 }
 
 /**
@@ -69,6 +74,10 @@ export interface ImportResult {
   new_edges: number;
   removed_edges: number;
   relinked_chunks: number;
+  // Attachment sync (bytes-metadata rows rebuilt / delete-by-absence / GC'd bytes)
+  new_attachments: number;
+  deleted_attachments: number;
+  gc_attachment_bytes: number;
 }
 
 /**

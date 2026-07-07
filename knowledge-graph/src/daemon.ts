@@ -36,6 +36,7 @@ import { handleLifeStore } from './tools/life-store.js';
 import { handleDecisionRecord } from './tools/decision.js';
 import { handleIssueCreate, handleIssueUpdate, handleIssueClose, handleIssueList, handleIssueShow, handleIssueLink, handleIssueOrphans, handleIssueReady, handleIssueStale, autoLinkToIssue } from './tools/issue.js';
 import { getCurrentIssue } from './tools/state-context.js';
+import { handleAttachmentAdd, handleAttachmentList, handleAttachmentRemove, handleAttachmentGc } from './tools/attachment.js';
 import { handleLifeFeedback } from './tools/life-feedback.js';
 import { handleLifeDraftSkill } from './tools/life-draft-skill.js';
 import { handleStateSetContext, handleStateGetContext } from './tools/state-context.js';
@@ -48,6 +49,7 @@ import { handleStateProjection, invalidateProjection } from './engine/projection
 import { createAutoExporter } from './sync/auto-export.js';
 import { migrateV1toV2 } from './sync/migrate.js';
 import { importAll, removeConflict } from './sync/import.js';
+import { checkForNewerSyncFiles } from './sync/sync-gate.js';
 import { formatConflictReport } from './sync/merge.js';
 import type { SyncManifest } from './sync/format.js';
 
@@ -477,11 +479,28 @@ async function daemonMain(): Promise<void> {
           result = await handleList(storage, params.filters ?? {}, params.limit ?? 50, config.learning.decayRates);
           break;
         case 'knowledge_delete': {
-          const dResult = await handleDelete(storage, params.id, params.reason);
+          // Capture the chunk's attachment shas BEFORE delete so we can drop their
+          // sync JSONs if the cascade GC removes them ([11]).
+          const preDelete = await storage.getChunk(params.id);
+          const preRefs = preDelete?.attachment_refs ?? [];
+          const dResult = await handleDelete(storage, params.id, params.reason, syncDir);
           scheduleCacheRegen();
           // Auto-export: remove the sync file for the deleted chunk
           if (dResult.snapshot?.sync_id) {
             autoExporter.queueChunkRemoval(dResult.snapshot.sync_id);
+          }
+          // [11] cascade: for each sha that is now orphaned (0 refs), drop its byte JSON.
+          if ((dResult.attachment_gc?.rows_deleted ?? 0) > 0) {
+            const seen = new Set<string>();
+            for (const ref of preRefs) {
+              const i = ref.indexOf('|');
+              const sha = i === -1 ? ref : ref.slice(0, i);
+              if (!sha || seen.has(sha)) continue;
+              seen.add(sha);
+              if ((await storage.countAttachmentRefs(sha)) === 0) {
+                autoExporter.queueAttachmentRemoval(sha);
+              }
+            }
           }
           result = dResult;
           break;
@@ -704,6 +723,62 @@ async function daemonMain(): Promise<void> {
 
         case 'issue_stale': {
           result = await handleIssueStale(storage, { days: params.days });
+          break;
+        }
+
+        // Attachment tools — content-addressed image evidence attached to any chunk/issue.
+        // Bytes live under .knowledge-graph/attachments/; linkage rides the chunk's
+        // attachment_refs (synced via the chunk sync file, wired in P3). Never embedded.
+        case 'attachment_add': {
+          const aaResult = await handleAttachmentAdd(storage, kgDir ?? '', {
+            source: params.source,
+            attach_to: params.attach_to,
+            chunk_id: params.chunk_id,
+            issue_ref: params.issue_ref,
+            caption: params.caption,
+            cap: params.cap,
+          });
+          scheduleCacheRegen();
+          // Re-export the chunk so its updated attachment_refs (the linkage) syncs,
+          // and publish the attachment's byte-metadata JSON so teammates rebuild the row.
+          if (aaResult.chunk_id) autoExporter.queueChunkExport(aaResult.chunk_id);
+          if (aaResult.sha256) autoExporter.queueAttachmentExport(aaResult.sha256);
+          result = aaResult;
+          break;
+        }
+
+        case 'attachment_list': {
+          result = await handleAttachmentList(storage, kgDir ?? '', {
+            chunk_id: params.chunk_id,
+            issue_ref: params.issue_ref,
+            attach_to: params.attach_to,
+          });
+          break;
+        }
+
+        case 'attachment_remove': {
+          const arResult = await handleAttachmentRemove(storage, kgDir ?? '', {
+            sha256: params.sha256,
+            attach_to: params.attach_to,
+            chunk_id: params.chunk_id,
+            issue_ref: params.issue_ref,
+          });
+          scheduleCacheRegen();
+          if (arResult.chunk_id) autoExporter.queueChunkExport(arResult.chunk_id);
+          // If the last ref was GC'd, drop the byte-metadata JSON too; otherwise the
+          // row survives and its JSON stays valid.
+          if (arResult.row_deleted) autoExporter.queueAttachmentRemoval(arResult.sha256);
+          result = arResult;
+          break;
+        }
+
+        case 'attachment_gc': {
+          const agResult = await handleAttachmentGc(storage, kgDir ?? '', { evict: params.evict });
+          // On evict, drop the byte-metadata JSON for every orphan row we removed.
+          if (params.evict) {
+            for (const sha of agResult.orphan_rows) autoExporter.queueAttachmentRemoval(sha);
+          }
+          result = agResult;
           break;
         }
 
@@ -1148,51 +1223,8 @@ async function readSessionId(req: IncomingMessage): Promise<string | null> {
   }
 }
 
-/**
- * Check if any sync files (chunks or edges) have been modified after lastImportAt.
- * Returns true if there are newer files that need importing, or if lastImportAt is empty
- * (meaning we've never imported before).
- */
-function checkForNewerSyncFiles(syncDir: string, lastImportAt: string): boolean {
-  // If we've never imported, and there are sync files, we should import
-  if (!lastImportAt) {
-    const chunksDir = join(syncDir, 'chunks');
-    if (existsSync(chunksDir)) {
-      const files = readdirSync(chunksDir).filter(f => f.endsWith('.json'));
-      return files.length > 0;
-    }
-    return false;
-  }
-
-  const importTime = new Date(lastImportAt).getTime();
-  if (isNaN(importTime)) return true; // Invalid date, be safe and import
-
-  // Check chunk files
-  const chunksDir = join(syncDir, 'chunks');
-  if (existsSync(chunksDir)) {
-    const files = readdirSync(chunksDir).filter(f => f.endsWith('.json'));
-    for (const file of files) {
-      try {
-        const fileStat = statSync(join(chunksDir, file));
-        if (fileStat.mtimeMs > importTime) return true;
-      } catch { /* ignore individual file errors */ }
-    }
-  }
-
-  // Check edge files
-  const edgesDir = join(syncDir, 'edges');
-  if (existsSync(edgesDir)) {
-    const files = readdirSync(edgesDir).filter(f => f.endsWith('.json'));
-    for (const file of files) {
-      try {
-        const fileStat = statSync(join(edgesDir, file));
-        if (fileStat.mtimeMs > importTime) return true;
-      } catch { /* ignore individual file errors */ }
-    }
-  }
-
-  return false;
-}
+// checkForNewerSyncFiles moved to ./sync/sync-gate.js (imported above) so it is unit-testable
+// without importing daemon.ts (which self-starts daemonMain on import). [18] attachment scan lives there.
 
 // ============================================================
 // Run

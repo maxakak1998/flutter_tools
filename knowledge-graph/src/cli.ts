@@ -605,6 +605,24 @@ async function runResetDb(parsed: ParsedArgs): Promise<void> {
     removed = true;
   }
 
+  // Attachment content store + bytes-metadata sync dir. Without this, a fresh
+  // serve re-imports sync/attachments/*.json and resurrects orphaned bytes
+  // (the DB is gone but the on-disk evidence is not).
+  if (project) {
+    const attachDir = join(project.kgDir, 'attachments');
+    const syncAttachDir = join(project.kgDir, 'sync', 'attachments');
+    if (existsSync(attachDir)) {
+      rmSync(attachDir, { recursive: true, force: true });
+      console.log(`  Removed ${attachDir}`);
+      removed = true;
+    }
+    if (existsSync(syncAttachDir)) {
+      rmSync(syncAttachDir, { recursive: true, force: true });
+      console.log(`  Removed ${syncAttachDir}`);
+      removed = true;
+    }
+  }
+
   if (removed) {
     console.log('\nDatabase deleted. A fresh DB will be created on next serve.\n');
   } else {

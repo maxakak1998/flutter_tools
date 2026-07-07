@@ -38,3 +38,14 @@ export {
   migrateV1toV2,
   type MigrationResult,
 } from './migrate.js';
+
+export {
+  exportAttachment,
+  removeAttachmentSyncFile,
+  importAttachments,
+  gcOrphanBytesForRefs,
+  attachmentSyncDir,
+  attachmentBytesDir,
+  type SyncAttachmentFile,
+  type AttachmentImportResult,
+} from './attachment-sync.js';

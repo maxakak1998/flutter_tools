@@ -104,6 +104,32 @@ export interface StoredChunk {
   issue_status: string;     // IssueStatus: open | in_progress | blocked | closed
   issue_priority: string;   // IssuePriority: p0 | p1 | p2 | p3
   blocked_by: string[];     // issue_ref values (sync-stable IDs) this issue is blocked by
+  // === Attachment linkage — evidence images attached to this chunk ===
+  // Each element is "<sha256>|<caption>" (caption may be empty). Linkage + caption
+  // live on the CHUNK (synced via the chunk sync file, like blocked_by), NOT on the
+  // Attachment row and NOT as a graph edge. Bytes are content-addressed by sha256.
+  attachment_refs: string[];
+}
+
+// === Attachment types (content-addressed bytes index — no embedding, no vector index) ===
+
+/**
+ * Attachment row — a pure content-store index for image evidence bytes.
+ * Keyed by sha256 (stable across machines; UUIDs get re-minted on import).
+ * Holds ONLY immutable byte metadata — NO chunk linkage, NO caption.
+ * Linkage + caption live on the chunk via `attachment_refs`.
+ */
+export interface AttachmentRow {
+  sha256: string;      // content hash (PK) — also the on-disk filename stem
+  filename: string;    // original filename (display only)
+  mime: string;        // sniffed MIME type (e.g. "image/png")
+  size_bytes: number;  // byte length
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AttachmentFilters {
+  sha256?: string;
 }
 
 // === Session state types (volatile working-state — no embedding, no vector index) ===
@@ -226,6 +252,8 @@ export interface DeleteResult {
     summary: string;
   };
   reason?: string;
+  // [11] cascade: attachment bytes GC'd because this chunk (their last referrer) was deleted.
+  attachment_gc?: { rows_deleted: number; bytes_deleted: number };
 }
 
 export interface ListResult {
