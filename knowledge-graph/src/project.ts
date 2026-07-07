@@ -164,11 +164,12 @@ export function initProject(targetDir: string, name?: string, force?: boolean): 
   registerProject(projectId, projectName, targetDir);
 
   // Append to .gitignore if .git exists. These are the local-only / churny paths:
-  // data+cache+logs+daemon (per-machine runtime), .conflicts.json (local conflict
-  // scratch), and sync/manifest.json (an optimization pointer whose counters +
-  // last_export_at change on every export → pure git noise; import safely
-  // falls back to a full "initial import" when it is absent, so the actual synced
-  // data lives in sync/chunks|edges|attachments, not the manifest).
+  // data+cache+logs+daemon (per-machine runtime), state/ (volatile session-state —
+  // plan clones keyed by per-process session_id, never synced by design),
+  // .conflicts.json (local conflict scratch), and sync/manifest.json (an
+  // optimization pointer whose counters + last_export_at change on every export →
+  // pure git noise; import safely falls back to a full "initial import" when it is
+  // absent, so the actual synced data lives in sync/chunks|edges|attachments).
   const gitignorePath = join(targetDir, '.gitignore');
   const gitDir = join(targetDir, '.git');
   if (existsSync(gitDir)) {
@@ -176,6 +177,7 @@ export function initProject(targetDir: string, name?: string, force?: boolean): 
       '.knowledge-graph/data/',
       '.knowledge-graph/cache/',
       '.knowledge-graph/logs/',
+      '.knowledge-graph/state/',
       '.knowledge-graph/daemon.*',
       '.knowledge-graph/sync/.conflicts.json',
       '.knowledge-graph/sync/manifest.json',
