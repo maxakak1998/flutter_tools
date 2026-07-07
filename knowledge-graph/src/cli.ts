@@ -464,10 +464,14 @@ async function runDoctor(parsed: ParsedArgs): Promise<void> {
         { event: 'PostToolUse', matcher: 'Edit', command: '.claude/hooks/kg-clear-consulted-after-edit.sh' },
         { event: 'PostToolUse', matcher: 'Write', command: '.claude/hooks/kg-clear-consulted-after-edit.sh' },
       ];
+      // Match by suffix so a command resolves whether it is bare
+      // (".claude/hooks/x.sh") or CWD-anchored ("\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/x.sh").
+      const cmdMatches = (actual: string | undefined, expected: string) =>
+        actual === expected || (actual?.endsWith(expected) ?? false);
       const registeredGateHooks = expectedGateHooks.filter(({ event, matcher, command }) => {
         const entries = settings?.hooks?.[event] ?? [];
         return entries.some((entry: { matcher?: string; hooks?: { command?: string }[] }) =>
-          entry.matcher === matcher && entry.hooks?.some((h: { command?: string }) => h.command === command)
+          entry.matcher === matcher && entry.hooks?.some((h: { command?: string }) => cmdMatches(h.command, command))
         );
       });
       if (registeredGateHooks.length === expectedGateHooks.length) {
