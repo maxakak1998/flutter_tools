@@ -163,6 +163,12 @@ export class Retriever {
       postFiltered = postFiltered.filter(s => s.chunk.updated_at >= filters.since!);
     }
 
+    // Cap to top-N by relevance AFTER sort+filter, so the cut never drops a high-scoring
+    // chunk. Default 25 keeps the network-neighborhood shape while bounding output size
+    // (the full-neighborhood return was ~40-70 full-content chunks ≈ 80KB per query).
+    const limit = filters?.limit ?? 25;
+    postFiltered = postFiltered.slice(0, limit);
+
     onStep?.('final_rank', `Returning ${postFiltered.length} results`, {
       selected: postFiltered.map(s => ({ id: s.chunk.id, summary: s.chunk.summary, score: Math.round(s.score * 1000) / 1000 }))
     });
@@ -269,6 +275,9 @@ export class Retriever {
     if (filters?.since) {
       sorted = sorted.filter(s => s.chunk.updated_at >= filters.since!);
     }
+
+    // Cap to top-N by relevance (same default as the vector path) so the fallback honors limit too.
+    sorted = sorted.slice(0, filters?.limit ?? 25);
 
     // Track access
     const returnedIds = sorted.map(s => s.chunk.id);

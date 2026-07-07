@@ -98,6 +98,12 @@ The issue (the work), the attachments (the visual proof), and any decision (what
 
 Common mis-routing: a TODO in `state_*` (vanishes, team can't see it) → should be an issue. "Currently fixing X" as an issue (backlog rot) → should be `state_set_context`. Anchor a session to the issue you're working (`state_set_context current_issue:<ref>`) so decisions/insights auto-link back to it — that is the closed loop.
 
+**Runtime signals that keep the loop closed (you don't have to remember it all):**
+- `issue_create` returns a `next_step` telling you to anchor — do it right after creating the issue.
+- `knowledge_store` / `decision_record` return `anchored_issue`: the ref your capture linked to, or `null` with a `warnings[]` line when it landed as an **orphan** (no anchor set). If you see that warning and the capture belongs to a bug/task, `state_set_context {current_issue:<ref>}` then re-record.
+- The **anchor does NOT survive across sessions** (it's session-scoped working memory). On a new session resuming the same issue, re-run `state_set_context {current_issue:<ref>}` — the `kg prime` resume header and the orphan-count briefing remind you.
+- Closing an issue (`issue_close`) clears the anchor if it pointed there, and captures never auto-link into a **closed** issue (they orphan instead) — so re-anchor to a fresh issue before continuing new work.
+
 **Anti-graveyard rule for kg beads:** create issues on user request or explicit confirmation — never spawn them speculatively "to resolve later" (that is exactly how the old beads tracker became a 200-item graveyard). Use `issue_stale` to catch backlog nobody returned to.
 
 ## Response Format (every tool)

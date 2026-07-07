@@ -390,7 +390,7 @@ Every query increments `access_count` for all returned chunks. This is tracked b
 
 ## Search Pipeline (Retriever — `engine/retriever.ts`)
 
-1. Embed query → 2. Vector search (HNSW, 50 candidates, applies filters on raw confidence) → 3. Extract terms → 4. Graph expansion (depth 1 from top 3 hits) → 5. Merge & score (vector 0.55 + keyword 0.2 + graph 0.2/0.15 + confidence boost) → 6. Sort, filter refuted + post-filters (min_confidence on effective/decayed confidence), track access. Returns the full neighborhood — no result limit. Falls back to keyword-only if embedding fails.
+1. Embed query → 2. Vector search (HNSW, 50 candidates, applies filters on raw confidence) → 3. Extract terms → 4. Graph expansion (depth 1 from top 3 hits) → 5. Merge & score (vector 0.55 + keyword 0.2 + graph 0.2/0.15 + confidence boost) → 6. Sort, filter refuted + post-filters (min_confidence on effective/decayed confidence) → 7. cap to top-N (`filters.limit`, default 25) → track access. The cap is applied AFTER sort+filter so it always keeps the highest-scoring chunks. Falls back to keyword-only if embedding fails (fallback honors `limit` too).
 
 **Score Weights**: vector 0.55 + keyword 0.2 + graph 0.2 (in vector results) or 0.15 (graph-only) + confidence boost (configurable, default weight 0.1).
 
@@ -593,7 +593,7 @@ Normalization catches case/format variants automatically (`"DI"` → `"di"`), bu
 
 ## Query Philosophy: Network, Not RAG
 
-This is a knowledge network, not a RAG system. When Claude queries a topic, the goal is to return the full neighborhood of related knowledge — not just the top-N closest matches. The graph decides what's related through vector similarity, keyword matching, graph traversal, and confidence scoring. Everything connected comes back, sorted by relevance. Claude gets context, not snippets.
+This is a knowledge network, not a RAG system. When Claude queries a topic, the goal is to return the neighborhood of related knowledge — not just the single closest match. The graph decides what's related through vector similarity, keyword matching, graph traversal, and confidence scoring. The connected chunks come back sorted by relevance, capped at the top `limit` (default 25, override via `filters.limit`) so the payload stays bounded — the full-neighborhood return previously ran ~40-70 full-content chunks (~80KB) per query, enough to crowd out the caller's own context. Claude gets context, not snippets, but no longer the entire graph in one call.
 
 ## Content Philosophy: Domain Knowledge, Not Code Index
 
@@ -684,6 +684,7 @@ File: `~/.knowledge-graph/knowledge.json` (created by `knowledge-graph setup`)
 | Keyword-only fallback terms | first 5 | `retriever.ts` |
 | Embedding cache | 10,000 LRU | `config.ts` |
 | List default limit | 50 | `daemon.ts` |
+| Query default limit | 25 (override via `filters.limit`) | `retriever.ts` |
 
 | Chunk→Chunk relation types | 12 | `types.ts` |
 | Confirmation boost | 0.25 (diminishing) | `config.ts` |

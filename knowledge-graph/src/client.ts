@@ -303,6 +303,7 @@ export async function clientMain(
         min_confidence: z.number().min(0).max(1).optional(),
         lifecycle: lifecycleEnum.optional(),
         since: z.string().optional(),
+        limit: z.number().int().positive().optional().describe('Max results to return (default 25). Full network neighborhood is scored, then the top-N by relevance are returned.'),
       }).optional(),
     },
     'knowledge_query',

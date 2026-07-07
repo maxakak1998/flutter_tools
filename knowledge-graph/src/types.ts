@@ -191,6 +191,13 @@ export interface StoreResult {
   id: string;
   auto_links: AutoLink[];
   warnings: string[];
+  /**
+   * The issue_ref this chunk was auto-linked to (the session's current_issue anchor),
+   * or null if no anchor was set / the anchor was unresolved. Surfaced so the caller
+   * can SEE whether its capture joined the closed loop or landed as an orphan.
+   * Undefined when auto-link does not apply (duplicates, issue chunks themselves).
+   */
+  anchored_issue?: string | null;
   duplicate_of?: string;
   similarity?: number;
   existing_summary?: string;
@@ -407,6 +414,8 @@ export interface QueryFilters {
   min_confidence?: number;
   lifecycle?: string;
   since?: string;
+  /** Cap the number of results returned (applied AFTER sort+filter). Defaults to 25 in the retriever. */
+  limit?: number;
 }
 
 export interface ListFilters {

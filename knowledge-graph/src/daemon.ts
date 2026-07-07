@@ -462,10 +462,23 @@ async function daemonMain(): Promise<void> {
           }
           // Auto-link to the session's current issue (closed loop). Skip for
           // issues themselves and duplicates. No-ops if no anchor is set.
+          // Surface the outcome on `anchored_issue` so the caller can SEE whether
+          // its capture joined the loop or landed as an orphan (the anchor was an
+          // invisible precondition before — a fresh AI never knew it missed it).
           if (!sResult.duplicate_of && params.metadata?.category !== 'issue') {
             const anchor = await getCurrentIssue(storage, params.session_id ?? '', projectId ?? '');
             const linkedIssueId = await autoLinkToIssue(storage, sResult.id, anchor);
-            if (linkedIssueId) autoExporter.queueEdgeRefresh();
+            if (linkedIssueId) {
+              autoExporter.queueEdgeRefresh();
+              sResult.anchored_issue = anchor;
+            } else {
+              sResult.anchored_issue = null;
+              sResult.warnings.push(
+                anchor
+                  ? `current_issue "${anchor}" did not resolve to a known issue — this chunk is not linked to any issue (orphan). Re-check the ref via state_set_context{current_issue}.`
+                  : 'No current_issue anchor set — this chunk is an orphan (not linked to any issue). If it belongs to a bug/task, call state_set_context{current_issue: <ref>} before capturing so it joins the closed loop.'
+              );
+            }
           }
           result = sResult;
           break;
@@ -614,8 +627,19 @@ async function daemonMain(): Promise<void> {
           // Auto-export: decisions are durable knowledge and never deduped
           autoExporter.queueChunkExport(drResult.id);
           // Auto-link the decision to the session's current issue (closed loop).
+          // Surface the outcome on `anchored_issue` (same rationale as knowledge_store).
           const drAnchor = await getCurrentIssue(storage, params.session_id ?? '', projectId ?? '');
           const drLinkedIssueId = await autoLinkToIssue(storage, drResult.id, drAnchor);
+          if (drLinkedIssueId) {
+            drResult.anchored_issue = drAnchor;
+          } else {
+            drResult.anchored_issue = null;
+            drResult.warnings.push(
+              drAnchor
+                ? `current_issue "${drAnchor}" did not resolve to a known issue — this decision is not linked to any issue (orphan).`
+                : 'No current_issue anchor set — this decision is an orphan (not linked to any issue). Call state_set_context{current_issue: <ref>} before recording so it joins the closed loop.'
+            );
+          }
           // If a SUPERSEDES edge or an auto-link was created, refresh edge files too
           if (drResult.superseded_id || drLinkedIssueId) {
             autoExporter.queueEdgeRefresh();
@@ -679,6 +703,21 @@ async function daemonMain(): Promise<void> {
             return findByRef(storage, params.issue_ref);
           })();
           if (closed) autoExporter.queueChunkExport(closed.id);
+          // Clear the session anchor if it pointed at the issue we just closed, so
+          // later captures don't silently attach to a finished issue (blind-spot #6).
+          // An empty current_issue marker clears the anchor (state-context.ts:59-60).
+          if (!closeResult.already_closed) {
+            const curAnchor = await getCurrentIssue(storage, params.session_id ?? '', projectId ?? '');
+            if (curAnchor === params.issue_ref) {
+              await handleStateSetContext(
+                storage, params.session_id ?? '', projectId ?? '',
+                `Closed ${params.issue_ref}`, undefined, undefined,
+                'Anchor cleared on issue close.',
+                '', // empty current_issue → clears the anchor
+              );
+              invalidateProjection(projectId ?? '');
+            }
+          }
           result = closeResult;
           break;
         }

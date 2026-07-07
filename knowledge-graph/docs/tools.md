@@ -101,8 +101,9 @@ Search the knowledge base using hybrid retrieval: vector similarity + keyword ma
 | `filters.min_confidence` | number | no | Min effective confidence (0.0-1.0, applies temporal decay) |
 | `filters.lifecycle` | enum | no | `hypothesis` `validated` `promoted` `canonical` `refuted` `active` |
 | `filters.since` | string | no | ISO timestamp — only chunks updated after this date |
+| `filters.limit` | number | no | Max results to return (default 25). Applied AFTER sort+filter, so it always keeps the highest-scoring chunks. Raise it to widen recall for a broad topic. |
 
-**Returns**: `{ chunks: QueryChunk[], total }`
+**Returns**: `{ chunks: QueryChunk[], total }` (`total === chunks.length` — the post-cap count)
 
 Each `QueryChunk` contains:
 - `id` — chunk identifier

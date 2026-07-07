@@ -112,7 +112,11 @@ info "Backed up settings to: $(basename "$BACKUP_FILE")"
 
 SETTINGS=$(cat "$SETTINGS_FILE")
 
-# Helper: remove a specific hook command from entries under a given event
+# Helper: remove a specific hook command from entries under a given event.
+# Matches by SUFFIX so it removes a command however its path is prefixed —
+# ".claude/hooks/x.sh", "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/x.sh" (CWD fix),
+# or legacy "./hooks/x.sh". Non-path commands (e.g. "kg prime") still match exactly
+# because a string is its own suffix.
 remove_hook_command() {
   local event="$1" command="$2"
   SETTINGS=$(echo "$SETTINGS" | jq \
@@ -120,7 +124,7 @@ remove_hook_command() {
     --arg cmd "$command" '
     if .hooks[$event] then
       .hooks[$event] |= map(
-        .hooks |= map(select(.command != $cmd))
+        .hooks |= map(select((.command == $cmd) or (.command | endswith($cmd)) | not))
       ) |
       # Remove entries with empty hooks arrays
       .hooks[$event] |= map(select(.hooks | length > 0))

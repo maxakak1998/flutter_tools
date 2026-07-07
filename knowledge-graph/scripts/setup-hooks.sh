@@ -1090,7 +1090,11 @@ else
   SETTINGS='{}'
 fi
 
-# Update old paths: ./hooks/kg-* -> .claude/hooks/kg-*
+# Migrate old command paths in-place:
+#   1. ./hooks/kg-*                  -> .claude/hooks/kg-*        (legacy layout)
+#   2. .claude/hooks/kg-*            -> "$CLAUDE_PROJECT_DIR"/.claude/hooks/kg-*
+#      (CWD-independence fix — a bare relative path breaks when the shell cd's into
+#       a subdirectory. Idempotent: skips commands already prefixed.)
 SETTINGS=$(echo "$SETTINGS" | jq '
   if .hooks then
     .hooks |= with_entries(
@@ -1098,6 +1102,10 @@ SETTINGS=$(echo "$SETTINGS" | jq '
         .hooks |= map(
           if (.command | test("^\\./hooks/kg-")) then
             .command = (.command | sub("^\\./hooks/"; ".claude/hooks/"))
+          else . end
+          |
+          if (.command | test("^\\.claude/hooks/kg-")) then
+            .command = ("\"$CLAUDE_PROJECT_DIR\"/" + .command)
           else . end
         )
       )
@@ -1109,6 +1117,17 @@ SETTINGS=$(echo "$SETTINGS" | jq '
 # Usage: add_hook EVENT MATCHER COMMAND
 add_hook() {
   local event="$1" matcher="$2" command="$3"
+
+  # Anchor relative hook paths to the project root so they resolve regardless of
+  # the shell's CWD. Claude Code expands $CLAUDE_PROJECT_DIR at hook-run time (it is
+  # NOT interpolated here at install time — keep it literal so a moved project still
+  # works). Without this, `cd`-ing into a subdirectory breaks every hook with
+  # "No such file or directory".
+  case "$command" in
+    .claude/hooks/*)
+      command="\"\$CLAUDE_PROJECT_DIR\"/$command"
+      ;;
+  esac
 
   SETTINGS=$(echo "$SETTINGS" | jq \
     --arg event "$event" \

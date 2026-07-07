@@ -1353,6 +1353,37 @@ async function fetchDaemonResume(project: ProjectInfo): Promise<string> {
   }
 }
 
+/**
+ * Fetch the count of orphan chunks (decisions/insights not linked to any issue)
+ * so the resume/startup briefing can nudge the AI to anchor + re-link them. Reuses
+ * the existing issue_orphans handler. Returns '' silently on any error.
+ */
+async function fetchDaemonOrphanCount(project: ProjectInfo): Promise<string> {
+  try {
+    if (!existsSync(project.daemonPortFile)) return '';
+    const port = parseInt(readFileSync(project.daemonPortFile, 'utf-8').trim(), 10);
+    if (!(port > 0)) return '';
+    const url = `http://127.0.0.1:${port}`;
+    const rpcRes = await fetch(`${url}/rpc`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'issue_orphans',
+        params: { limit: 50 },
+        id: 1,
+      }),
+      signal: AbortSignal.timeout(3000),
+    });
+    const body = await rpcRes.json() as { result?: Array<{ id: string }> };
+    const n = body.result?.length ?? 0;
+    if (n === 0) return '';
+    return `## Orphan captures: ${n}\n${n} decision/insight chunk(s) are not linked to any issue. If they belong to a bug/task, anchor with state_set_context{current_issue: <ref>} and re-record, or run issue_orphans to review.`;
+  } catch {
+    return '';
+  }
+}
+
 /** Subset of StateResumeResult used for prime output formatting */
 interface ResumeData {
   active_context: Array<{
@@ -1559,8 +1590,15 @@ async function runPrime(): Promise<void> {
   switch (source) {
     case 'startup':
       header = `# Knowledge Graph Active
-Before editing files, consult KG: \`kg list\` then \`kg query '<topic>'\`
-If blocked, run commands above. If KG down, \`kg doctor\`.`;
+
+READ (before editing): consult KG — \`kg list\` then \`kg query '<topic>'\`. If KG down, \`kg doctor\`.
+
+ANCHOR (when starting a bug/task): \`state_set_context{current_issue: <ref>}\` — every chunk/decision you then write auto-links back to that issue. Skip it and your captures become orphans (unlinked to any issue).
+
+CAPTURE (when you finish / learn something): this is your call, but do it on purpose —
+  life_store — a reusable coding gotcha/pattern (tag life:*)
+  knowledge_store — a business rule/fact the user confirmed
+  decision_record — a design decision + its rationale`;
       break;
     case 'compact':
       header = `# KNOWLEDGE GRAPH — CONTEXT RESTORED
@@ -1576,7 +1614,8 @@ Do NOT rely on memory of previous KG results — they were compacted. Re-query n
 
 If working on domain tasks:
 [ ] 1. knowledge_list — check for new knowledge since last session
-[ ] 2. knowledge_query('<topic>') — for areas you will touch`;
+[ ] 2. knowledge_query('<topic>') — for areas you will touch
+[ ] 3. RE-ANCHOR: the current_issue anchor does NOT survive across sessions. If you resume work on an issue, call state_set_context{current_issue: <ref>} again so new captures link to it (see any orphan/anchor note in the resume packet below).`;
       break;
     case 'clear':
       header = '[Knowledge Graph] Session cleared.';
@@ -1586,13 +1625,15 @@ If working on domain tasks:
       break;
   }
 
-  // Fetch live briefing + resume packet from daemon (non-blocking, fast)
+  // Fetch live briefing + resume packet + orphan count from daemon (non-blocking, fast)
   let briefingText = '';
   let resumeText = '';
+  let orphanText = '';
   if (project && (source === 'startup' || source === 'compact' || source === 'resume')) {
-    [resumeText, briefingText] = await Promise.all([
+    [resumeText, briefingText, orphanText] = await Promise.all([
       fetchDaemonResume(project),
       fetchDaemonBriefing(project),
+      fetchDaemonOrphanCount(project),
     ]);
   }
 
@@ -1601,9 +1642,10 @@ If working on domain tasks:
 
   let additionalContext: string;
   if (skillContent) {
-    // Assemble: header → resume (most actionable) → briefing → skill guide
+    // Assemble: header → resume (most actionable) → orphans → briefing → skill guide
     const parts = [header];
     if (resumeText) parts.push(resumeText);
+    if (orphanText) parts.push(orphanText);
     if (briefingText) parts.push(briefingText);
     parts.push(skillContent);
     additionalContext = parts.join('\n\n');
@@ -1611,6 +1653,7 @@ If working on domain tasks:
     // Fallback: minimal context (same as old kg-session-start.sh)
     const parts = [header];
     if (resumeText) parts.push(resumeText);
+    if (orphanText) parts.push(orphanText);
     if (briefingText) parts.push(briefingText);
     parts.push('Use knowledge_list to check existing domains before storing new knowledge. Domain knowledge (WHY) → knowledge_store. Coding tips (HOW) → life_store.');
     additionalContext = parts.join('\n\n');
@@ -1675,10 +1718,12 @@ interface ContextChunkResult {
 }
 
 function formatContextResults(chunks: ContextChunkResult[], prompt: string): string {
-  const top = chunks.slice(0, 5);
+  // Tighter relevance gate to cut auto-retrieve noise: only the strongest few hits,
+  // and a soft tone so off-topic chunks don't crowd out the actual question.
+  const top = chunks.slice(0, 3);
   if (top.length === 0) return '';
 
-  const relevant = top.filter(c => c.score >= 0.3);
+  const relevant = top.filter(c => c.score >= 0.45);
   if (relevant.length === 0) return '';
 
   const lines: string[] = [];
@@ -1686,7 +1731,7 @@ function formatContextResults(chunks: ContextChunkResult[], prompt: string): str
 
   lines.push(`## Domain Knowledge (auto-retrieved for: "${promptExcerpt}")`);
   lines.push('');
-  lines.push('**MANDATORY: Use this knowledge to answer FIRST. Only scan the codebase if these results do not address the question.**');
+  lines.push('_Possibly-relevant prior knowledge — verify against the code before relying on it; ignore if off-topic._');
   lines.push('');
 
   for (const c of relevant) {
@@ -1751,7 +1796,7 @@ async function runContext(): Promise<void> {
         method: 'knowledge_query',
         params: {
           query: promptText.slice(0, 500),
-          filters: { min_confidence: 0.3 },
+          filters: { min_confidence: 0.3, limit: 8 },
         },
         id: 1,
       }),

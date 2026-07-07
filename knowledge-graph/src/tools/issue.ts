@@ -74,6 +74,13 @@ export async function autoLinkToIssue(
   const issue = await findByRef(storage, issueRef);
   if (!issue) return null;
   if (issue.id === newChunkId) return null; // never self-link (e.g. issue_create itself)
+  // Don't link into a CLOSED issue: a stale anchor pointing at a finished issue
+  // would silently attach fresh work to it. No-op so the chunk surfaces as an
+  // orphan instead, and the caller's anchored_issue warning fires.
+  if (issue.issue_status === 'closed') {
+    log('auto-link skipped: issue', issueRef, 'is closed');
+    return null;
+  }
   try {
     await storage.createRelation(newChunkId, issue.id, 'RELATES_TO', { auto_created: 'true' });
     log('auto-linked chunk', newChunkId, '→ issue', issueRef);
@@ -103,7 +110,7 @@ export async function handleIssueCreate(
   projectName: string | undefined,
   onStep?: StepEmitter,
   dedupThreshold = 0.88,
-): Promise<StoreResult & { issue_ref: string }> {
+): Promise<StoreResult & { issue_ref: string; next_step: string }> {
   const priority = args.priority && VALID_PRIORITY.includes(args.priority) ? args.priority : 'p2';
 
   // Mint a collision-free ref (checked against existing issues under the daemon mutex).
@@ -142,7 +149,10 @@ export async function handleIssueCreate(
 
   result.warnings.push(...warnings);
   log('Created issue:', ref, `(chunk ${result.id})`);
-  return { ...result, issue_ref: ref };
+  // Model-visible next-step so a fresh AI is pulled into the closed loop at bug-start:
+  // anchoring here makes every subsequent chunk/decision auto-link back to this issue.
+  const next_step = `Anchor this session to the issue so captures auto-link: state_set_context{current_issue: "${ref}"}. Then knowledge_store / decision_record / attachment_add will link back to ${ref}, and issue_show ${ref} gathers everything.`;
+  return { ...result, issue_ref: ref, next_step };
 }
 
 // ============================================================
