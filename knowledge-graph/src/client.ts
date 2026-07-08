@@ -650,7 +650,7 @@ export async function clientMain(
 
   proxyTool(
     'issue_create',
-    "Create a durable, team-synced issue/bug/ticket as a first-class graph node (kg beads). Use for actionable work that must be DONE and tracked — NOT for 'what am I doing now' (that's state_set_context) or a design rationale (that's decision_record). Returns a short issue_ref (e.g. 'upcoz-a3f9') to cite in commits/PRs. Per project policy, create issues on user request/confirmation, not speculatively.",
+    "Create a durable, team-synced issue/bug/ticket as a first-class graph node (kg beads). Use for actionable work that must be DONE and tracked — NOT for 'what am I doing now' (that's state_set_context) or a design rationale (that's decision_record). Returns a short issue_ref (e.g. 'upcoz-a3f9') to cite in commits/PRs. On creation it backward-scans pre-existing chunks: it auto-links high-similarity orphans (returned as auto_linked_chunks) and returns candidate_orphans (borderline matches) — review those and issue_link the relevant ones, so 'work first, file issue later' chunks are gathered instead of orphaned. Per project policy, create issues on user request/confirmation, not speculatively.",
     {
       title: z.string().min(1).max(200).describe('Short issue title (becomes the summary)'),
       description: z.string().max(5000).optional().describe('Full issue detail: repro, root cause, scope'),

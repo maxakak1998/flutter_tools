@@ -669,6 +669,8 @@ File: `~/.knowledge-graph/knowledge.json` (created by `knowledge-graph setup`)
 | Dedup threshold | 0.88 | `config.ts` |
 | Auto-link threshold | 0.82 | `config.ts` |
 | Auto-link max per chunk | 5 | `config.ts` |
+| issue_create backward-scan floor | 0.5 | `tools/issue.ts` (`BACKSCAN_FLOOR`) |
+| issue_create backward-scan per-band cap | 20 | `tools/issue.ts` (`BACKSCAN_LIMIT`) |
 | Suggested relation threshold | 0.50 | `linker.ts` |
 | Vector search candidates | 50 | `retriever.ts` |
 | Graph expansion sources | top 3 hits | `retriever.ts` |

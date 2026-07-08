@@ -664,6 +664,7 @@ async function daemonMain(): Promise<void> {
             projectName,
             onStep,
             config.dedup.similarityThreshold,
+            config.search.similarityThreshold, // backward-scan auto-link ceiling
           );
           scheduleCacheRegen();
           onStep('complete', `Created ${icResult.issue_ref}`, { duration_ms: Math.round(performance.now() - t0), id: icResult.id, issue_ref: icResult.issue_ref });

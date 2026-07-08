@@ -16,6 +16,7 @@ import { handleEvolve } from '../src/tools/evolve.js';
 import { handleList } from '../src/tools/list.js';
 import { handleDelete } from '../src/tools/delete.js';
 import { handleQuery } from '../src/tools/query.js';
+import { handleIssueCreate, scanBackwardCandidates } from '../src/tools/issue.js';
 import { loadConfig } from '../src/config.js';
 import { join, dirname } from 'path';
 import { tmpdir } from 'os';
@@ -452,6 +453,86 @@ async function testReviveRefuted(questionId: string) {
 // ========================================================
 // Main
 // ========================================================
+// ========================================================
+// Test: issue_create backward orphan-gathering
+//   Reproduces the "work first, file issue later" bug: chunks exist BEFORE the
+//   issue, with no session anchor, so the forward auto-link never gathers them.
+//   The backward scan must auto-link high-similarity orphans, surface borderline
+//   ones as candidate_orphans, exclude unrelated chunks, and stay idempotent
+//   against the edge linker.autoLink already created during issue_create.
+// ========================================================
+async function testIssueBackwardScan() {
+  console.error('\n📋 Test: issue_create backward orphan-gathering');
+
+  // Pre-existing chunks, stored with NO issue anchor (handleStore never anchors).
+  const near = await handleStore(storage, embedder, linker,
+    'Withdrawals over five hundred dollars require a three-step identity verification before the payment gateway will release the funds.',
+    { summary: 'Large withdrawals need three-step identity verification', keywords: ['withdrawal', 'verification', 'gateway', 'identity'], domain: 'payments', category: 'rule', importance: 'high' },
+    undefined, config.dedup.similarityThreshold, config.learning.hypothesisInitialConfidence,
+  );
+  const unrelated = await handleStore(storage, embedder, linker,
+    'The home screen carousel rotates promotional banners every five seconds with a fade transition.',
+    { summary: 'Home carousel rotates promo banners every five seconds', keywords: ['carousel', 'banners', 'home', 'promotions'], domain: 'ui', category: 'fact', importance: 'low' },
+    undefined, config.dedup.similarityThreshold, config.learning.hypothesisInitialConfidence,
+  );
+
+  // Create the issue AFTER the chunks, title near-identical to `near`.
+  const issue = await handleIssueCreate(storage, embedder, linker,
+    { title: 'Withdrawals over five hundred dollars require three-step identity verification before the gateway releases funds', priority: 'p1' },
+    'testproj', undefined, config.dedup.similarityThreshold, config.search.similarityThreshold,
+  );
+
+  // Structure
+  assert(Array.isArray(issue.auto_linked_chunks) && Array.isArray(issue.candidate_orphans),
+    'issue_create returns auto_linked_chunks + candidate_orphans arrays');
+
+  // Band correctness holds regardless of exact embedding similarity.
+  const ceil = config.search.similarityThreshold;
+  assert(issue.auto_linked_chunks.every(a => a.similarity >= ceil),
+    `every auto_linked chunk has similarity >= ${ceil}`,
+    `got: ${JSON.stringify(issue.auto_linked_chunks.map(a => a.similarity))}`);
+  assert(issue.candidate_orphans.every(c => c.similarity >= 0.5 && c.similarity < ceil),
+    `every candidate_orphan has similarity in [0.5, ${ceil})`,
+    `got: ${JSON.stringify(issue.candidate_orphans.map(c => c.similarity))}`);
+
+  // Caps
+  assert(issue.auto_linked_chunks.length <= 20 && issue.candidate_orphans.length <= 20,
+    'both lists respect BACKSCAN_LIMIT (20)');
+
+  // Candidate records carry the fields the AI needs to reason + issue_link.
+  assert(issue.candidate_orphans.every(c => typeof c.already_linked_to_issue === 'boolean' && !!c.category && !!c.lifecycle),
+    'candidate_orphans carry already_linked_to_issue + category + lifecycle');
+
+  // The near-identical rule is definitely related → gathered somewhere (auto OR candidate).
+  const gathered = [...issue.auto_linked_chunks.map(a => a.id), ...issue.candidate_orphans.map(c => c.id)];
+  assert(gathered.includes(near.id), 'near-identical chunk was gathered (auto-linked or candidate)');
+
+  // The unrelated chunk (sim < 0.5) appears in NEITHER list.
+  assert(!gathered.includes(unrelated.id), 'unrelated chunk excluded from both bands');
+
+  // If the near chunk crossed the auto-link ceiling, verify the edge is real AND single
+  // (idempotent vs the issue->chunk edge linker.autoLink created during issue_create).
+  const q = storage as unknown as { queryParams(cypher: string, params: Record<string, string>): Promise<Array<Record<string, unknown>>> };
+  if (issue.auto_linked_chunks.some(a => a.id === near.id)) {
+    const neighbors = await storage.getRelatedChunks(near.id, 1);
+    assert(neighbors.some(n => n.id === issue.id), 'auto-linked chunk actually has an edge to the issue');
+    const rows = await q.queryParams(
+      'MATCH (c:Chunk {id: $cid})-[r:RELATES_TO]-(i:Chunk {id: $iid}) RETURN count(r) AS cnt',
+      { cid: near.id, iid: issue.id },
+    );
+    const cnt = Number((rows[0] as { cnt: unknown })?.cnt ?? 0);
+    assert(cnt === 1, 'exactly one edge between chunk and issue (idempotent, no duplicate)', `got ${cnt}`);
+  } else {
+    console.error('  ⚠️  near chunk landed below the auto-link ceiling — idempotency edge-count skipped (embedding-dependent)');
+  }
+
+  // Failure isolation: a throwing embedder must yield empty lists, never throw.
+  const throwingEmbedder = { embed: async () => { throw new Error('boom'); } } as unknown as Embedder;
+  const isolated = await scanBackwardCandidates(storage, throwingEmbedder, issue.id, 'anything', ceil);
+  assert(isolated.auto_linked.length === 0 && isolated.candidates.length === 0,
+    'backward scan failure is isolated (returns empty, does not throw)');
+}
+
 async function main() {
   console.error('🧪 Knowledge Graph Regression Test');
   console.error('═'.repeat(50));
@@ -479,6 +560,7 @@ async function main() {
     await testAccessTracking();
     await testOldCategoriesRejected();
     await testReviveRefuted(questionId);
+    await testIssueBackwardScan();
     await testDelete(surfacingId);
   } catch (e) {
     console.error(`\n💥 FATAL: ${e}`);

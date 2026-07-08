@@ -92,6 +92,123 @@ export async function autoLinkToIssue(
 }
 
 // ============================================================
+// Backward orphan-gathering — close the reverse direction of the loop
+// ============================================================
+
+/** Below this similarity a chunk is too weakly related to surface at all. */
+const BACKSCAN_FLOOR = 0.5;
+/** Cap on each returned band — keeps the caller's context bounded (cf. issue_orphans limit). */
+const BACKSCAN_LIMIT = 20;
+
+export interface BackscanAutoLink {
+  id: string;
+  summary: string;
+  similarity: number;
+}
+export interface BackscanCandidate {
+  id: string;
+  summary: string;
+  category: string;
+  lifecycle: string;
+  similarity: number;
+  /** True if the chunk is already linked to SOME issue (possibly a different one). */
+  already_linked_to_issue: boolean;
+}
+export interface BackscanResult {
+  auto_linked: BackscanAutoLink[];
+  candidates: BackscanCandidate[];
+}
+
+/**
+ * Backward orphan-gathering for a freshly-created issue.
+ *
+ * The forward auto-link (autoLinkToIssue, driven by the session's current_issue
+ * anchor) only catches chunks written AFTER the issue exists. This closes the
+ * reverse direction for the common "do the work first, file the issue later"
+ * flow, where the related chunks already exist and would otherwise orphan.
+ *
+ * Embeds the issue content (a cache hit — handleStore just embedded the same
+ * string), pulls the top-50 vector neighbours, and splits them by similarity:
+ *   - sim >= ceil (default config.search.similarityThreshold, 0.82): ensure a
+ *     RELATES_TO edge exists between the chunk and the issue, IDEMPOTENTLY.
+ *     getRelatedChunks is UNDIRECTED (kuzu.ts uses `-[...]-`), so if linker.autoLink
+ *     already created an issue->chunk edge for this hit we detect it and skip;
+ *     otherwise we create chunk->issue (matching autoLinkToIssue's direction).
+ *     Mixed direction is fine — every issue-gathering read (issue_show/orphans)
+ *     is undirected, so a single edge either way counts as "linked".
+ *   - [floor, ceil): returned as candidate_orphans for the AI to reason over and
+ *     issue_link deliberately.
+ *
+ * Self, other issue chunks, and operational/entity-index layers are excluded.
+ * Both bands are capped BEFORE the per-candidate neighbour lookups, so the number
+ * of graph queries is bounded by BACKSCAN_LIMIT (not the 50-hit pool).
+ *
+ * Wrapped in try/catch like store.ts's proactive surfacing: a scan failure must
+ * never fail the issue_create — the issue chunk already exists at this point.
+ */
+export async function scanBackwardCandidates(
+  storage: IStorage,
+  embedder: Embedder,
+  issueChunkId: string,
+  content: string,
+  ceil: number,
+): Promise<BackscanResult> {
+  try {
+    const embedding = await embedder.embed(content);
+    const hits = await storage.vectorSearchUnfiltered(embedding, 50);
+
+    // Fetch the issue-id set once, reused for every already_linked_to_issue flag.
+    const issues = await listAllIssues(storage);
+    const issueIds = new Set(issues.map(i => i.id));
+
+    const autoHits: Array<{ chunk: StoredChunk; sim: number }> = [];
+    const borderHits: Array<{ chunk: StoredChunk; sim: number }> = [];
+    for (const hit of hits) {
+      const c = hit.chunk;
+      if (c.id === issueChunkId) continue;                 // never self-link
+      if (c.category === 'issue') continue;                // issue<->issue is blocked_by's job
+      if (c.layer === 'operational' || c.layer === 'entity-index') continue;
+      const sim = 1 - hit.distance;
+      if (sim >= ceil) autoHits.push({ chunk: c, sim });
+      else if (sim >= BACKSCAN_FLOOR) borderHits.push({ chunk: c, sim });
+    }
+
+    // Cap each band (highest similarity first) BEFORE the neighbour lookups.
+    autoHits.sort((a, b) => b.sim - a.sim);
+    borderHits.sort((a, b) => b.sim - a.sim);
+    const topAuto = autoHits.slice(0, BACKSCAN_LIMIT);
+    const topBorder = borderHits.slice(0, BACKSCAN_LIMIT);
+
+    const auto_linked: BackscanAutoLink[] = [];
+    for (const { chunk, sim } of topAuto) {
+      const neighbors = await storage.getRelatedChunks(chunk.id, 1);
+      if (!neighbors.some(n => n.id === issueChunkId)) {
+        await storage.createRelation(chunk.id, issueChunkId, 'RELATES_TO', { auto_created: 'true' });
+      }
+      auto_linked.push({ id: chunk.id, summary: chunk.summary, similarity: Math.round(sim * 1000) / 1000 });
+    }
+
+    const candidates: BackscanCandidate[] = [];
+    for (const { chunk, sim } of topBorder) {
+      const neighbors = await storage.getRelatedChunks(chunk.id, 1);
+      candidates.push({
+        id: chunk.id,
+        summary: chunk.summary,
+        category: chunk.category,
+        lifecycle: chunk.lifecycle,
+        similarity: Math.round(sim * 1000) / 1000,
+        already_linked_to_issue: neighbors.some(n => issueIds.has(n.id)),
+      });
+    }
+
+    return { auto_linked, candidates };
+  } catch (e) {
+    log('backward scan failed (issue still created):', e);
+    return { auto_linked: [], candidates: [] };
+  }
+}
+
+// ============================================================
 // issue_create
 // ============================================================
 
@@ -110,7 +227,8 @@ export async function handleIssueCreate(
   projectName: string | undefined,
   onStep?: StepEmitter,
   dedupThreshold = 0.88,
-): Promise<StoreResult & { issue_ref: string; next_step: string }> {
+  autoLinkCeil = 0.82,
+): Promise<StoreResult & { issue_ref: string; next_step: string; auto_linked_chunks: BackscanAutoLink[]; candidate_orphans: BackscanCandidate[] }> {
   const priority = args.priority && VALID_PRIORITY.includes(args.priority) ? args.priority : 'p2';
 
   // Mint a collision-free ref (checked against existing issues under the daemon mutex).
@@ -149,10 +267,26 @@ export async function handleIssueCreate(
 
   result.warnings.push(...warnings);
   log('Created issue:', ref, `(chunk ${result.id})`);
+
+  // Backward orphan-gathering: close the REVERSE direction of the loop. The
+  // forward anchor only links chunks written after the issue exists; this pulls
+  // in pre-existing related chunks from the "work first, file issue later" flow.
+  const backscan = await scanBackwardCandidates(storage, embedder, result.id, content, autoLinkCeil);
+
   // Model-visible next-step so a fresh AI is pulled into the closed loop at bug-start:
-  // anchoring here makes every subsequent chunk/decision auto-link back to this issue.
-  const next_step = `Anchor this session to the issue so captures auto-link: state_set_context{current_issue: "${ref}"}. Then knowledge_store / decision_record / attachment_add will link back to ${ref}, and issue_show ${ref} gathers everything.`;
-  return { ...result, issue_ref: ref, next_step };
+  // it reports what the backward scan gathered AND nudges anchoring for future captures.
+  const next_step =
+    `Backward scan auto-linked ${backscan.auto_linked.length} existing chunk(s); ` +
+    `${backscan.candidates.length} borderline match(es) in candidate_orphans — reason over them and issue_link the relevant ones. ` +
+    `Then anchor this session so future captures auto-link: state_set_context{current_issue: "${ref}"}. ` +
+    `After that, knowledge_store / decision_record / attachment_add link back to ${ref}, and issue_show ${ref} gathers everything.`;
+  return {
+    ...result,
+    issue_ref: ref,
+    next_step,
+    auto_linked_chunks: backscan.auto_linked,
+    candidate_orphans: backscan.candidates,
+  };
 }
 
 // ============================================================
