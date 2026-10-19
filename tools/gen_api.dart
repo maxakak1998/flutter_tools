@@ -1563,13 +1563,19 @@ Future<void> main(List<String> args) async {
     await processApiRoutes(directJsonFile, routeDir, exportBuffer);
   }
 
-  // Also check subdirectories
-  for (final entity in routeDir.listSync()) {
-    if (entity is Directory) {
-      final jsonFile = File('${entity.path}/api_routes.json');
-      if (await jsonFile.exists()) {
-        await processApiRoutes(jsonFile, entity, exportBuffer);
-      }
+  // Also check subdirectories, sorted by normalized path with a plain
+  // code-unit compare. listSync() returns entries in filesystem readdir order,
+  // which differs between macOS APFS and Linux ext4, and that order decides
+  // the line order of api_route_export.dart.
+  final subDirs = routeDir.listSync().whereType<Directory>().toList()
+    ..sort(
+      (a, b) =>
+          a.path.replaceAll(r'\', '/').compareTo(b.path.replaceAll(r'\', '/')),
+    );
+  for (final entity in subDirs) {
+    final jsonFile = File('${entity.path}/api_routes.json');
+    if (await jsonFile.exists()) {
+      await processApiRoutes(jsonFile, entity, exportBuffer);
     }
   }
 

@@ -37,6 +37,10 @@ Set<String> extractNestedShellBranchRoutes() {
   return excludedRoutes;
 }
 
+/// Locale- and filesystem-independent ordering key for a discovered path.
+String _sortKey(String path) =>
+    p.relative(path, from: 'lib').replaceAll(r'\', '/');
+
 /// Convert PascalCase to snake_case
 String _toSnakeCase(String pascalCase) {
   return pascalCase
@@ -76,11 +80,18 @@ Future<void> main(List<String> args) async {
     throw Exception('Directory lib/features not found!');
   }
 
-  for (final file
-      in featureDir
-          .listSync(recursive: true)
-          .whereType<File>()
-          .where((f) => f.path.endsWith('_route.g.dart'))) {
+  // Sort by normalized relative path with a plain code-unit compare.
+  // listSync() returns entries in filesystem readdir order, which differs
+  // between macOS APFS and Linux ext4, so an unsorted walk makes the generated
+  // file depend on the machine that ran it.
+  final routeFiles = featureDir
+      .listSync(recursive: true)
+      .whereType<File>()
+      .where((f) => f.path.endsWith('_route.g.dart'))
+      .toList()
+    ..sort((a, b) => _sortKey(a.path).compareTo(_sortKey(b.path)));
+
+  for (final file in routeFiles) {
     final relativeImport = p
         .relative(file.path, from: 'lib')
         .replaceAll(".g", "");
