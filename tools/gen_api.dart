@@ -1535,11 +1535,31 @@ ${modelBuffer.toString()}
 ''';
   await generatedFile.writeAsString(fullOutput);
 
-  // Add export to exportBuffer
+  // Add export to exportBuffer. The export names what it re-exports with
+  // `show`, so the barrel exposes exactly the generated route types (arch
+  // gate v2 rule R11: a barrel exports own-unit files with show).
   final relativePath = targetDir.path.split('lib/').last;
+  final names = publicTopLevelNames(fullOutput);
+  if (names.isEmpty) return; // `show` needs at least one name
   exportBuffer.writeln(
-    "export 'package:$packageName/$relativePath/api_routes_generated.dart';",
+    "export 'package:$packageName/$relativePath/api_routes_generated.dart'\n"
+    "    show ${names.join(', ')};",
   );
+}
+
+/// Public top-level type names declared in [source], sorted with a plain
+/// code-unit compare so the output does not depend on declaration order.
+List<String> publicTopLevelNames(String source) {
+  final declaration = RegExp(
+    r'^(?:(?:abstract|sealed|final|base|interface|mixin)\s+)*'
+    r'(?:class|enum|mixin|typedef|extension(?:\s+type)?)\s+([A-Za-z]\w*)',
+    multiLine: true,
+  );
+  final names = <String>{
+    for (final m in declaration.allMatches(source))
+      if (m.group(1) != 'on') m.group(1)!,
+  };
+  return names.toList()..sort();
 }
 
 Future<void> main(List<String> args) async {

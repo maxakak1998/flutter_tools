@@ -1,13 +1,11 @@
-import '../../../../app_export.dart';
+import '../../../../commons/base_cubit/base_cubit_state.dart';
 
-
-class {{feature.pascalCase()}}InitState extends BaseCubitState {
-  {{feature.pascalCase()}}InitState(
-      {super.state,
-      super.error,
-      super.id,
-      super.isLoadMore,
-      super.isRefresh});
-      
+class {{feature.pascalCase()}}CubitState extends BaseCubitState {
+  {{feature.pascalCase()}}CubitState({
+    super.state,
+    super.error,
+    super.id,
+    super.isLoadMore,
+    super.isRefresh,
+  });
 }
-

@@ -1,22 +1,16 @@
-// FILE: lib/features/auth/auth_inject.dart
+import 'package:get_it/get_it.dart';
 
 import 'data/repositories/{{feature.snakeCase()}}_repository.dart';
-import 'domain/repositories/{{feature.snakeCase()}}_repository_base.dart';
-import 'domain/useCases/get_{{feature.snakeCase()}}_use_case.dart';
-import 'presentation/cubit/{{feature.snakeCase()}}_cubit.dart';
+import 'domain/repositories/i_{{feature.snakeCase()}}_repository.dart';
+import 'domain/use_cases/get_{{feature.snakeCase()}}_use_case.dart';
 
-import '../../../app_export.dart';
-
-
+/// Repositories and use cases are factories (multi-tenant: the user is read at
+/// runtime). The cubit is not registered: {{feature.pascalCase()}}Route creates it in a BlocProvider.
 void inject{{feature.pascalCase()}}Module() {
   final sl = GetIt.instance;
 
-  // Repositories
-  sl.registerLazySingleton<I{{feature.pascalCase()}}Repository>(() => {{feature.pascalCase()}}Repository());
-
-  // UseCases
-  sl.registerFactory<IGet{{feature.pascalCase()}}UseCase>(() => Get{{feature.pascalCase()}}UseCase(sl<I{{feature.pascalCase()}}Repository>()));
-
-  // Cubit
-  sl.registerFactory(() => {{feature.pascalCase()}}Cubit(sl<IGet{{feature.pascalCase()}}UseCase>()));
+  sl.registerFactory<I{{feature.pascalCase()}}Repository>(() => {{feature.pascalCase()}}Repository());
+  sl.registerFactory<IGet{{feature.pascalCase()}}UseCase>(
+    () => Get{{feature.pascalCase()}}UseCase(sl<I{{feature.pascalCase()}}Repository>()),
+  );
 }
