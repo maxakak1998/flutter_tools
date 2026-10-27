@@ -7,7 +7,7 @@ export 'package:{{project_name}}/commons/constants/app_constants.dart';
 export 'package:{{project_name}}/core/api/api_transformer/restful/list_trans.dart';
 export 'package:{{project_name}}/core/api/api_response/pagination/base_pagination.dart';
 export 'package:{{project_name}}/core/api/api_response/restful/api_response.dart';
-export 'package:{{project_name}}/core/api/decodable.dart';
+export 'package:{{project_name}}/core/api/decoder.dart';
 export 'package:{{project_name}}/core/api/api_response/pagination/general_pagination.dart';
 export 'package:{{project_name}}/core/api/api_response/restful/list_response.dart';
 export 'package:{{project_name}}/core/api/api_response/restful/error_response.dart';

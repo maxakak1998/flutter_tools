@@ -1525,7 +1525,7 @@ Future<void> processApiRoutes(
 // GENERATED CODE - DO NOT MODIFY BY HAND
 
 import 'package:dio/dio.dart';
-import 'package:$packageName/core/api/decodable.dart';
+import 'package:$packageName/$decoderImportPath';
 
 // === RequestOptions Generator ===
 ${helperBuffer.toString()}
@@ -1561,6 +1561,16 @@ List<String> publicTopLevelNames(String source) {
   };
   return names.toList()..sort();
 }
+
+/// The library the generated files import Decoder<T> from. upcoz-mobile
+/// renamed core/api/decodable.dart to decoder.dart (its arch gate rule R14: a
+/// file is named after its type); a project that still has decodable.dart
+/// keeps getting that import, so the generator works on both. Read from the
+/// working directory, the project root the generator runs in.
+String get decoderImportPath =>
+    File('lib/core/api/decoder.dart').existsSync()
+        ? 'core/api/decoder.dart'
+        : 'core/api/decodable.dart';
 
 Future<void> main(List<String> args) async {
   if (args.isEmpty) {
