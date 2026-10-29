@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Is
 
-A **domain knowledge** graph MCP server for Claude Code. Stores **business logic, domain rules, and workflow rationale** as atomic nodes with semantic embeddings (Ollama/bge-m3) in a graph database. This is NOT a code index — it captures the "why" behind code (business constraints, domain decisions, cross-feature relationships) that Claude infers by reasoning across code, docs, and user context. Supports two storage backends: **KuzuDB** (default) and **SurrealDB** (embedded mode). Features confidence scoring, lifecycle management, temporal decay, validation/refutation, and proactive surfacing. It also runs a **session-state subsystem** (volatile working memory: context, plans, tasks, checkpoints) and a **kg beads issue tracker** (bugs/tickets as first-class graph nodes that replace the external `beads` tool) alongside the durable knowledge graph. Exposes 41 tools via JSON-RPC.
+A **domain knowledge** graph MCP server for Claude Code. Stores **business logic, domain rules, and workflow rationale** as atomic nodes with semantic embeddings (Ollama/bge-m3) in a graph database. This is NOT a code index — it captures the "why" behind code (business constraints, domain decisions, cross-feature relationships) that Claude infers by reasoning across code, docs, and user context. Supports two storage backends: **KuzuDB** (default) and **SurrealDB** (embedded mode). Features confidence scoring, lifecycle management, temporal decay, validation/refutation, and proactive surfacing. It also runs a **session-state subsystem** (volatile working memory: context, plans, tasks, checkpoints), a **kg beads issue tracker** (bugs/tickets as first-class graph nodes that replace the external `beads` tool), and a **per-session goal** (an anti-drift "north star", file-backed and auto-injected) alongside the durable knowledge graph. and a **machine-wide session dictionary** (root-session attribution) alongside the durable knowledge graph. Exposes 44 tools via JSON-RPC.
 
 ### Content Boundary: Domain Knowledge vs Code Knowledge
 
@@ -56,6 +56,22 @@ npx tsx scripts/build-artifact-test.ts
 # Response-envelope test — classifyError() over REAL handler messages + wrap helpers.
 # Pure (no daemon, no Ollama). Runs against source via tsx.
 npx tsx scripts/envelope-test.ts
+
+# Chunk-id prefix test — storage prefix lookup + resolver (temp KuzuDB), then a
+# daemon RPC with an 8-char prefix. Part B uses dist/ — run `npm run build` first.
+npx tsx scripts/chunk-id-test.ts
+
+# Sync gate test — own exports keep the import gate closed, pulled add/modify/delete
+# open it; a sync file without sync_id imports exactly once. Temp KuzuDB, no Ollama.
+npx tsx scripts/sync-gate-test.ts
+
+# activity.log test — size-based rotation (src/activity-log.ts) + the generated
+# hook scripts (setup-hooks.sh into a temp project; rotation + turn_stop). Needs jq.
+npx tsx scripts/activity-log-test.ts
+
+# Goal test — per-session anti-drift north star. Part A pure (goal-store);
+# Part B spawns built dist/ goal hooks + injectors (no daemon). Run `npm run build` first.
+npx tsx scripts/goal-test.ts
 ```
 
 **Prerequisites**: Node.js >= 18, Ollama running (`ollama serve`), bge-m3 model (`ollama pull bge-m3`)
@@ -74,8 +90,10 @@ npx tsx scripts/envelope-test.ts
 | `doctor` | Check dependencies (Ollama, DB, Node, daemon, port) |
 | `reset-db` | Delete the database (all chunks, edges, embeddings) |
 | `uninstall` | Remove installed files, config, and MCP registration |
-| `prime` | Output skill context for hook injection (SessionStart/PreCompact) |
-| `context` | Auto-query KG with user prompt (UserPromptSubmit hook) |
+| `prime [--full]` | Output skill context for hook injection (SessionStart; recovers after compaction via source=compact). Default injects a short rules block (~1K chars total); `--full` or `KG_PRIME_FULL=1` injects the full knowledge-graph-guide (~14K) |
+| `context` | Auto-query KG with user prompt (UserPromptSubmit hook); also injects the session goal every turn |
+| `session` | Machine-wide session dictionary: `list [--all]`/`show <id>`/`set <id> key=value...` (manual) + `audit` (PostToolUse hook) |
+| `goal` | Per-session north star: `set`/`get`/`clear`/`list` (manual) + `bind`/`pre-edit` (hooks) |
 | `setup-hooks` | Install KG enforcement hooks into current project (requires `jq`) |
 | `remove-hooks` | Remove KG enforcement hooks from current project (requires `jq`) |
 | `import-memory-bank <path>` | Import a flat-file memory-bank (`decisionLog.md`) into the KG as `decision` chunks |
@@ -138,8 +156,12 @@ CLI (cli.ts) → discover project → ensureDaemon() → clientMain()
 - Applies localhost-only browser origin checks (`127.0.0.1`, `localhost`, `::1`) across daemon and dashboard HTTP routes
 - Enforces a shared 1 MB POST body limit via `src/http-utils.ts`
 - Writes port to `.knowledge-graph/daemon.port`, PID to `daemon.pid`
+- **Startup sync delta import runs AFTER listen**, inside the RPC mutex (it used to run before listen and took 48-127s on ~3000 sync files, so clients hit the 15s spawn timeout). RPCs arriving meanwhile queue behind it; `/health` reports `startup_import: pending|running|done`
+- **Shutdown drains**: `/health` reports `status: 'shutting_down'`, new/queued RPCs are refused with "Daemon is shutting down" (client revives + retries), and storage closes only after the in-flight RPC finishes (≤10s); `ensureDaemon()` never adopts a shutting-down daemon — it waits for the pid to exit, then spawns
+- **Import gate ignores own exports**: `checkForNewerSyncFiles` (startup + the 30s-cooldown auto-import) skips files whose mtime matches the self-write ledger (`manifest.json` → `self_writes`, per machine, reset by every import; `src/sync/self-writes.ts`). Without it the AutoExporter's own writes triggered a full ~60s importAll on every restart. A pulled new/modified file, or a subdir mtime change (pulled deletion), still triggers. `importAll` also keys a sync file with no `sync_id` field by its filename and recomputes `content_hash` from content (a hand-written file once produced 2783 duplicate chunks)
+- **Chunk-id prefixes**: every RPC param that holds a chunk id (`tools/chunk-id.ts` `CHUNK_ID_PARAMS`) accepts a unique prefix of ≥8 hex chars, resolved to the full id before the handler runs; an ambiguous prefix is a `validation` error listing the candidates
 - Hosts dashboard on same HTTP server (delegates non-RPC routes)
-- Client tracking: `/rpc/connect` increments, `/rpc/disconnect` decrements
+- Client tracking: `/rpc/connect` (`{session_id, pid}`) registers, `/rpc/disconnect` removes; a reaper (every 60s, `KG_SESSION_REAP_MS`) drops sessions whose pid is gone — clients usually die without a disconnect, which inflated `clients` and blocked idle shutdown. The client also disconnects on SIGHUP and stdin end/close, not only SIGTERM
 - Idle timer starts immediately on startup (before any client connects); reset on `/rpc/connect`, restarted on `/rpc/disconnect` when no clients remain
 - Auto-shutdown after idle timeout (default 300s, configurable per project via `daemon.idle_timeout_ms`)
 - **Port Management**: When invoked with `kg serve:PORT`, the CLI automatically kills any existing process on that port using `lsof` before starting the daemon. This allows quick port reassignment without manual cleanup.
@@ -203,11 +225,11 @@ The envelope lives **only inside the MCP `text` content**. The daemon `/rpc` con
 
 | code | retryable | when |
 |---|---|---|
-| `daemon_unreachable` | true | `DaemonUnreachableError` — transport hop failed; self-heal already retried once |
+| `daemon_unreachable` | true | `DaemonUnreachableError` — transport hop failed, or the daemon answered "Daemon is shutting down" / "Storage is closing", or the revive itself failed ("Daemon startup timed out"); self-heal already retried once |
 | `version_conflict` | true | optimistic-concurrency `expected_version` mismatch — re-read, then retry |
 | `ollama_failed` | true | embedding backend down/5xx (checked **before** `not_found` — embedder throws "Model … not found. Run: ollama pull") |
 | `not_found` | false | target id/ref does not exist |
-| `validation` | false | caller-fixable precondition/arg error (Cannot promote/delete/link, requires …, across layers, …) |
+| `validation` | false | caller-fixable precondition/arg error (Cannot promote/delete/link, requires …, across layers, ambiguous chunk-id prefix, …) |
 | `internal` | false | anything unrecognized — do not blindly retry |
 
 **Two boundary limits Claude must know** (cannot be fixed in code — they are architectural):
@@ -225,7 +247,7 @@ Alongside the durable knowledge graph, the daemon runs a **session-state subsyst
 - **4-artifact taxonomy** (`artifact_type`): `active_context` (append-only focus trail), `plan` (immutable versioned clones of `.md` plan files), `task` (status ledger: pending/in_progress/blocked/done/deferred + `blocked_by`), and `event` (compaction summary snapshots). A **checkpoint** is *derived*, not stored — `state_checkpoint`/`state_resume` fold the live artifacts into a resume packet on demand.
 - **Decisions live in `Chunk`, not here** — `decision_record` writes a durable, queryable `decision` chunk (dedup bypassed, optional `SUPERSEDES` lineage). Only the volatile artifacts above live in `SessionState`.
 - **Session identity + registry** — the client mints a per-process `session_id` (UUID) on startup and threads it into every RPC (a caller-supplied `session_id` wins, e.g. `''` to span all project sessions). The daemon keeps an **in-memory** registry keyed on `session_id` (`connectedAt`/`lastSeen`), populated on `/rpc/connect` and reported by `state_sessions` and `GET /health`'s `sessions[]`. The registry is not persisted — a client restart is a new session.
-- **Resume via `kg prime`** — the `prime` CLI hook (SessionStart/PreCompact) surfaces the resume briefing so a fresh or post-compaction session can catch up. `state_resume` is project-scoped and works on a brand-new session id.
+- **Resume via `kg prime`** — the `prime` CLI hook (SessionStart, including `source=compact`) surfaces the resume briefing so a fresh or post-compaction session can catch up. `state_resume` is project-scoped and works on a brand-new session id. (PreCompact is intentionally NOT wired — a PreCompact hook's output never reaches the model.)
 - **Anti-orphaning** — `state_prune` (read-only) surfaces tasks/intentions untouched past a cutoff (default 7 days); `state_evict_orphans` clears them; `deferred` tasks are prime orphan candidates. Plans and pinned rows are never orphaned.
 - **Compaction** — `state_compact` folds old `active_context` events into a summary snapshot to keep the stream bounded; pinned rows, plans, tasks, and the newest N events per session are never compacted. `state_set_context` also opportunistically compacts when a session runs far over the keep-recent window.
 
@@ -238,6 +260,28 @@ Alongside the durable knowledge graph and the volatile session-state subsystem, 
 - **Linkage lives on the chunk, not the attachment** — the relationship + caption are stored as `attachment_refs: string[]` on the `Chunk`, each element `"<sha256>|<caption>"` (synced through the existing chunk sync file, exactly like kg beads' `blocked_by`). This is deliberate: (a) sha256 is stable while `chunk.id` is re-minted per machine on import; (b) two machines attaching the same image to two different chunks touch two different chunk sync files → no merge conflict; (c) same-chunk edits set-union `attachment_refs` on import (never last-writer-wins); (d) deleting a chunk drops its `attachment_refs`, so linkage never dangles — only orphaned bytes need GC. There is NO Chunk→Attachment graph edge (graph edges are Chunk→Chunk only and would not sync).
 - **Sync path** — bytes are already git-committed; only per-sha bytes-metadata JSON (`sync/attachments/<sha256>.json`, no caption/linkage) is exported. `checkForNewerSyncFiles` also stats `sync/attachments/` so an attachment-only pull triggers import. `importAttachments` rebuilds rows and does delete-by-absence (a row whose sync JSON is gone → row + bytes removed). Orphaned bytes are GC'd by ref-count on chunk delete, import-delete, and `attachment_gc`.
 - **Query** — "images of chunk X" = read `X.attachment_refs`; `attachment_list` and `issue_show` parse them and join the `Attachment` row for filename/size.
+
+### Goal Subsystem
+
+Alongside the durable graph, session-state, and attachments, the daemon+CLI support a **per-session GOAL** — a short anti-drift "north star" that is auto-injected into context so Claude does not drift from what the session set out to do. It is a **sixth content boundary**, distinct from all the above: transient, per-session, file-backed, never embedded, never synced.
+
+- **Storage** — a flat JSON file at `<kgDir>/state/goals/<session_id>.json` (`goal-store.ts`). Under the already-gitignored `state/` dir, so it is volatile and per-machine (like session-state). Chosen over a DB row because the every-turn injection path (`kg context`) must be a fast local read with no daemon dependency.
+- **Keyed by the ROOT session id** (see [Session Dictionary](#session-dictionary)). The hook `session_id` and the MCP process agree because the MCP process inherits `CLAUDE_CODE_SESSION_ID` (verified, CC 2.1.311 — an earlier revision of this doc wrongly said no env var exists). Hooks resolve their `session_id` to its root via the dictionary (`rootOf`), so a subagent/teammate/`/clear` successor shares the root's goal. Two unrelated sessions keep isolated goals. `/clear` does NOT drop the goal: the successor chains to the same root, and the root's goal is shared with teammates, so `kg prime source=clear` re-injects it. Drop a goal explicitly with `kg goal clear`.
+- **Set = tool + hook bridge** — Claude calls `goal_set` (validate-and-echo only); the `kg goal bind` **PostToolUse** hook, which receives `session_id` + `tool_input` on stdin, does the authoritative write keyed by the CC session id. This bridges the "a tool can't know its session" gap. Set only after the user confirms a proposed goal (a wrong goal injected every turn amplifies drift).
+- **Get = PUSH, not PULL** — there is deliberately NO `goal_get` MCP tool (it would hit the same session-id gap). The goal is injected: **every turn** by `kg context` (mid-session drift), **before every file edit** by the `kg goal pre-edit` PreToolUse hook with an anti-drift reminder (a sibling of the consult gate), and **after compaction** by `kg prime` (`source=compact`). For a rare explicit read, `kg prime` also emits a `Session: <id>` handle so Claude can `kg goal get --session <id>`.
+- **Refresh after planning** — the existing `ExitPlanMode` PostToolUse nudge (`kg-nudge-plan-capture.sh`) also reminds you to refresh `done_criteria`/`non_goals` via `goal_set` once a plan crystallizes them (done-criteria change the most after a plan is finalized). This is one line in an existing nudge — no dedicated hook.
+- **Optional** — a session may have no goal; every injector is silent when no goal file exists. The AI decides whether to set one.
+
+### Session Dictionary
+
+A **machine-wide** registry (all projects, local only, never git-synced) that attributes every KG tool call to a **root (parent) session**. Seventh content boundary: not durable knowledge, not per-project state.
+
+- **Storage** — `~/.knowledge-graph/sessions/<id>.json` (override dir with `KG_SESSIONS_DIR`; tests do). Only `id` is required; unknown fields are preserved; writes are tmp + rename. `root_id` is **computed on read, never stored**. Fields used: `name`, `parent_id`, `continues_id`, `project_dir`, `branch`, `started_at`, `last_seen` (written at most once per 60 s), `status` (`active|archived`), `note`.
+- **Identity (strict)** — `client.ts` uses `CLAUDE_CODE_SESSION_ID`; there is **no fallback**: if it is missing the server still starts but every tool call returns a `validation` error. It injects the **resolved root id** as `session_id` plus `client_session_id` (the caller's real id). The daemon **rejects any tool RPC without a non-blank `client_session_id`** (`validation`); `session_id` alone is a filter, never identity. Hooks without a stdin `session_id` and manual CLI commands without `--session`/`CLAUDE_CODE_SESSION_ID` print an error and exit 1. Full audit table: the spec's "Session id enforcement" section. `state_*` rows and goals therefore key by root. Legacy random-UUID rows become orphans handled by `state_prune`.
+- **Roll-up** — in-process subagents share the parent's MCP process (same id). Pane teammates: on client start the parent process (`process.ppid`, the Claude process) argv is read via `ps`; only if it carries `--agent-id <name>@<team>` is this a teammate — `parent_id` = `leadSessionId` from `~/.claude/teams/<team>/config.json` and `agent_id` is stored (fill-empty-only). No flag = never a teammate. TMUX_PANE matching was dropped: pane ids are reused, so a stale team config falsely adopted a main session. `/clear`: `kg prime` records every session in a per-Claude-process pointer `sessions/.proc/<key>` (key = PID from `CLAUDE_CODE_MESSAGING_SOCKET`, else `TMUX_PANE`, else no chaining) and, **only for `source=clear`**, sets `continues_id` to the previous id. `/resume` reuses the original session id, so it updates the pointer but never chains. `claude -p`/ccs/codex: adopt manually (`kg session set <id> parent_id=<root>`).
+- **Rules** — auto-detection fills **empty fields only**; `resolveRoot` follows `parent_id ?? continues_id`, max 16 hops, visited set; a cycle or dangling link makes the current node root and logs a warning; cycle-creating edits are allowed with a warning. **Dictionary internals fail open** (corrupt file, dangling link, cycle never fail a call). A **missing session id is an error**, never a fallback: the client returns `validation` for every tool, the daemon rejects tool RPCs without `client_session_id`, hooks without a stdin `session_id` exit 1, manual CLI needs `--session <id>` or `CLAUDE_CODE_SESSION_ID`.
+- **Audit** — `kg session audit` (PostToolUse, matcher `mcp__knowledge-graph__.*`, registered by `setup-hooks.sh`) appends one line (`ts, session_id, root_id, agent_id, agent_type, tool, ok, refs`; <4 KB, `refs` truncated) to `sessions/<root>.audit.jsonl`. Attribution lives here, not on chunks (session ids are meaningless on other machines).
+- **Tools/CLI** — `session_list`, `session_update` (client-side); `kg session list|show|set|audit` (`set <id> key=` with an empty value, or `key=null`, deletes the field — the repair path for bad links).
 
 ### Graph Schema
 
@@ -458,6 +502,23 @@ When a duplicate is detected (similarity >= 0.88), the store returns the existin
 | `life_store` | Store an operational learning (coding gotcha/pattern/workaround); requires a `life:*` tag |
 | `life_feedback` | Report success/failure after applying a learning (adjusts score) |
 | `life_draft_skill` | Draft a Claude skill from high-score learnings in a domain |
+
+### Session Dictionary Tools
+
+`session_list` / `session_update` are handled **client-side** in `client.ts` (machine-wide data in `~/.knowledge-graph/sessions/`, not the per-project daemon). They use the standard `wrapSuccess`/`wrapError` envelope. See [Session Dictionary](#session-dictionary).
+
+| Tool | Purpose |
+|------|---------|
+| `session_list` | List dictionary sessions (newest first) with computed `root_id`; `id` reads one; `include_archived`; returns `this_session`/`this_root` |
+| `session_update` | `{id, fields}` merge arbitrary fields (null deletes); cycle-creating links allowed with a `warning` |
+
+### Goal Tool
+
+`goal_set` records THIS session's anti-drift **north star** (see [Goal Subsystem](#goal-subsystem)). It is a validate-and-echo trigger; the authoritative per-session write is done by the `kg goal bind` PostToolUse hook.
+
+| Tool | Purpose |
+|------|---------|
+| `goal_set` | Record the current session's short goal (+ optional `done_criteria`/`non_goals`); auto-injected every turn, before edits, and after compaction. Set only after the user confirms; latest call wins. |
 
 ### Decision & Session-State Tools
 
@@ -696,7 +757,8 @@ File: `~/.knowledge-graph/knowledge.json` (created by `knowledge-graph setup`)
 | Hypothesis initial confidence | 0.3 | `config.ts` |
 | Daemon idle timeout | 300s (5 min) | `project.ts` default |
 | Daemon startup timeout | 15s | `daemon-manager.ts` |
-| MCP tools exposed | 41 | `client.ts` |
+| MCP tools exposed | 44 | `client.ts` |
+| Goal size | no hard cap (only `goal` required/non-empty; keep short — injected every turn) | `goal-store.ts` |
 | Chunk categories | 7 (`fact` `rule` `insight` `question` `workflow` `decision` `issue`) | `types.ts` |
 | Issue tools (kg beads) | 9 (`issue_create` `issue_update` `issue_close` `issue_list` `issue_ready` `issue_show` `issue_link` `issue_orphans` `issue_stale`) | `tools/issue.ts` |
 | Session-state artifact types | 4 (`active_context` `task` `event` `plan`) | `types.ts` |
@@ -763,6 +825,16 @@ Both backends implement the `IStorage` interface (`storage/interface.ts`). Backe
 | `src/tools/promote.ts` | Promote handler — lifecycle graduation |
 | `src/tools/link.ts` | Link handler — create chunk→chunk edges |
 | `src/tools/delete.ts` | Delete handler — remove chunk + all edges |
+| `src/sync/self-writes.ts` | Self-write ledger (mtimes of sync files this daemon wrote) so the import gate ignores its own exports |
+| `scripts/sync-gate-test.ts` | Import gate vs own exports / pulled add-modify-delete; sync file without sync_id imports once |
+| `src/tools/chunk-id.ts` | Chunk-id prefix resolution (unique ≥8-hex-char prefix → full id) applied to every chunk-id RPC param |
+| `src/activity-log.ts` | `.knowledge-graph/activity.log` append + size-based rotation (5 MB, `KG_ACTIVITY_LOG_MAX_BYTES`, keeps one `.1`) |
+| `scripts/chunk-id-test.ts` | Prefix-resolution tests: storage + resolver (temp KuzuDB), daemon RPC end-to-end |
+| `scripts/activity-log-test.ts` | activity.log rotation + hook `turn_stop` event tests |
+| `src/session-store.ts` | Machine-wide session dictionary (`~/.knowledge-graph/sessions/<id>.json`): read/write/fill-empty/resolveRoot/audit/teammate+continuation detection — shared by client, CLI, hooks |
+| `scripts/session-test.ts` | Session dictionary tests: Part A pure store, Part B built-CLI (set/list/show, audit hook, prime clear chaining) |
+| `src/goal-store.ts` | Per-session goal file store (read/write/delete/list/format) — shared by handler, hooks, injectors |
+| `src/tools/goal.ts` | `goal_set` handler — validate-and-echo trigger (authoritative write is the `kg goal bind` hook) |
 | `src/tools/decision.ts` | Decision-record handler — durable `decision` chunk, dedup bypassed |
 | `src/tools/state-context.ts` | `state_set_context` / `state_get_context` handlers |
 | `src/tools/state-plan.ts` | `state_save_plan` / `state_get_plan` handlers (immutable versioned clones) |
@@ -781,6 +853,7 @@ Both backends implement the `IStorage` interface (`storage/interface.ts`). Backe
 | `scripts/daemon-integration-test.ts` | Verifies daemon startup, health/connect/disconnect/shutdown against built `dist/` |
 | `scripts/build-artifact-test.ts` | Verifies `dist/` contains expected compiled outputs and copied assets |
 | `scripts/envelope-test.ts` | Verifies `classifyError`/`wrapSuccess`/`wrapError` map real handler messages to the right code+retryable (pure, no daemon) |
+| `scripts/goal-test.ts` | Verifies the per-session goal store + CLI goal hooks/injectors (bind, pre-edit, context, prime clear); Part A pure, Part B against dist/ |
 | `scripts/setup-hooks.sh` | Installs KG enforcement hooks into `.claude/hooks/` |
 | `scripts/remove-hooks.sh` | Removes KG enforcement hooks from `.claude/hooks/` |
 | `docs/architecture.md` | 4-layer architecture overview, data flows, config, limitations |

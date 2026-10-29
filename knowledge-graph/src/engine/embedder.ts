@@ -3,6 +3,15 @@ import { EMBEDDING_DIMENSIONS, log } from '../types.js';
 import { DEFAULT_CONFIG } from '../config.js';
 
 /**
+ * Per-attempt ceiling for a single Ollama /api/embed call. Node `fetch` has no
+ * default timeout, so without this an unresponsive Ollama (version-skewed runner,
+ * unmounted model volume) hangs the call — and thus the daemon's RPC mutex —
+ * forever. Sized generously: an external-volume cold-load of bge-m3 was measured
+ * at ~29s, so 60s leaves headroom while still bounding a true hang.
+ */
+const EMBED_TIMEOUT_MS = 60_000;
+
+/**
  * LRU cache using Map insertion order.
  * Map iterates in insertion order; deleting and re-inserting moves an entry to the end.
  * Eviction removes from the front (oldest).
@@ -84,6 +93,16 @@ export class Embedder {
    * import) and `fetch` itself rejects on connection resets. Both are retried
    * with exponential backoff. A `not found` model error and any 4xx are permanent
    * — they throw immediately without retry, since retrying can never fix them.
+   *
+   * Each attempt is bounded by EMBED_TIMEOUT_MS. Node's `fetch` has NO default
+   * timeout: if Ollama accepts the TCP connection but never sends a response body
+   * (observed when a `brew` upgrade leaves the runner on a mismatched version, or
+   * when the model store lives on an external volume that unmounted), the await
+   * hangs forever. Because every RPC handler runs under the daemon's single
+   * AsyncMutex, one hung embed holds the lock indefinitely and stalls EVERY later
+   * RPC — including non-embedding state_* calls. The AbortSignal converts that
+   * silent infinite hang into a timeout rejection that flows through the retry/throw
+   * path below, releasing the lock (fail-fast instead of whole-daemon deadlock).
    */
   private async embedFetch(input: string | string[], label: string): Promise<number[][]> {
     const maxAttempts = 3;
@@ -96,6 +115,7 @@ export class Embedder {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ model: this.model, input }),
+          signal: AbortSignal.timeout(EMBED_TIMEOUT_MS),
         });
 
         if (!response.ok) {
@@ -118,7 +138,17 @@ export class Embedder {
         if (e instanceof Error && (e.message.includes('not found') || /failed: 4\d\d/.test(e.message))) {
           throw e;
         }
-        lastErr = e; // network reject (EOF/ECONNRESET) or a 5xx captured above
+        // AbortSignal.timeout rejects with a TimeoutError (a DOMException, which is
+        // NOT `instanceof Error` in Node). Normalize it to an Error whose message
+        // carries "Ollama embed" so (a) the final throw below preserves it and
+        // (b) client.ts classifyError tags it `ollama_failed` (retryable) rather
+        // than the catch-all `internal` (no-retry). Treated as transient → retried.
+        const isTimeout =
+          (e as { name?: string })?.name === 'TimeoutError' ||
+          (e as { name?: string })?.name === 'AbortError';
+        lastErr = isTimeout
+          ? new Error(`Ollama ${label} timed out after ${EMBED_TIMEOUT_MS}ms (backend unresponsive)`)
+          : e; // network reject (EOF/ECONNRESET) or a 5xx captured above
       }
 
       // Backoff before the next attempt (skip after the final one).

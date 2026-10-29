@@ -1,10 +1,11 @@
 import { join } from 'path';
-import { writeFileSync, readFileSync, mkdirSync, readdirSync, unlinkSync, existsSync } from 'fs';
+import { writeFileSync, mkdirSync, readdirSync, unlinkSync, existsSync } from 'fs';
 import { IStorage } from '../storage/interface.js';
 import { log } from '../types.js';
 import { exportChunkToFile, removeChunkFile, exportEdge } from './export.js';
-import { SyncManifest, computeEdgeHash, stableStringify } from './format.js';
+import { computeEdgeHash, stableStringify } from './format.js';
 import { exportAttachment, removeAttachmentSyncFile } from './attachment-sync.js';
+import { recordSelfWrites, chunkRelPath } from './self-writes.js';
 
 // ============================================================
 // Auto-exporter interface
@@ -99,6 +100,9 @@ export function createAutoExporter(
 
     let exportedCount = 0;
     let removedCount = 0;
+    // Every sync path this flush wrote or removed → the self-write ledger (manifest),
+    // so the import gate does not mistake our own exports for a git pull.
+    const touched: string[] = [];
 
     // 1. Export pending chunks
     for (const chunkId of chunkIds) {
@@ -116,6 +120,7 @@ export function createAutoExporter(
           continue;
         }
         await exportChunkToFile(chunk, syncDir);
+        touched.push(chunkRelPath(chunk.sync_id));
         exportedCount++;
       } catch (e) {
         log(`AutoExporter: failed to export chunk ${chunkId}:`, e);
@@ -126,6 +131,7 @@ export function createAutoExporter(
     for (const syncId of removalSyncIds) {
       try {
         await removeChunkFile(syncId, syncDir);
+        touched.push(chunkRelPath(syncId));
         removedCount++;
       } catch (e) {
         log(`AutoExporter: failed to remove sync file for ${syncId}:`, e);
@@ -140,6 +146,7 @@ export function createAutoExporter(
           const existingFiles = readdirSync(edgesDir).filter(f => f.endsWith('.json'));
           for (const f of existingFiles) {
             try { unlinkSync(join(edgesDir, f)); } catch { /* ignore */ }
+            touched.push(`edges/${f}`);
           }
         }
 
@@ -152,6 +159,7 @@ export function createAutoExporter(
           const hash = computeEdgeHash(syncEdge.from_sync_id, syncEdge.relation, syncEdge.to_sync_id);
           const filePath = join(edgesDir, `${hash}.json`);
           writeFileSync(filePath, stableStringify(syncEdge) + '\n', 'utf-8');
+          touched.push(`edges/${hash}.json`);
           edgeCount++;
         }
         log(`AutoExporter: refreshed ${edgeCount} edge files`);
@@ -172,6 +180,7 @@ export function createAutoExporter(
           // Row already gone (e.g. immediately GC'd) — ensure no stale JSON lingers.
           removeAttachmentSyncFile(sha, syncDir);
         }
+        touched.push(`attachments/${sha}.json`);
       } catch (e) {
         log(`AutoExporter: failed to export attachment ${sha.slice(0, 12)}…:`, e);
       }
@@ -179,14 +188,15 @@ export function createAutoExporter(
     for (const sha of attachRemovals) {
       try {
         removeAttachmentSyncFile(sha, syncDir);
+        touched.push(`attachments/${sha}.json`);
       } catch (e) {
         log(`AutoExporter: failed to remove attachment sync file ${sha.slice(0, 12)}…:`, e);
       }
     }
 
-    // 4. Update manifest
+    // 4. Update manifest (+ self-write ledger)
     try {
-      await updateManifest(syncDir);
+      await updateManifest(syncDir, touched);
     } catch (e) {
       log('AutoExporter: manifest update failed:', e);
     }
@@ -251,7 +261,7 @@ export function createAutoExporter(
 // Manifest update helper
 // ============================================================
 
-async function updateManifest(syncDir: string): Promise<void> {
+async function updateManifest(syncDir: string, touched: string[]): Promise<void> {
   const chunksDir = join(syncDir, 'chunks');
   const edgesDir = join(syncDir, 'edges');
 
@@ -262,31 +272,10 @@ async function updateManifest(syncDir: string): Promise<void> {
     ? readdirSync(edgesDir).filter(f => f.endsWith('.json')).length
     : 0;
 
-  // Read existing manifest to preserve last_import_at
-  const manifestPath = join(syncDir, 'manifest.json');
-  let lastImportAt = '';
-  let formatVersion = 1;
-  if (existsSync(manifestPath)) {
-    try {
-      const existing: SyncManifest = JSON.parse(
-        readFileSync(manifestPath, 'utf-8'),
-      );
-      lastImportAt = existing.last_import_at || '';
-      formatVersion = existing.format_version || 1;
-    } catch { /* use defaults */ }
-  }
-
-  const manifest: SyncManifest = {
-    format_version: formatVersion,
+  // Preserves last_import_at/format_version and merges `touched` into the ledger.
+  recordSelfWrites(syncDir, touched, {
     last_export_at: new Date().toISOString(),
-    last_import_at: lastImportAt,
     chunk_count: chunkCount,
     edge_count: edgeCount,
-  };
-
-  writeFileSync(
-    manifestPath,
-    JSON.stringify(manifest, null, 2) + '\n',
-    'utf-8',
-  );
+  });
 }

@@ -76,7 +76,7 @@ async function rpc(baseUrl: string, method: string, params: Record<string, unkno
   const res = await fetch(`${baseUrl}/rpc`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ jsonrpc: '2.0', id: randomUUID(), method, params }),
+    body: JSON.stringify({ jsonrpc: '2.0', id: randomUUID(), method, params: { client_session_id: 'phase-c-acceptance', ...params } }),
   });
   const body = (await res.json()) as { result?: unknown; error?: { message: string } };
   if (body.error) {

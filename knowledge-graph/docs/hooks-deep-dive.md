@@ -367,7 +367,9 @@ Một dòng lệnh. Nhưng impact lớn: tạo "proof of compliance" cho domain 
 
 ---
 
-### Hook 9: `kg-audit-log.sh`
+### Hook 9: `kg-audit-log.sh` (REMOVED — legacy)
+
+> **Status (2026-10-27): removed.** This hook was merged into `kg-activity-tracker.sh`, which logs the same KG tool events to `.knowledge-graph/activity.log`. `setup-hooks.sh` deletes `kg-audit-log.sh` and its settings entries; `remove-hooks.sh` also cleans it up. Nothing writes `.knowledge-graph/audit.log` anymore, so an existing file is a stale leftover (last write = the day the hook was replaced) and can be archived or deleted by hand. The section below describes the old behaviour, kept for history.
 
 **Event**: PostToolUse
 **Matcher**: 6 tools — `knowledge_store`, `knowledge_evolve`, `knowledge_validate`, `knowledge_promote`, `knowledge_link`, `knowledge_delete`

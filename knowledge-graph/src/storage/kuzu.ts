@@ -1,8 +1,39 @@
-import { Database, Connection } from 'kuzu';
+import { Database, Connection, PreparedStatement, QueryResult } from 'kuzu';
 import { mkdirSync } from 'fs';
 import { dirname } from 'path';
 import { StoredChunk, GraphEdge, QueryFilters, ListFilters, SessionStateRow, SessionStateFilters, AttachmentRow, AttachmentFilters, EMBEDDING_DIMENSIONS, log } from '../types.js';
 import { IStorage } from './interface.js';
+
+const STMT_CACHE_MAX = 256;
+const CHECKPOINT_EVERY_WRITES = 100;
+const CLOSE_DRAIN_TIMEOUT_MS = 10_000;
+const WRITE_CYPHER = /\b(CREATE|SET|DELETE|MERGE|COPY)\b/;
+const DEFAULT_BUFFER_POOL_MB = 1024;
+
+function bufferPoolBytes(): number {
+  const mb = parseInt(process.env.KG_KUZU_BUFFER_MB || '', 10);
+  return (Number.isFinite(mb) && mb > 0 ? mb : DEFAULT_BUFFER_POOL_MB) * 1024 * 1024;
+}
+
+// Connection.query/execute resolve to an array when the cypher holds several statements.
+type QueryOutput = QueryResult | QueryResult[];
+
+/**
+ * QueryResult owns native memory that V8 cannot see, so GC rarely runs to free it.
+ * Every result must be closed explicitly, or a long-lived daemon grows without bound.
+ */
+function closeResults(out: QueryOutput): void {
+  for (const r of Array.isArray(out) ? out : [out]) r.close();
+}
+
+async function readAndClose(out: QueryOutput): Promise<Record<string, unknown>[]> {
+  try {
+    const last = Array.isArray(out) ? out[out.length - 1] : out;
+    return await last.getAll();
+  } finally {
+    closeResults(out);
+  }
+}
 
 interface SavedRelation {
   relType: string;
@@ -14,6 +45,11 @@ interface SavedRelation {
 export class KuzuStorage implements IStorage {
   private db: Database | null = null;
   private conn: Connection | null = null;
+  private stmtCache = new Map<string, PreparedStatement>();
+  private writesSinceCheckpoint = 0;
+  private checkpointing = false;
+  private inflight = 0;
+  private closing = false;
   private dbPath: string;
 
   constructor(dbPath: string) {
@@ -24,7 +60,9 @@ export class KuzuStorage implements IStorage {
     // Create parent directory (KuzuDB manages the DB directory itself)
     const parentDir = dirname(this.dbPath);
     mkdirSync(parentDir, { recursive: true });
-    this.db = new Database(this.dbPath);
+    // Kuzu's default buffer pool is 80% of physical RAM, which a long-lived daemon
+    // will happily fill. Cap it; the DB itself is a few hundred MB.
+    this.db = new Database(this.dbPath, bufferPoolBytes());
     await this.db.init();
     this.conn = new Connection(this.db);
     await this.conn.init();
@@ -38,10 +76,24 @@ export class KuzuStorage implements IStorage {
     log('KuzuStorage initialized at', this.dbPath);
   }
 
-  private async run(cypher: string): Promise<void> {
-    if (!this.conn) throw new Error('Connection not initialized');
+  /**
+   * Every native call goes through here. Closing the Database while a query is still
+   * running on the libuv pool segfaults inside TransactionManager, so close() refuses
+   * new work and waits for this counter to drain.
+   */
+  private async guarded<T>(fn: (conn: Connection) => Promise<T>): Promise<T> {
+    if (!this.conn || this.closing) throw new Error(this.closing ? 'Storage is closing' : 'Connection not initialized');
+    this.inflight++;
     try {
-      await this.conn.query(cypher);
+      return await fn(this.conn);
+    } finally {
+      this.inflight--;
+    }
+  }
+
+  private async run(cypher: string): Promise<void> {
+    try {
+      await this.guarded(async (conn) => closeResults(await conn.query(cypher)));
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       // Ignore "already exists" errors for idempotent schema creation
@@ -51,22 +103,55 @@ export class KuzuStorage implements IStorage {
   }
 
   private async query(cypher: string): Promise<Record<string, unknown>[]> {
-    if (!this.conn) throw new Error('Connection not initialized');
-    const result = await this.conn.query(cypher);
-    return result.getAll();
+    const rows = await this.guarded(async (conn) => readAndClose(await conn.query(cypher)));
+    this.noteWrite(cypher);
+    return rows;
   }
 
   private async queryParams(
     cypher: string,
     params: Record<string, unknown>,
   ): Promise<Record<string, unknown>[]> {
-    if (!this.conn) throw new Error('Connection not initialized');
-    const stmt = await this.conn.prepare(cypher);
+    const rows = await this.guarded(async (conn) => {
+      const stmt = await this.prepared(conn, cypher);
+      return readAndClose(await conn.execute(stmt, params));
+    });
+    this.noteWrite(cypher);
+    return rows;
+  }
+
+  /**
+   * Each committed write transaction keeps ~40 KB of native memory until the next
+   * checkpoint, and the WAL-size auto-checkpoint rarely fires for small writes, so a
+   * long-lived daemon grows by tens of GB. Checkpoint explicitly every N writes.
+   */
+  private noteWrite(cypher: string): void {
+    if (!WRITE_CYPHER.test(cypher)) return;
+    if (++this.writesSinceCheckpoint < CHECKPOINT_EVERY_WRITES || this.checkpointing || this.closing) return;
+    this.checkpointing = true;
+    this.writesSinceCheckpoint = 0;
+    this.guarded(async (conn) => closeResults(await conn.query('CHECKPOINT')))
+      .catch((e: unknown) => log('KuzuStorage: checkpoint failed:', e instanceof Error ? e.message : String(e)))
+      .finally(() => { this.checkpointing = false; });
+  }
+
+  /** Prepare once per distinct cypher string; LRU-bounded so interpolated queries cannot grow it forever. */
+  private async prepared(conn: Connection, cypher: string): Promise<PreparedStatement> {
+    const hit = this.stmtCache.get(cypher);
+    if (hit) {
+      this.stmtCache.delete(cypher);
+      this.stmtCache.set(cypher, hit);
+      return hit;
+    }
+    const stmt = await conn.prepare(cypher);
     if (!stmt.isSuccess()) {
       throw new Error(`Prepare failed: ${stmt.getErrorMessage()}`);
     }
-    const result = await this.conn.execute(stmt, params);
-    return result.getAll();
+    this.stmtCache.set(cypher, stmt);
+    if (this.stmtCache.size > STMT_CACHE_MAX) {
+      this.stmtCache.delete(this.stmtCache.keys().next().value!);
+    }
+    return stmt;
   }
 
   private async createSchema(): Promise<void> {
@@ -505,6 +590,14 @@ export class KuzuStorage implements IStorage {
     return this.rowToChunk(rows[0]);
   }
 
+  async findChunkIdsByPrefix(prefix: string, limit: number): Promise<string[]> {
+    const rows = await this.queryParams(
+      `MATCH (c:Chunk) WHERE starts_with(c.id, $prefix) RETURN c.id AS id ORDER BY c.id LIMIT ${Math.max(1, Math.floor(limit))}`,
+      { prefix },
+    );
+    return rows.map((r) => r.id as string);
+  }
+
   // === Relationships ===
 
   async createRelation(
@@ -879,6 +972,13 @@ export class KuzuStorage implements IStorage {
   // === Utility ===
 
   async close(): Promise<void> {
+    this.closing = true;
+    const deadline = Date.now() + CLOSE_DRAIN_TIMEOUT_MS;
+    while (this.inflight > 0 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    if (this.inflight > 0) log(`KuzuStorage: closing with ${this.inflight} queries still running`);
+    this.stmtCache.clear();
     if (this.conn) {
       await this.conn.close();
       this.conn = null;
@@ -961,12 +1061,12 @@ export class KuzuStorage implements IStorage {
   // === Access tracking ===
 
   async incrementAccessCount(ids: string[]): Promise<void> {
-    for (const id of ids) {
-      await this.queryParams(
-        'MATCH (c:Chunk) WHERE c.id = $id SET c.access_count = c.access_count + 1',
-        { id },
-      );
-    }
+    if (ids.length === 0) return;
+    // One transaction for the whole batch: per-transaction overhead, not per-row, is what accumulates.
+    await this.queryParams(
+      'UNWIND $ids AS cid MATCH (c:Chunk) WHERE c.id = cid SET c.access_count = c.access_count + 1',
+      { ids },
+    );
   }
 
   // === SessionState CRUD (volatile working-state — no embedding, cheap in-place SET) ===

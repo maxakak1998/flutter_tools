@@ -61,6 +61,14 @@ export interface SyncManifest {
   last_import_at: string;
   chunk_count: number;
   edge_count: number;
+  // Files this machine's daemon wrote since the last import (see sync/self-writes.ts).
+  self_writes?: SelfWrites;
+}
+
+/** Per-machine ledger: relative sync path / subdir → mtimeMs right after our own write. */
+export interface SelfWrites {
+  files: Record<string, number>;
+  dirs: Record<string, number>;
 }
 
 /**

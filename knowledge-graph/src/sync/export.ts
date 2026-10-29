@@ -2,6 +2,7 @@ import { join } from 'path';
 import { writeFileSync, mkdirSync, unlinkSync, existsSync } from 'fs';
 import { IStorage } from '../storage/interface.js';
 import { StoredChunk, GraphEdge, log } from '../types.js';
+import { recordSelfWrites, chunkRelPath } from './self-writes.js';
 import {
   SyncChunkFile,
   SyncEdgeFile,
@@ -156,6 +157,7 @@ export async function exportAll(
   // 1. Export all syncable chunks
   const allChunks = await storage.listChunks({}, 10000);
   let chunkCount = 0;
+  const written: string[] = [];
 
   for (const chunk of allChunks) {
     // Skip operational and entity-index layers
@@ -166,6 +168,7 @@ export async function exportAll(
     const syncChunk = exportChunk(chunk);
     const filePath = join(chunksDir, `${syncChunk.sync_id}.json`);
     writeFileSync(filePath, stableStringify(syncChunk) + '\n', 'utf-8');
+    written.push(chunkRelPath(syncChunk.sync_id));
     chunkCount++;
   }
 
@@ -180,6 +183,7 @@ export async function exportAll(
     const hash = computeEdgeHash(syncEdge.from_sync_id, syncEdge.relation, syncEdge.to_sync_id);
     const filePath = join(edgesDir, `${hash}.json`);
     writeFileSync(filePath, stableStringify(syncEdge) + '\n', 'utf-8');
+    written.push(`edges/${hash}.json`);
     edgeCount++;
   }
 
@@ -196,6 +200,8 @@ export async function exportAll(
     JSON.stringify(manifest, null, 2) + '\n',
     'utf-8',
   );
+  // Our own full export must not look like a pull to the import gate.
+  recordSelfWrites(syncDir, written);
 
   log(`exportAll: exported ${chunkCount} chunks, ${edgeCount} edges to ${syncDir}`);
   return { chunks: chunkCount, edges: edgeCount };

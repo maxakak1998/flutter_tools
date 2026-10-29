@@ -13,7 +13,7 @@ import { join, basename, dirname } from 'path';
 import { createCore, CoreComponents } from './core.js';
 import { parseRpcRequest, formatResult, formatError } from './rpc.js';
 import { KnowledgeConfig } from './config.js';
-import { log, setFileLogger, type DomainStatsCache } from './types.js';
+import { log, setFileLogger, DAEMON_SHUTTING_DOWN_MESSAGE, type DomainStatsCache } from './types.js';
 import { FileLogger, parseLogLevel } from './logger.js';
 import { randomUUID } from 'crypto';
 import { createCacheManager } from './cache.js';
@@ -34,6 +34,7 @@ import { handleExport } from './tools/export.js';
 import { handleIngest } from './tools/ingest.js';
 import { handleLifeStore } from './tools/life-store.js';
 import { handleDecisionRecord } from './tools/decision.js';
+import { handleGoalSet } from './tools/goal.js';
 import { handleIssueCreate, handleIssueUpdate, handleIssueClose, handleIssueList, handleIssueShow, handleIssueLink, handleIssueOrphans, handleIssueReady, handleIssueStale, autoLinkToIssue } from './tools/issue.js';
 import { getCurrentIssue } from './tools/state-context.js';
 import { handleAttachmentAdd, handleAttachmentList, handleAttachmentRemove, handleAttachmentGc } from './tools/attachment.js';
@@ -50,12 +51,22 @@ import { createAutoExporter } from './sync/auto-export.js';
 import { migrateV1toV2 } from './sync/migrate.js';
 import { importAll, removeConflict } from './sync/import.js';
 import { checkForNewerSyncFiles } from './sync/sync-gate.js';
+import { recordSelfWrites, chunkRelPath } from './sync/self-writes.js';
 import { formatConflictReport } from './sync/merge.js';
 import type { SyncManifest } from './sync/format.js';
+import { MISSING_CLIENT_SESSION_ID_MESSAGE } from './session-store.js';
+import { resolveChunkIdParams } from './tools/chunk-id.js';
 
 // Default newest-N active_context/event rows per session protected from
 // compaction. Opportunistic compaction only triggers past 2x this window.
 const STATE_COMPACT_KEEP_RECENT = 50;
+
+// How often the session registry drops clients whose process is gone (env override
+// for tests), and how long shutdown waits for the in-flight RPC before closing storage.
+const SESSION_REAP_INTERVAL_MS = parseInt(process.env.KG_SESSION_REAP_MS || '60000', 10);
+const SHUTDOWN_DRAIN_TIMEOUT_MS = 10_000;
+// Test-only: artificial delay inside the startup-import mutex slot (scripts/daemon-integration-test.ts).
+const STARTUP_IMPORT_TEST_DELAY_MS = parseInt(process.env.KG_TEST_STARTUP_IMPORT_DELAY_MS || '0', 10);
 
 // ============================================================
 // Main daemon entry point
@@ -143,36 +154,41 @@ async function daemonMain(): Promise<void> {
     log('Sync migration check failed (non-fatal):', e);
   }
 
-  // 2. Delta import: if sync/ exists and has files newer than last_import_at, run import
-  try {
-    const manifestPath = join(syncDir, 'manifest.json');
-    if (existsSync(manifestPath)) {
+  // 2. Delta import: if sync/ exists and has files newer than last_import_at, run import.
+  //    Deliberately NOT awaited here: on a ~3000-file sync dir importAll takes 40-130s,
+  //    and a daemon that is not listening yet makes every client's ensureDaemon() give up
+  //    after 15s. It is started right after server.listen() (see startupImport below),
+  //    under the RPC mutex, so the daemon answers /health immediately.
+  async function runStartupDeltaImport(): Promise<void> {
+    try {
+      const manifestPath = join(syncDir, 'manifest.json');
+      if (!existsSync(manifestPath)) return;
       const manifest: SyncManifest = JSON.parse(readFileSync(manifestPath, 'utf-8'));
       const lastImportAt = manifest.last_import_at || '';
 
-      // Check if any sync files have been modified since last import
-      const hasNewerFiles = checkForNewerSyncFiles(syncDir, lastImportAt);
-
-      if (hasNewerFiles) {
-        log('Sync: detected newer sync files, running delta import...');
-        const importResult = await importAll(syncDir, storage, embedder, linker, config);
-        log(`Sync import: ${importResult.new_chunks} new, ${importResult.updated_chunks} updated, ${importResult.deleted_chunks} deleted, ${importResult.blocked_chunks.length} blocked, ${importResult.new_edges} edges, ${importResult.relinked_chunks} relinked`);
-        fileLogger.info('sync', `Delta import: ${importResult.new_chunks} new, ${importResult.updated_chunks} updated, ${importResult.deleted_chunks} deleted, ${importResult.blocked_chunks.length} blocked`);
-
-        // Print lifecycle conflict report (unsuppressible)
-        if (importResult.blocked_chunks.length > 0) {
-          const report = formatConflictReport(importResult.blocked_chunks);
-          log(`\nSYNC IMPORT: ${importResult.new_chunks} new, ${importResult.updated_chunks} updated, ${importResult.deleted_chunks} deleted, ${importResult.blocked_chunks.length} BLOCKED`);
-          log(report);
-          log('Non-conflicting chunks imported successfully.\n');
-          fileLogger.warn('sync', `Lifecycle conflicts detected: ${importResult.blocked_chunks.length} chunks blocked`);
-        }
-      } else {
+      // Any sync change since the last import that is not our own export?
+      if (!checkForNewerSyncFiles(syncDir, lastImportAt, manifest.self_writes)) {
         log('Sync: no newer sync files detected, skipping import');
+        return;
       }
+
+      log('Sync: detected newer sync files, running delta import...');
+      const t0 = Date.now();
+      const importResult = await importAll(syncDir, storage, embedder, linker, config);
+      log(`Sync import: ${importResult.new_chunks} new, ${importResult.updated_chunks} updated, ${importResult.deleted_chunks} deleted, ${importResult.blocked_chunks.length} blocked, ${importResult.new_edges} edges, ${importResult.relinked_chunks} relinked`);
+      fileLogger.info('sync', `Delta import: ${importResult.new_chunks} new, ${importResult.updated_chunks} updated, ${importResult.deleted_chunks} deleted, ${importResult.blocked_chunks.length} blocked (${Date.now() - t0}ms, after listen)`);
+
+      // Print lifecycle conflict report (unsuppressible)
+      if (importResult.blocked_chunks.length > 0) {
+        const report = formatConflictReport(importResult.blocked_chunks);
+        log(`\nSYNC IMPORT: ${importResult.new_chunks} new, ${importResult.updated_chunks} updated, ${importResult.deleted_chunks} deleted, ${importResult.blocked_chunks.length} BLOCKED`);
+        log(report);
+        log('Non-conflicting chunks imported successfully.\n');
+        fileLogger.warn('sync', `Lifecycle conflicts detected: ${importResult.blocked_chunks.length} chunks blocked`);
+      }
+    } catch (e) {
+      log('Sync delta import failed (non-fatal):', e);
     }
-  } catch (e) {
-    log('Sync delta import failed (non-fatal):', e);
   }
 
   // 3. Create auto-exporter for mutation-driven sync
@@ -333,10 +349,19 @@ async function daemonMain(): Promise<void> {
   // `connectedAt` is set on /rpc/connect; `lastSeen` advances on every RPC the
   // session makes, so other modules (e.g. M9 projection) can distinguish a live,
   // active session from one that connected long ago and went quiet.
-  const sessions = new Map<string, { connectedAt: number; lastSeen: number }>();
+  // `pid` is the client process id sent on /rpc/connect. MCP clients usually die
+  // without a /rpc/disconnect (Claude Code closes the pipe or kills the process —
+  // the 2026-10-27 log held 374 connects vs 1 disconnect), so the registry only ever
+  // grew and `clients` was inflated (13 vs ~3 real sessions) and blocked idle
+  // shutdown. reapDeadSessions() drops entries whose pid is gone.
+  const sessions = new Map<string, { connectedAt: number; lastSeen: number; pid?: number }>();
   let anonymousCount = 0;
   let idleTimer: ReturnType<typeof setTimeout> | null = null;
   const startTime = Date.now();
+  // Set by shutdown(); new RPCs are refused fast with DAEMON_SHUTTING_DOWN_MESSAGE.
+  let shuttingDown = false;
+  // Startup delta import state, reported on /health (see runStartupDeltaImport).
+  let startupImportState: 'pending' | 'running' | 'done' = 'pending';
 
   // Total active clients = tracked sessions + anonymous (session-less) clients.
   function activeClientCount(): number {
@@ -364,6 +389,24 @@ async function daemonMain(): Promise<void> {
       await shutdown();
     }, idleTimeoutMs);
   }
+
+  // Drop sessions whose client process no longer exists. Sessions without a pid
+  // (older clients) are kept — there is no way to probe them.
+  function reapDeadSessions(): void {
+    let reaped = 0;
+    for (const [id, info] of sessions) {
+      if (info.pid && !isPidAlive(info.pid)) {
+        sessions.delete(id);
+        reaped++;
+      }
+    }
+    if (reaped > 0) {
+      log(`Daemon: reaped ${reaped} dead client session(s) (total: ${activeClientCount()})`);
+      if (activeClientCount() <= 0 && !idleTimer) startIdleTimer();
+    }
+  }
+  const reapInterval = setInterval(reapDeadSessions, SESSION_REAP_INTERVAL_MS);
+  reapInterval.unref();
 
   // Start idle timer immediately (no clients yet)
   startIdleTimer();
@@ -399,7 +442,7 @@ async function daemonMain(): Promise<void> {
 
       const manifest: SyncManifest = JSON.parse(readFileSync(manifestPath, 'utf-8'));
       const lastImportAt = manifest.last_import_at || '';
-      if (!checkForNewerSyncFiles(syncDir, lastImportAt)) return;
+      if (!checkForNewerSyncFiles(syncDir, lastImportAt, manifest.self_writes)) return;
 
       log('Sync: auto-import triggered (newer sync files detected)');
       syncImportInFlight = (async () => {
@@ -424,10 +467,18 @@ async function daemonMain(): Promise<void> {
   }
 
   async function dispatchRpc(method: string, params: any): Promise<unknown> {
+    // STRICT identity: every tool RPC must carry the caller's real session id.
+    // (connect/disconnect/shutdown/health/dashboard are not routed through here.)
+    if (typeof params?.client_session_id !== 'string' || !params.client_session_id.trim()) {
+      throw new Error(MISSING_CLIENT_SESSION_ID_MESSAGE);
+    }
     // Refresh session liveness: any RPC from a tracked session advances last_seen.
     // Cheap in-memory update — lets listActiveSessions() report recent activity.
-    if (params?.session_id) {
-      const tracked = sessions.get(params.session_id);
+    // `client_session_id` is the real client process id (params.session_id may be
+    // the resolved ROOT session, which is not what /rpc/connect registered).
+    const liveId = params?.client_session_id || params?.session_id;
+    if (liveId) {
+      const tracked = sessions.get(liveId);
       if (tracked) tracked.lastSeen = Date.now();
     }
 
@@ -435,6 +486,9 @@ async function daemonMain(): Promise<void> {
     if (method.startsWith('knowledge_')) {
       await autoImportIfStale();
     }
+
+    // Short chunk ids (unique >= 8-hex-char prefix) → full id, before any handler sees them.
+    params = await resolveChunkIdParams(storage, method, params);
 
     const requestId = randomUUID();
     const onStep = eventBus.makeStepEmitter(requestId, method);
@@ -645,6 +699,18 @@ async function daemonMain(): Promise<void> {
             autoExporter.queueEdgeRefresh();
           }
           result = drResult;
+          break;
+        }
+
+        // Goal — per-session anti-drift north star. Validate-and-echo only; the
+        // authoritative per-session write is done by the `kg goal bind` hook
+        // (which has the CC session_id). See tools/goal.ts.
+        case 'goal_set': {
+          result = handleGoalSet({
+            goal: params.goal,
+            done_criteria: params.done_criteria,
+            non_goals: params.non_goals,
+          });
           break;
         }
 
@@ -1065,6 +1131,7 @@ async function daemonMain(): Promise<void> {
             // Re-export the chunk file with local lifecycle
             const { exportChunkToFile } = await import('./sync/export.js');
             await exportChunkToFile(localChunk, syncDir);
+            recordSelfWrites(syncDir, [chunkRelPath(resolveSyncId)]);
           } else {
             // Accept remote lifecycle: update local DB to match sync file
             if (!remoteSyncChunk) {
@@ -1130,18 +1197,27 @@ async function daemonMain(): Promise<void> {
         const body = await readRequestBody(req);
         const rpcReq = parseRpcRequest(body);
         try {
-          const result = await rpcMutex.runExclusive(() =>
-            dispatchRpc(rpcReq.method, rpcReq.params)
-          );
+          // shuttingDown is checked both before queueing and again once the mutex is
+          // ours: an RPC queued behind the in-flight one when shutdown starts must fail
+          // fast (the client treats this message as transport-level and revives)
+          // instead of reaching storage after close() and failing "Storage is closing".
+          if (shuttingDown) throw new Error(DAEMON_SHUTTING_DOWN_MESSAGE);
+          const result = await rpcMutex.runExclusive(() => {
+            if (shuttingDown) throw new Error(DAEMON_SHUTTING_DOWN_MESSAGE);
+            return dispatchRpc(rpcReq.method, rpcReq.params);
+          });
           sendJson(res, formatResult(rpcReq.id, result));
         } catch (e) {
           sendJson(res, formatError(rpcReq.id, -32603, e instanceof Error ? e.message : String(e)));
         }
       } else if (path === '/rpc/connect' && req.method === 'POST') {
-        const sessionId = await readSessionId(req);
+        const { sessionId, pid } = await readConnectBody(req);
         if (sessionId) {
+          // Keyed by session id, so a re-connect after a self-heal revive overwrites
+          // the same entry (never double-counts). Keep the original connectedAt.
           const now = Date.now();
-          sessions.set(sessionId, { connectedAt: now, lastSeen: now });
+          const prev = sessions.get(sessionId);
+          sessions.set(sessionId, { connectedAt: prev?.connectedAt ?? now, lastSeen: now, pid: pid ?? prev?.pid });
         } else {
           // Backward-compat: older client with no session_id
           anonymousCount++;
@@ -1150,7 +1226,7 @@ async function daemonMain(): Promise<void> {
         log(`Daemon: client connected (total: ${activeClientCount()}${sessionId ? `, session: ${sessionId}` : ''})`);
         sendJson(res, { ok: true, clients: activeClientCount() });
       } else if (path === '/rpc/disconnect' && req.method === 'POST') {
-        const sessionId = await readSessionId(req);
+        const { sessionId } = await readConnectBody(req);
         if (sessionId && sessions.has(sessionId)) {
           sessions.delete(sessionId);
         } else {
@@ -1165,14 +1241,17 @@ async function daemonMain(): Promise<void> {
         // Flush the response before shutting down
         setTimeout(() => shutdown(), 100);
       } else if (path === '/health') {
+        // 'shutting_down' (not 'ok') so ensureDaemon() and the CLI hooks never adopt a
+        // daemon that is about to exit; ensureDaemon waits for it to go away instead.
         sendJson(res, {
-          status: 'ok',
+          status: shuttingDown ? 'shutting_down' : 'ok',
           project_id: projectId,
           clients: activeClientCount(),
           sessions: listActiveSessions(),
           uptime_ms: Date.now() - startTime,
           rpc_queue_depth: rpcMutex.pending,
           rpc_locked: rpcMutex.isLocked,
+          startup_import: startupImportState,
         });
       } else {
         // Delegate to dashboard for /api/*, /, /index.html
@@ -1200,14 +1279,33 @@ async function daemonMain(): Promise<void> {
     log(`Daemon: listening on http://127.0.0.1:${actualPort} (project: ${projectId})`);
   });
 
+  // Startup delta import, AFTER listen. It runs under the RPC mutex: KuzuDB's binding
+  // cannot overlap queries on one Connection, so letting RPCs proceed concurrently
+  // would race the import. RPCs that arrive meanwhile queue FIFO behind it and just
+  // take longer — the daemon is reachable, so no client hits the 15s startup timeout.
+  // runExclusive() is called synchronously here, before any request can be handled,
+  // so the import is guaranteed to be first in the queue.
+  void rpcMutex.runExclusive(async () => {
+    startupImportState = 'running';
+    try {
+      // Test hook only: stretch the import window so tests can observe it deterministically.
+      if (STARTUP_IMPORT_TEST_DELAY_MS > 0) await new Promise((r) => setTimeout(r, STARTUP_IMPORT_TEST_DELAY_MS));
+      await runStartupDeltaImport();
+    } finally {
+      startupImportState = 'done';
+      // The first knowledge_* RPC would otherwise re-scan ~3000 files right away.
+      lastSyncCheckMs = Date.now();
+    }
+  });
+
   // ============================================================
   // Graceful shutdown
   // ============================================================
 
-  let shuttingDown = false;
   async function shutdown() {
     if (shuttingDown) return;
     shuttingDown = true;
+    clearInterval(reapInterval);
     fileLogger.info('daemon', `Shutting down — uptime=${Math.round((Date.now() - startTime) / 1000)}s, clients=${activeClientCount()}`);
     log('Daemon: shutting down...');
     try {
@@ -1217,6 +1315,15 @@ async function daemonMain(): Promise<void> {
     } catch (e) {
       log('Daemon: auto-exporter flush error:', e);
     }
+    // Let the in-flight RPC finish before closing storage, so a multi-query handler
+    // does not die half-way on "Storage is closing". Queued RPCs see shuttingDown and
+    // fail fast, so this waits for at most one handler; bounded in case it hangs.
+    try {
+      await Promise.race([
+        rpcMutex.runExclusive(async () => {}),
+        new Promise((r) => setTimeout(r, SHUTDOWN_DRAIN_TIMEOUT_MS)),
+      ]);
+    } catch { /* ignore */ }
     try {
       await dashboard.close();
       await storage.close();
@@ -1244,22 +1351,31 @@ function sendJson(res: ServerResponse, data: unknown): void {
 }
 
 /**
- * Read the session_id from a connect/disconnect POST body.
- * Returns a non-empty session id string, or null if the body is missing,
- * empty, unparseable, or has no valid session_id (older clients).
+ * Read session_id (+ optional client pid) from a connect/disconnect POST body.
+ * sessionId is a non-empty string, or null if the body is missing, empty,
+ * unparseable, or has no valid session_id (older clients). pid is set only when
+ * it is a positive integer.
  */
-async function readSessionId(req: IncomingMessage): Promise<string | null> {
+async function readConnectBody(req: IncomingMessage): Promise<{ sessionId: string | null; pid?: number }> {
   try {
     const body = await readRequestBody(req);
-    if (!body) return null;
-    const parsed = JSON.parse(body) as { session_id?: unknown };
-    const sessionId = parsed?.session_id;
-    if (typeof sessionId === 'string' && sessionId.length > 0) {
-      return sessionId;
-    }
-    return null;
+    if (!body) return { sessionId: null };
+    const parsed = JSON.parse(body) as { session_id?: unknown; pid?: unknown };
+    const sessionId = typeof parsed?.session_id === 'string' && parsed.session_id.length > 0 ? parsed.session_id : null;
+    const pid = typeof parsed?.pid === 'number' && Number.isInteger(parsed.pid) && parsed.pid > 0 ? parsed.pid : undefined;
+    return { sessionId, pid };
   } catch {
-    return null;
+    return { sessionId: null };
+  }
+}
+
+function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    // EPERM = exists but owned by someone else: still alive.
+    return (e as NodeJS.ErrnoException).code === 'EPERM';
   }
 }
 

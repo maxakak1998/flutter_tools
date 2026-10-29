@@ -1,6 +1,10 @@
 # MCP Tool Reference
 
-28 tools exposed to Claude via JSON-RPC over stdio, in four groups: domain-knowledge, operational-learning, decision-record, and session-state.
+31 tools exposed to Claude via JSON-RPC over stdio, in six groups: domain-knowledge, operational-learning, decision-record, session-state, goal, and session-dictionary. (The kg-beads issue tools and attachment tools are also exposed to Claude but documented in CLAUDE.md rather than here.)
+
+**Chunk ids accept a unique prefix.** Every parameter that names a chunk (`id` on evolve/delete/validate/promote/life_feedback, `source_id`/`target_id` on link, `supersedes_id`, `chunk_id` on issue_link/attachment_*) takes the full UUID or a unique prefix of at least 8 hex characters (the short id shown in listings). The daemon resolves it before the handler runs; an ambiguous prefix fails with a `validation` error listing the candidates; an unknown prefix fails `not_found` as before.
+
+**Hard limits on `knowledge_store` metadata** (zod rejects the call before it reaches the daemon): `metadata` is required; `summary` 1-200 chars; `keywords` 1-15 items of ≥2 chars; `domain` ≤50 chars; `category` ∈ fact | rule | insight | question | workflow | decision | issue; `importance` ∈ critical | high | medium | low. The tool schema `.describe()` texts state these limits.
 
 ---
 
@@ -49,7 +53,15 @@
 | 27 | `state_evict_orphans` | Anti-orphaning GC | DESTRUCTIVE soft-evict of surfaced orphans |
 | 28 | `state_compact` | Bound the stream | Fold old active-context events into a summary |
 
-Tools 1-8 are documented in full below; 9-14 predate this reference. The new decision & session-state tools (15-28) are documented in the [Decision & Session-State Tools](#decision--session-state-tools-detail) section.
+### Goal tool
+
+| # | Tool | Purpose | When to use |
+|---|------|---------|-------------|
+| 30 | `session_list` | List the session dictionary | Machine-wide sessions (newest first) with computed `root_id`; client-side tool |
+| 31 | `session_update` | Edit a dictionary entry | `{id, fields}` merge arbitrary fields (null deletes); cycle links warn |
+| 29 | `goal_set` | Set the session's north star | Record a short anti-drift goal (+ optional `done_criteria`/`non_goals`); auto-injected every turn, before edits, and after compaction. Set only after the user confirms; latest call wins. |
+
+Tools 1-8 are documented in full below; 9-14 predate this reference. The decision & session-state tools (15-28) and the goal tool (29) are documented in the [Decision & Session-State Tools](#decision--session-state-tools-detail) section.
 
 ---
 
@@ -441,6 +453,30 @@ Fold old active-context events into a summary snapshot to keep the working-memor
 | `keep_recent` | number | no | Newest N active-context events per session to keep verbatim (default 50) |
 
 **Returns**: `{ project_id, keep_recent, compacted_count, sessions_affected, summaries[], message }`.
+
+---
+
+## Goal Tool (detail)
+
+`goal_set` records the current session's anti-drift **north star**. It is a validate-and-echo trigger only — the authoritative per-session write is done by the `kg goal bind` PostToolUse hook (which receives the Claude Code `session_id` on stdin), because an MCP tool handler cannot learn its own session id. The goal is stored file-backed at `<kgDir>/state/goals/<root_session_id>.json` (volatile, not synced) and is PUSH-injected: every turn by `kg context`, before file edits by the `kg goal pre-edit` PreToolUse hook (with an anti-drift reminder), and after compaction by `kg prime`. There is deliberately no `goal_get` tool (it would hit the same session-id gap); Claude reads the goal from its injected context. See CLAUDE.md "Goal Subsystem".
+
+### session_list / session_update
+
+Handled **client-side** in `client.ts` (machine-wide data at `~/.knowledge-graph/sessions/`, not the per-project daemon); wrapped in the standard `{ok,data}`/`{ok:false,error}` envelope. See CLAUDE.md "Session Dictionary".
+
+**session_list** params: `id?` (string, read one), `include_archived?` (boolean, default false). **Returns**: `{ this_session, this_root, sessions: [{...record, root_id}] }`.
+
+**session_update** params: `id` (string, required; created if missing), `fields` (object, required; arbitrary keys, `null` deletes, unknown fields preserved). **Returns**: `{ session: {...record, root_id}, warning? }` — `warning` is set when the edit creates a parent/continuation cycle (allowed).
+
+### goal_set
+
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `goal` | string | yes | The session objective — one short, outcome-focused sentence (required/non-empty; no hard length cap, but keep it short — injected every turn) |
+| `done_criteria` | string | no | How you will know the goal is achieved |
+| `non_goals` | string | no | Explicitly out-of-scope, to fight scope drift |
+
+**Returns**: `{ ok: true, goal: { goal, done_criteria?, non_goals? }, note }`. Set only after the user confirms a proposed goal; latest call wins (overwrite). A session may have no goal — do not call speculatively.
 
 ---
 

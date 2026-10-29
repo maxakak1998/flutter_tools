@@ -6,13 +6,25 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { randomUUID } from 'crypto';
 import { makeRpcRequest } from './rpc.js';
-import { log } from './types.js';
+import { log, DAEMON_SHUTTING_DOWN_MESSAGE, DAEMON_STARTUP_TIMEOUT_MESSAGE } from './types.js';
 import { getRuntimeVersion } from './version.js';
 import { ensureDaemon } from './daemon-manager.js';
 import type { ProjectInfo } from './project.js';
 import type { KnowledgeConfig } from './config.js';
+import {
+  fillSession,
+  updateSession,
+  listSessions,
+  readSession,
+  resolveRoot,
+  touchLastSeen,
+  detectTeammate,
+  readProcessArgv,
+  MISSING_SESSION_ID_MESSAGE,
+} from './session-store.js';
+import { readFileSync, existsSync } from 'fs';
+import { join } from 'path';
 
 // ============================================================
 // RPC call to daemon
@@ -45,8 +57,25 @@ export async function rpcCall(daemonUrl: string, method: string, params: unknown
     throw new DaemonUnreachableError(e);
   }
   const json = await res.json() as { result?: unknown; error?: { message: string } };
-  if (json.error) throw new Error(json.error.message);
+  if (json.error) {
+    // A daemon that is exiting answers with a well-formed JSON-RPC error, but the
+    // failure is about the daemon process, not the call: revive + retry like a
+    // dead socket. "Storage is closing" covers an older daemon without the fast
+    // shutdown refusal.
+    if (isDaemonGoneMessage(json.error.message)) throw new DaemonUnreachableError(new Error(json.error.message));
+    throw new Error(json.error.message);
+  }
   return json.result;
+}
+
+const DAEMON_GONE_RE = new RegExp(
+  `${DAEMON_SHUTTING_DOWN_MESSAGE}|${DAEMON_STARTUP_TIMEOUT_MESSAGE}|storage is closing`,
+  'i',
+);
+
+/** True for messages that mean "the daemon process is (going) away", not a caller error. */
+export function isDaemonGoneMessage(message: string): boolean {
+  return DAEMON_GONE_RE.test(message);
 }
 
 /**
@@ -63,7 +92,13 @@ export async function callWithRevive(
     return await call();
   } catch (e) {
     if (!(e instanceof DaemonUnreachableError)) throw e;
-    await revive();
+    try {
+      await revive();
+    } catch (reviveErr) {
+      // A failed revive (e.g. "Daemon startup timed out") is still a transport
+      // failure — keep it daemon_unreachable/retryable instead of `internal`.
+      throw reviveErr instanceof DaemonUnreachableError ? reviveErr : new DaemonUnreachableError(reviveErr);
+    }
     return call();
   }
 }
@@ -145,14 +180,19 @@ export function classifyError(e: unknown): EnvelopeError {
 
 function classifyCode(e: unknown, message: string): ErrorCode {
   if (e instanceof DaemonUnreachableError) return 'daemon_unreachable';
+  // Backstop for the same failures arriving as plain errors (startup timeout thrown
+  // by ensureDaemon, a shutting-down daemon's JSON-RPC error).
+  if (isDaemonGoneMessage(message)) return 'daemon_unreachable';
   if (/version conflict/i.test(message)) return 'version_conflict';
+  // Strict session identity (client: env missing; daemon: RPC without client_session_id).
+  if (/no claude code session id|client_session_id is required/i.test(message)) return 'validation';
   if (/ollama|embed|ollama pull|model .* not found/i.test(message)) return 'ollama_failed';
   // Attachment source errors are caller-fixable (bad path / oversize file), not
   // missing graph targets — classify validation even though "invalid source:
   // <path> (not found)" carries the "not found" substring the next branch claims.
   if (/invalid source|too large|exceeds/i.test(message)) return 'validation';
   if (/not found|does not exist/i.test(message)) return 'not_found';
-  if (/invalid|must be|require|needs?|not enough|already|too_big|too large|exceeds|cannot (promote|delete|link|record)|without a reason|not an operational|across layers/i.test(message)) return 'validation';
+  if (/invalid|must be|require|needs?|not enough|already|too_big|too large|exceeds|ambiguous|cannot (promote|delete|link|record)|without a reason|not an operational|across layers/i.test(message)) return 'validation';
   return 'internal';
 }
 
@@ -189,12 +229,23 @@ const storeRelationSchema = z.object({
   relation: suggestedRelationEnum,
 });
 
+// Hard limits are spelled out in .describe() because zod rejects the call before the
+// daemon ever sees it — the description is the only hint a caller gets up front.
+const SUMMARY_DESCRIBE = 'REQUIRED. One sentence, 1-200 characters (hard limit: >200 is rejected).';
+const KEYWORDS_DESCRIBE = 'REQUIRED. 1-15 search terms, each at least 2 characters.';
+const DOMAIN_DESCRIBE = 'REQUIRED. Topic area, max 50 characters (normalized to kebab-case). Reuse an existing domain from knowledge_list.';
+const CATEGORY_DESCRIBE = 'REQUIRED. Exactly one of: fact | rule | insight | question | workflow | decision | issue.';
+const IMPORTANCE_DESCRIBE = 'REQUIRED. Exactly one of: critical | high | medium | low.';
+// Chunk ids: the daemon resolves a unique prefix (>= 8 hex chars, e.g. the 8-char
+// short id shown in listings) to the full id; an ambiguous prefix is a validation error.
+const CHUNK_ID_DESCRIBE = 'Chunk id: the full UUID, or a unique prefix of at least 8 hex characters.';
+
 const metadataSchema = z.object({
-  summary: z.string().min(1).max(200),
-  keywords: z.array(z.string().min(2)).min(1).max(15),
-  domain: z.string().max(50),
-  category: categoryEnum,
-  importance: importanceEnum,
+  summary: z.string().min(1).max(200).describe(SUMMARY_DESCRIBE),
+  keywords: z.array(z.string().min(2)).min(1).max(15).describe(KEYWORDS_DESCRIBE),
+  domain: z.string().max(50).describe(DOMAIN_DESCRIBE),
+  category: categoryEnum.describe(CATEGORY_DESCRIBE),
+  importance: importanceEnum.describe(IMPORTANCE_DESCRIBE),
   layer: z.string().optional(),
   entities: z.array(entitySchema).max(4).optional(),
   relations: z.array(storeRelationSchema).max(4).optional(),
@@ -205,6 +256,31 @@ const metadataSchema = z.object({
   tags: z.array(z.string()).optional(),
   source: z.string().optional(),
 });
+
+
+/**
+ * Current git branch of `dir` by reading .git/HEAD (no subprocess; handles worktrees
+ * where `.git` is a `gitdir:` pointer file). '' on any problem — detection is best-effort.
+ */
+function currentGitBranch(dir: string): string {
+  try {
+    let gitPath = join(dir, '.git');
+    if (!existsSync(gitPath)) return '';
+    const head = (p: string) => readFileSync(join(p, 'HEAD'), 'utf-8').trim();
+    let raw: string;
+    try {
+      raw = head(gitPath);
+    } catch {
+      const ptr = /^gitdir:\s*(.+)$/m.exec(readFileSync(gitPath, 'utf-8'));
+      if (!ptr) return '';
+      raw = head(ptr[1].trim());
+    }
+    const m = /^ref:\s*refs\/heads\/(.+)$/.exec(raw);
+    return m ? m[1] : '';
+  } catch {
+    return '';
+  }
+}
 
 // ============================================================
 // Client main
@@ -220,9 +296,49 @@ export async function clientMain(
   // respawned daemon (new port) without restarting the client.
   let daemonUrl = initialDaemonUrl;
 
-  // Mint a stable per-process session id. A client restart = new session id
-  // (documented tradeoff — session identity is per-process, not persisted).
-  const sessionId = randomUUID();
+  // Session identity = the Claude Code session id (env, verified present in MCP
+  // processes), so the machine-wide dictionary and hooks agree on the same id.
+  // STRICT: there is no fallback id. If the env var is missing the server still
+  // starts (so the failure is visible per call instead of a dead MCP) but EVERY
+  // tool call returns a `validation` error. In-process subagents share this
+  // process, so they share this id; pane teammates link to their lead via the
+  // dictionary (`parent_id`).
+  const sessionId = (process.env.CLAUDE_CODE_SESSION_ID || '').trim();
+  if (!sessionId) {
+    log('ERROR: ' + MISSING_SESSION_ID_MESSAGE + ' — all tool calls will fail until the MCP is restarted with it set');
+  }
+  const requireSession = (): void => {
+    if (!sessionId) throw new Error(MISSING_SESSION_ID_MESSAGE);
+  };
+
+  // Register this session in the dictionary (fill-empty-only, fail-open). Detection
+  // never overwrites a value already present, so manual `kg session set` edits stick.
+  if (sessionId) try {
+    // Teammate iff our parent Claude process was launched with --agent-id <name>@<team>.
+    const mate = detectTeammate(readProcessArgv(process.ppid));
+    const lead = mate?.lead ?? '';
+    fillSession(sessionId, {
+      started_at: new Date().toISOString(),
+      status: 'active',
+      project_dir: process.cwd(),
+      branch: currentGitBranch(process.cwd()),
+      parent_id: lead && lead !== sessionId ? lead : '',
+      agent_id: mate?.agent_id ?? '',
+    });
+  } catch (e) {
+    log('session-dictionary: register failed (non-fatal):', e);
+  }
+
+  // Root (parent) session this process's calls are attributed to. Re-resolved per
+  // call so a `kg session set` re-parent takes effect without a restart. Fail-open.
+  function currentRoot(): string {
+    try {
+      touchLastSeen(sessionId);
+      return resolveRoot(sessionId);
+    } catch {
+      return sessionId;
+    }
+  }
 
   // Register (or re-register) this session with the daemon. Called at startup and
   // again after every revive — without re-connecting, the freshly respawned daemon
@@ -231,7 +347,8 @@ export async function clientMain(
     await fetch(`${daemonUrl}/rpc/connect`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ session_id: sessionId }),
+      // pid lets the daemon reap this session if we die without /rpc/disconnect.
+      body: JSON.stringify({ session_id: sessionId, pid: process.pid }),
     }).catch(() => {});
   }
 
@@ -263,14 +380,19 @@ export async function clientMain(
   ) {
     server.tool(name, description, schema, async (params) => {
       try {
+        requireSession(); // strict: no session id => validation error, never a silent fallback
         // Thread session identity into every RPC as an extra field the daemon
         // can read. Does not alter the existing tool param shape. A caller-supplied
         // session_id wins (e.g. state_get_context/state_get_plan reading another
         // session, or '' to span all project sessions); otherwise use the minted id.
+        // The minted/env id is resolved to its ROOT session so subagents,
+        // teammates and /clear chains all write under one id. `client_session_id`
+        // keeps the real process id for daemon liveness tracking.
         const callerSessionId = (params as { session_id?: string }).session_id;
         const result = await callRpc(methodName, {
           ...params,
-          session_id: callerSessionId ?? sessionId,
+          session_id: callerSessionId ?? currentRoot(),
+          client_session_id: sessionId,
         });
         // Success envelope: { ok:true, data }. See "Unified response envelope".
         return { content: [{ type: 'text' as const, text: JSON.stringify(wrapSuccess(result), null, 2) }] };
@@ -312,7 +434,10 @@ export async function clientMain(
   proxyTool(
     'knowledge_store',
     'Store a business logic insight as a knowledge chunk. Content should be natural language describing domain rules, business constraints, workflow rationale, or cross-feature relationships — NOT code patterns, class names, or technical implementation details. Ask the user to confirm uncertain inferences before storing. ENTITY RULES: Max 4 entities per chunk. If 2+ entities, MUST include relations[] describing how they interact. Use EntityObject {name, alias} format for entities with abbreviations.',
-    { content: z.string().min(1).max(5000), metadata: metadataSchema },
+    {
+      content: z.string().min(1).max(5000).describe('Natural-language content, 1-5000 characters.'),
+      metadata: metadataSchema.describe('REQUIRED object: { summary (<=200 chars), keywords (1-15), domain (<=50 chars), category (enum), importance (enum) } plus optional fields.'),
+    },
     'knowledge_store',
   );
 
@@ -320,8 +445,8 @@ export async function clientMain(
     'knowledge_link',
     'Create a relationship between two knowledge chunks.',
     {
-      source_id: z.string(),
-      target_id: z.string(),
+      source_id: z.string().describe(CHUNK_ID_DESCRIBE),
+      target_id: z.string().describe(CHUNK_ID_DESCRIBE),
       relation: relationEnum,
     },
     'knowledge_link',
@@ -350,7 +475,7 @@ export async function clientMain(
   proxyTool(
     'knowledge_delete',
     'Delete a knowledge chunk and all its relationships. Validated/promoted/canonical chunks require a reason.',
-    { id: z.string(), reason: z.string().optional() },
+    { id: z.string().describe(CHUNK_ID_DESCRIBE), reason: z.string().optional() },
     'knowledge_delete',
   );
 
@@ -358,10 +483,10 @@ export async function clientMain(
     'knowledge_evolve',
     'Update a knowledge chunk: re-embed, version bump, re-link.',
     {
-      id: z.string(),
+      id: z.string().describe(CHUNK_ID_DESCRIBE),
       new_content: z.string().min(1).max(5000),
       new_metadata: z.object({
-        summary: z.string().min(1).max(200).optional(),
+        summary: z.string().min(1).max(200).optional().describe('1-200 characters (hard limit).'),
         keywords: z.array(z.string().min(2)).min(1).max(15).optional(),
         domain: z.string().max(50).optional(),
         category: categoryEnum.optional(),
@@ -384,7 +509,7 @@ export async function clientMain(
     'knowledge_validate',
     'Confirm or refute a knowledge chunk. Always include evidence. See CLAUDE.md Validation Policy for golden evidence framework.',
     {
-      id: z.string(),
+      id: z.string().describe(CHUNK_ID_DESCRIBE),
       action: z.enum(['confirm', 'refute']),
       evidence: z.string().optional(),
       context: z.string().optional(),
@@ -396,7 +521,7 @@ export async function clientMain(
     'knowledge_promote',
     'Promote a knowledge chunk to higher status. Caller should verify golden evidence sources. See CLAUDE.md Validation Policy.',
     {
-      id: z.string(),
+      id: z.string().describe(CHUNK_ID_DESCRIBE),
       new_category: categoryEnum.optional(),
       new_importance: importanceEnum.optional(),
       reason: z.string(),
@@ -442,11 +567,11 @@ export async function clientMain(
   // ============================================================
 
   const lifeMetadataSchema = z.object({
-    summary: z.string().min(1).max(200),
-    keywords: z.array(z.string().min(2)).min(1).max(15),
-    domain: z.string().max(50),
-    category: z.enum(['fact', 'rule', 'insight', 'workflow']),
-    importance: importanceEnum,
+    summary: z.string().min(1).max(200).describe(SUMMARY_DESCRIBE),
+    keywords: z.array(z.string().min(2)).min(1).max(15).describe(KEYWORDS_DESCRIBE),
+    domain: z.string().max(50).describe(DOMAIN_DESCRIBE),
+    category: z.enum(['fact', 'rule', 'insight', 'workflow']).describe('REQUIRED. Exactly one of: fact | rule | insight | workflow.'),
+    importance: importanceEnum.describe(IMPORTANCE_DESCRIBE),
     tags: z.array(z.string()).optional(),
     entities: z.array(z.string().min(2)).optional(),
     source: z.string().optional(),
@@ -462,7 +587,7 @@ export async function clientMain(
   proxyTool(
     'life_feedback',
     'Report success or failure after applying an operational learning. Adjusts score: +1 for success, -1 for failure. Score 0 = hidden, score 10 = skill-eligible.',
-    { id: z.string(), outcome: z.enum(['success', 'failure']), context: z.string().optional() },
+    { id: z.string().describe(CHUNK_ID_DESCRIBE), outcome: z.enum(['success', 'failure']), context: z.string().optional() },
     'life_feedback',
   );
 
@@ -486,10 +611,25 @@ export async function clientMain(
       domain: z.string().max(50).describe('Topic area for the decision'),
       keywords: z.array(z.string().min(2)).min(1).max(15).describe('Search terms'),
       importance: importanceEnum.optional().describe('Priority signal (defaults to high)'),
-      supersedes_id: z.string().optional().describe('Chunk id of the decision this one replaces'),
+      supersedes_id: z.string().optional().describe('Chunk id of the decision this one replaces (full UUID or unique >= 8-hex-char prefix)'),
       rationale: z.string().optional().describe('Reason for superseding the prior decision (used on the SUPERSEDES edge)'),
     },
     'decision_record',
+  );
+
+  // ============================================================
+  // Goal tool (per-session anti-drift north star)
+  // ============================================================
+
+  proxyTool(
+    'goal_set',
+    "Record THIS session's goal — a short north star that is auto-injected into context every turn, before file edits, and after compaction, so you do not drift. Set it ONLY after proposing the goal to the user and getting their confirmation (a wrong goal injected every turn amplifies drift). Latest call wins (overwrite). Keep it short and outcome-focused. Do NOT call speculatively; a session may legitimately have no goal.",
+    {
+      goal: z.string().min(1).describe('The session objective — one short, outcome-focused sentence (the north star). No hard length cap, but keep it short — it is injected every turn.'),
+      done_criteria: z.string().optional().describe('How you will know the goal is achieved (optional)'),
+      non_goals: z.string().optional().describe('Explicitly out-of-scope, to fight scope drift (optional)'),
+    },
+    'goal_set',
   );
 
   // ============================================================
@@ -710,7 +850,7 @@ export async function clientMain(
     "Manually attach an existing knowledge chunk (decision/insight/fact/knowledge) to an issue by creating a graph edge, so issue_show surfaces it. Use when auto-link missed it: a chunk written while the session had no current_issue anchor (find these via issue_orphans), or an older chunk from before the issue existed. The chunk_id is a Chunk UUID from issue_orphans results or knowledge_query results (NOT an issue_ref). Default relation is relates_to.",
     {
       issue_ref: z.string().describe("The issue to attach to (short ref, e.g. 'upcozm-a3f9')"),
-      chunk_id: z.string().describe('Chunk UUID to attach — copy the "id" field from issue_orphans or knowledge_query results'),
+      chunk_id: z.string().describe('Chunk UUID to attach — copy the "id" field from issue_orphans or knowledge_query results (a unique >= 8-hex-char prefix also works)'),
       relation: relationEnum.optional().describe('Edge type (default relates_to; e.g. depends_on, contradicts)'),
     },
     'issue_link',
@@ -750,7 +890,7 @@ export async function clientMain(
   // ============================================================
 
   const attachTargetSchema = {
-    chunk_id: z.string().optional().describe('Target chunk UUID (mutually exclusive with issue_ref)'),
+    chunk_id: z.string().optional().describe('Target chunk UUID or unique >= 8-hex-char prefix (mutually exclusive with issue_ref)'),
     issue_ref: z.string().optional().describe("Target issue ref, e.g. 'upcozm-a3f9' (mutually exclusive with chunk_id)"),
   };
 
@@ -794,6 +934,56 @@ export async function clientMain(
   );
 
   // ============================================================
+  // Session dictionary tools (machine-wide, handled CLIENT-SIDE — the data lives in
+  // ~/.knowledge-graph/sessions/, not in the per-project daemon DB)
+  // ============================================================
+
+  function localTool(
+    name: string,
+    description: string,
+    schema: Record<string, z.ZodTypeAny>,
+    handler: (params: any) => unknown,
+  ) {
+    server.tool(name, description, schema, async (params) => {
+      try {
+        requireSession();
+        return { content: [{ type: 'text' as const, text: JSON.stringify(wrapSuccess(handler(params)), null, 2) }] };
+      } catch (e) {
+        return { content: [{ type: 'text' as const, text: JSON.stringify(wrapError(e), null, 2) }], isError: true };
+      }
+    });
+  }
+
+  localTool(
+    'session_list',
+    'List sessions in the machine-wide session dictionary (all projects), newest first, each with its computed root_id. Pass id to read one session. Archived sessions are hidden unless include_archived is true. `this_session` / `this_root` identify the caller.',
+    {
+      id: z.string().optional().describe('Return only this session'),
+      include_archived: z.boolean().optional().describe("Include sessions with status 'archived' (default false)"),
+    },
+    (p: { id?: string; include_archived?: boolean }) => {
+      const withRoot = (r: Record<string, unknown> & { id: string }) => ({ ...r, root_id: resolveRoot(r.id) });
+      const rows = p.id
+        ? [readSession(p.id)].filter((r): r is NonNullable<typeof r> => r !== null)
+        : listSessions().filter((r) => p.include_archived || r.status !== 'archived');
+      return { this_session: sessionId, this_root: currentRoot(), sessions: rows.map(withRoot) };
+    },
+  );
+
+  localTool(
+    'session_update',
+    'Edit a session dictionary entry. fields are merged over the existing record (arbitrary keys allowed; unknown fields are preserved; null deletes a field). Typical fields: name, parent_id, continues_id, note, status (active|archived). A link that creates a cycle is allowed and returns a warning. Use to adopt a session under a parent (set parent_id).',
+    {
+      id: z.string().min(1).describe('Session id to edit (created if missing)'),
+      fields: z.record(z.string(), z.unknown()).describe('Fields to set; null deletes'),
+    },
+    (p: { id: string; fields: Record<string, unknown> }) => {
+      const { record, warning } = updateSession(p.id, p.fields);
+      return { session: { ...record, root_id: resolveRoot(record.id) }, ...(warning ? { warning } : {}) };
+    },
+  );
+
+  // ============================================================
   // Connect to stdio transport
   // ============================================================
 
@@ -810,16 +1000,27 @@ export async function clientMain(
     process.exit(0);
   });
 
-  // SIGTERM (Claude Code exiting): preserve daemon for other sessions
-  process.on('SIGTERM', async () => {
+  // Claude Code exiting: disconnect, preserve daemon for other sessions. Claude Code
+  // usually just closes our stdin (no SIGTERM), which is why disconnects were almost
+  // never seen; stdin end/close and SIGHUP take the same path. SIGKILL cannot be
+  // caught — the daemon's pid reaper covers that.
+  let leaving = false;
+  async function disconnectAndExit(): Promise<void> {
+    if (leaving) return;
+    leaving = true;
     try {
       await fetch(`${daemonUrl}/rpc/disconnect`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ session_id: sessionId }),
+        signal: AbortSignal.timeout(2000),
       }).catch(() => {});
       await server.close();
     } catch { /* ignore */ }
     process.exit(0);
-  });
+  }
+  process.on('SIGTERM', disconnectAndExit);
+  process.on('SIGHUP', disconnectAndExit);
+  process.stdin.on('end', disconnectAndExit);
+  process.stdin.on('close', disconnectAndExit);
 }

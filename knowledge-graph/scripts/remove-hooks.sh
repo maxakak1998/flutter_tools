@@ -181,6 +181,12 @@ echo "  Removed kg-clear-plan-reviewed-after-exit.sh from PostToolUse"
 remove_hook_command "PreToolUse" ".claude/hooks/kg-require-consult-before-edit.sh"
 echo "  Removed kg-require-consult-before-edit.sh from PreToolUse"
 
+# Remove goal hooks (per-session north star)
+remove_hook_command "PreToolUse" "kg goal pre-edit"
+remove_hook_command "PostToolUse" "kg goal bind"
+remove_hook_command "PostToolUse" "kg session audit"
+echo "  Removed kg goal pre-edit from PreToolUse and kg goal bind from PostToolUse"
+
 # Remove per-edit consulted marker cleanup from PostToolUse
 remove_hook_command "PostToolUse" ".claude/hooks/kg-clear-consulted-after-edit.sh"
 echo "  Removed kg-clear-consulted-after-edit.sh from PostToolUse"
@@ -218,9 +224,10 @@ remove_hook_command "SessionStart" ".claude/hooks/kg-session-start.sh"
 echo "  Removed kg prime from SessionStart"
 echo "  Removed kg-session-start.sh from SessionStart (legacy)"
 
-# Remove kg prime from PreCompact
+# Remove kg prime from PreCompact (LEGACY: PreCompact is no longer wired by setup-hooks;
+# this cleans up installs from the old version where kg prime was mis-wired here).
 remove_hook_command "PreCompact" "kg prime"
-echo "  Removed kg prime from PreCompact"
+echo "  Removed kg prime from PreCompact (legacy)"
 
 # Remove kg-session-end-cleanup.sh from SessionEnd
 remove_hook_command "SessionEnd" ".claude/hooks/kg-session-end-cleanup.sh"

@@ -316,14 +316,17 @@ if [ "$EDIT_COUNT" -eq 0 ] && [ "$RESEARCH_ACTIVITY" -eq 0 ]; then
   exit 0
 fi
 
-# Log session summary to activity.log (always).
+# Log a turn summary to activity.log (always). Event is `turn_stop`: the Stop hook
+# fires after EVERY assistant turn, not once per session (logs before 2026-10-27
+# carry the same per-turn line under the misleading name `session_stop`; nothing
+# reads either name). Rotation is done by kg-activity-tracker.sh, the main writer.
 if [ -n "$KG_DIR" ]; then
   TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   jq -n -c \
     --arg ts "$TIMESTAMP" --arg sid "$SESSION_ID" \
     --arg edits "${EDIT_COUNT:-0}" --argjson kg_used "$KG_USED" \
     --arg areas "${AREA_LIST:-}" \
-    '{ts:$ts,session:$sid,event:"session_stop",edits:($edits|tonumber),kg_consulted:$kg_used,areas:$areas}' \
+    '{ts:$ts,session:$sid,event:"turn_stop",edits:($edits|tonumber),kg_consulted:$kg_used,areas:$areas}' \
     >> "$KG_DIR/activity.log"
 fi
 
@@ -396,6 +399,19 @@ done
 [ -z "$KG_DIR" ] && exit 0
 
 ACTIVITY_LOG="$KG_DIR/activity.log"
+
+# Size-based rotation (same rule as src/activity-log.ts): above
+# KG_ACTIVITY_LOG_MAX_BYTES (default 5 MB) the log moves to activity.log.1,
+# replacing the previous one, so at most ~2x the cap stays on disk.
+# stat -c is GNU, stat -f is BSD/macOS.
+MAX_BYTES="${KG_ACTIVITY_LOG_MAX_BYTES:-5242880}"
+if [ -f "$ACTIVITY_LOG" ]; then
+  SIZE=$(stat -c%s "$ACTIVITY_LOG" 2>/dev/null || stat -f%z "$ACTIVITY_LOG" 2>/dev/null || echo 0)
+  if [ "$SIZE" -gt "$MAX_BYTES" ] 2>/dev/null; then
+    mv -f "$ACTIVITY_LOG" "$ACTIVITY_LOG.1" 2>/dev/null || true
+  fi
+fi
+
 TS=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 SID=$(echo "$INPUT" | jq -r '.session_id // ""')
 TOOL=$(echo "$INPUT" | jq -r '.tool_name // ""')
@@ -997,6 +1013,7 @@ echo "[Session-State] Plan finalized — this is the moment to capture it (your 
 echo "  state_save_plan — clone the plan .md immutably (version 1 = the original plan)" >&2
 echo "  decision_record — record any design decision + rationale you committed to" >&2
 echo "  state_task_upsert — seed the task ledger from the plan's steps" >&2
+echo "  goal_set — if a session goal is set, refresh its done_criteria/non_goals to match this finalized plan" >&2
 exit 0
 HOOKEOF
 
@@ -1169,6 +1186,11 @@ add_hook "PreToolUse" "ExitPlanMode" ".claude/hooks/kg-collect-plan-findings.sh"
 add_hook "PreToolUse" "Edit" ".claude/hooks/kg-require-consult-before-edit.sh"
 add_hook "PreToolUse" "Write" ".claude/hooks/kg-require-consult-before-edit.sh"
 
+# --- Goal north-star: inject the session goal + anti-drift reminder before edits ---
+# Sibling of the consult gate (same trigger); non-blocking, silent when no goal set.
+add_hook "PreToolUse" "Edit" "kg goal pre-edit"
+add_hook "PreToolUse" "Write" "kg goal pre-edit"
+
 # --- PostToolUse hooks (KG-specific markers) ---
 add_hook "PostToolUse" "mcp__knowledge-graph__knowledge_list" ".claude/hooks/kg-mark-domains-checked.sh"
 add_hook "PostToolUse" "mcp__knowledge-graph__knowledge_list" ".claude/hooks/kg-mark-tool-used.sh"
@@ -1195,6 +1217,14 @@ add_hook "PostToolUse" "mcp__knowledge-graph__state_checkpoint" ".claude/hooks/k
 add_hook "PostToolUse" "mcp__knowledge-graph__state_task_upsert" ".claude/hooks/kg-mark-state-used.sh"
 add_hook "PostToolUse" "mcp__knowledge-graph__state_save_plan" ".claude/hooks/kg-mark-state-used.sh"
 add_hook "PostToolUse" "mcp__knowledge-graph__decision_record" ".claude/hooks/kg-mark-state-used.sh"
+
+# --- Goal bind: persist the session goal keyed by the CC session_id (bridges the ---
+# --- session_id gap — an MCP tool handler cannot know its own session_id). ---
+add_hook "PostToolUse" "mcp__knowledge-graph__goal_set" "kg goal bind"
+
+# --- Session audit: one line per KG tool call in ~/.knowledge-graph/sessions/<root>.audit.jsonl ---
+# Attribution to the root (parent) session; non-blocking, always exits 0.
+add_hook "PostToolUse" "mcp__knowledge-graph__.*" "kg session audit"
 
 # --- Code edit tracking (for Stop nudge) ---
 add_hook "PostToolUse" "Edit" ".claude/hooks/kg-track-code-edits.sh"
@@ -1277,7 +1307,7 @@ info "Hooks installed to $HOOKS_DIR"
 info "Settings merged into $SETTINGS_FILE"
 echo ""
 echo "Hooks installed (23 scripts + kg prime + kg context, 10 events):"
-echo "  [PostToolUse]         kg-nudge-plan-capture.sh (ExitPlanMode → save_plan + decision_record nudge)"
+echo "  [PostToolUse]         kg-nudge-plan-capture.sh (ExitPlanMode → save_plan + decision_record + goal-refresh nudge)"
 echo "  [PostToolUse]         kg-mark-state-used.sh (state_*/decision → suppress Stop checkpoint nudge)"
 echo "  [SubagentStop]        kg-nudge-subagent-learning.sh (harvest life_store from subagent)"
 echo "  [PreToolUse]          kg-require-domain-check.sh"
@@ -1287,6 +1317,7 @@ echo "  [PreToolUse]          kg-require-golden-evidence.sh"
 echo "  [PreToolUse]          kg-require-validate-evidence.sh"
 echo "  [PreToolUse]          kg-collect-plan-findings.sh (gate ExitPlanMode until KG review)"
 echo "  [PreToolUse]          kg-require-consult-before-edit.sh (gate Edit/Write until KG consulted + explained)"
+echo "  [PreToolUse]          kg goal pre-edit (inject session goal + anti-drift before Edit/Write)"
 echo "  [PostToolUse]         kg-clear-plan-reviewed-after-exit.sh (re-arm plan gate after success)"
 echo "  [PostToolUse]         kg-clear-consulted-after-edit.sh (re-arm edit consult after each edit)"
 echo "  [PostToolUse]         kg-mark-consulted.sh (MCP query/list → consulted marker)"
@@ -1295,9 +1326,10 @@ echo "  [PostToolUse]         kg-mark-domains-checked.sh"
 echo "  [PostToolUse]         kg-activity-tracker.sh (ALL tools → session analytics)"
 echo "  [PostToolUse]         kg-track-code-edits.sh (Edit/Write → area tracker for Stop nudge)"
 echo "  [PostToolUse]         kg-mark-tool-used.sh"
+echo "  [PostToolUse]         kg goal bind (goal_set → persist session goal keyed by root session id)"
+echo "  [PostToolUse]         kg session audit (every KG tool call → ~/.knowledge-graph/sessions/<root>.audit.jsonl)"
 echo "  [PostToolUseFailure]  kg-tool-failure.sh"
-echo "  [SessionStart]        kg prime (injects full skill context)"
-echo "  [PreCompact]          kg prime (restores KG context after compaction)"
+echo "  [SessionStart]        kg prime (injects full skill context; restores goal + context after compaction)"
 echo "  [UserPromptSubmit]    kg-sync-conflict-check.sh (blocks on unresolved sync conflicts)"
 echo "  [UserPromptSubmit]    kg context (auto-query KG with user prompt)"
 echo "  [SessionEnd]          kg-session-end-cleanup.sh"

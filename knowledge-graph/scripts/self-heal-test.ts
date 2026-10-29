@@ -104,7 +104,7 @@ async function main() {
       await connectSession();
     }
     const callRpc = (method: string, params: unknown) =>
-      callWithRevive(() => rpcCall(daemonUrl!, method, params), reviveDaemon);
+      callWithRevive(() => rpcCall(daemonUrl!, method, { ...(params as object), client_session_id: 'self-heal-test' }), reviveDaemon);
 
     await connectSession();
 
@@ -135,7 +135,7 @@ async function main() {
     let threw = false;
     try {
       await callWithRevive(
-        () => rpcCall(daemonUrl!, 'no_such_method_xyz', {}),
+        () => rpcCall(daemonUrl!, 'no_such_method_xyz', { client_session_id: 'self-heal-test' }),
         noRevive,
       );
     } catch {

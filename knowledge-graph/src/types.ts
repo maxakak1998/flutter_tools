@@ -435,6 +435,12 @@ export interface ListFilters {
 // Embedding dimensions for bge-m3 model (tied to DB schema — do not change without migration)
 export const EMBEDDING_DIMENSIONS = 1024;
 
+// Daemon lifecycle error messages shared by daemon.ts, daemon-manager.ts and the
+// client's classifier. Both mean "the daemon process is (going) away", i.e. a
+// transport-level failure the client self-heals from, not a caller mistake.
+export const DAEMON_SHUTTING_DOWN_MESSAGE = 'Daemon is shutting down';
+export const DAEMON_STARTUP_TIMEOUT_MESSAGE = 'Daemon startup timed out';
+
 // === Knowledge relation type to KuzuDB table name mapping ===
 
 export const RELATION_TABLE_MAP: Record<string, string> = {

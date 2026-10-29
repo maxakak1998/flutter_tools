@@ -4,9 +4,15 @@ import { existsSync, readFileSync, unlinkSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { ProjectInfo } from './project.js';
 import { KnowledgeConfig, CONFIG_PATH } from './config.js';
-import { log } from './types.js';
+import { log, DAEMON_STARTUP_TIMEOUT_MESSAGE } from './types.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// The daemon writes daemon.port from its listen() callback. Its startup sync import
+// runs after listen, so this only has to cover DB open + migrations.
+const STARTUP_TIMEOUT_MS = 15_000;
+// Max wait for a daemon that reported status 'shutting_down' to release the DB lock.
+const SHUTDOWN_WAIT_MS = 15_000;
 
 /**
  * Ensure a daemon is running for the given project.
@@ -20,7 +26,7 @@ export async function ensureDaemon(
 ): Promise<string> {
   // 1. Check for existing daemon via port file
   if (existsSync(project.daemonPortFile)) {
-    const port = parseInt(readFileSync(project.daemonPortFile, 'utf-8').trim(), 10);
+    const port = readIntFile(project.daemonPortFile);
     if (port > 0) {
       const url = `http://127.0.0.1:${port}`;
       try {
@@ -29,6 +35,13 @@ export async function ensureDaemon(
         if (health.status === 'ok' && health.project_id === project.projectId) {
           log(`Connected to existing daemon on port ${port}`);
           return url;
+        }
+        if (health.status === 'shutting_down' && health.project_id === project.projectId) {
+          // Adopting it would hand back a URL that dies in a moment; spawning now would
+          // fail on the DB lock it still holds (and resolve on its stale daemon.port).
+          // Wait for it to exit, then fall through to spawn a fresh one.
+          log(`Daemon on port ${port} is shutting down — waiting for it to exit`);
+          await waitForDaemonExit(project);
         }
       } catch {
         // Daemon is dead or wrong project, clean up
@@ -39,11 +52,9 @@ export async function ensureDaemon(
   }
 
   // 2. Check PID file for zombie process
-  if (existsSync(project.daemonPidFile)) {
-    const pid = parseInt(readFileSync(project.daemonPidFile, 'utf-8').trim(), 10);
-    if (pid > 0 && !isProcessAlive(pid)) {
-      cleanupDaemonFiles(project);
-    }
+  const pid = readIntFile(project.daemonPidFile);
+  if (pid > 0 && !isProcessAlive(pid)) {
+    cleanupDaemonFiles(project);
   }
 
   // 3. Spawn new daemon
@@ -84,8 +95,8 @@ function spawnDaemon(project: ProjectInfo, config: KnowledgeConfig, port?: numbe
       clearInterval(interval);
       const logFile = join(project.kgDir, 'logs', 'daemon.log');
       const hint = existsSync(logFile) ? '\nCheck logs: kg logs' : '';
-      reject(new Error(`Daemon startup timed out after 15s${hint}`));
-    }, 15_000);
+      reject(new Error(`${DAEMON_STARTUP_TIMEOUT_MESSAGE} after ${STARTUP_TIMEOUT_MS / 1000}s${hint}`));
+    }, STARTUP_TIMEOUT_MS);
 
     const interval = setInterval(() => {
       if (existsSync(project.daemonPortFile)) {
@@ -97,6 +108,33 @@ function spawnDaemon(project: ProjectInfo, config: KnowledgeConfig, port?: numbe
       }
     }, 100);
   });
+}
+
+/**
+ * Poll until the daemon's pid is gone (it removes its own port/pid files on exit),
+ * bounded by SHUTDOWN_WAIT_MS. Leftover files of a dead pid are cleaned so the
+ * subsequent spawn cannot resolve on a stale daemon.port.
+ */
+async function waitForDaemonExit(project: ProjectInfo): Promise<void> {
+  const deadline = Date.now() + SHUTDOWN_WAIT_MS;
+  while (Date.now() < deadline) {
+    const pid = readIntFile(project.daemonPidFile);
+    if (!(pid > 0) || !isProcessAlive(pid)) {
+      cleanupDaemonFiles(project);
+      return;
+    }
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  log('Daemon still shutting down after wait; attempting spawn anyway');
+}
+
+/** daemon.port/daemon.pid as a number, 0 when absent/unreadable (an exiting daemon deletes them). */
+function readIntFile(path: string): number {
+  try {
+    return parseInt(readFileSync(path, 'utf-8').trim(), 10) || 0;
+  } catch {
+    return 0;
+  }
 }
 
 function cleanupDaemonFiles(project: ProjectInfo): void {

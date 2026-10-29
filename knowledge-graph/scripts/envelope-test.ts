@@ -21,8 +21,12 @@ import {
   wrapSuccess,
   wrapError,
   DaemonUnreachableError,
+  callWithRevive,
+  isDaemonGoneMessage,
   type ErrorCode,
 } from '../src/client.js';
+import { MISSING_SESSION_ID_MESSAGE, MISSING_CLIENT_SESSION_ID_MESSAGE } from '../src/session-store.js';
+import { DAEMON_SHUTTING_DOWN_MESSAGE } from '../src/types.js';
 
 let passed = 0;
 let failed = 0;
@@ -76,6 +80,12 @@ const CASES: Case[] = [
   {
     name: 'embedder.ts:109 "Ollama … failed: 503" → ollama_failed/retryable',
     error: new Error('Ollama embed failed: 503 service unavailable'),
+    code: 'ollama_failed',
+    retryable: true,
+  },
+  {
+    name: 'embedder.ts timeout "Ollama embed timed out …" → ollama_failed/retryable',
+    error: new Error('Ollama embed timed out after 60000ms (backend unresponsive)'),
     code: 'ollama_failed',
     retryable: true,
   },
@@ -157,14 +167,52 @@ const CASES: Case[] = [
     retryable: false,
   },
   {
+    name: 'client: CLAUDE_CODE_SESSION_ID missing → validation/no-retry',
+    error: new Error(MISSING_SESSION_ID_MESSAGE),
+    code: 'validation',
+    retryable: false,
+  },
+  {
+    name: 'daemon: RPC without client_session_id → validation/no-retry',
+    error: new Error(MISSING_CLIENT_SESSION_ID_MESSAGE),
+    code: 'validation',
+    retryable: false,
+  },
+  {
     name: 'non-Error thrown value → internal/no-retry',
     error: 'some string throw',
     code: 'internal',
     retryable: false,
   },
+  // Daemon lifecycle failures (2026-10-27 logs) — the daemon process is going away,
+  // not a caller mistake: retryable, never `internal`.
+  {
+    name: 'daemon-manager.ts "Daemon startup timed out after 15s…" (plain Error) → daemon_unreachable/retryable',
+    error: new Error('Daemon startup timed out after 15s\nCheck logs: kg logs'),
+    code: 'daemon_unreachable',
+    retryable: true,
+  },
+  {
+    name: 'daemon.ts DAEMON_SHUTTING_DOWN_MESSAGE → daemon_unreachable/retryable',
+    error: new Error(DAEMON_SHUTTING_DOWN_MESSAGE),
+    code: 'daemon_unreachable',
+    retryable: true,
+  },
+  {
+    name: 'kuzu.ts "Storage is closing" → daemon_unreachable/retryable',
+    error: new Error('Storage is closing'),
+    code: 'daemon_unreachable',
+    retryable: true,
+  },
+  {
+    name: 'chunk-id.ts "Ambiguous chunk id prefix …" → validation/no-retry',
+    error: new Error('Ambiguous chunk id prefix "3ef4b7d0" matches multiple chunks (3ef4b7d0-aaaa, 3ef4b7d0-bbbb) — pass more characters'),
+    code: 'validation',
+    retryable: false,
+  },
 ];
 
-function main(): void {
+async function main(): Promise<void> {
   console.error('🧪 Envelope test — classifyError + wrap helpers');
   console.error('═'.repeat(58));
 
@@ -174,6 +222,11 @@ function main(): void {
     const ok = got.code === c.code && got.retryable === c.retryable && got.hint.length > 0;
     assert(ok, c.name, ok ? undefined : `got code=${got.code} retryable=${got.retryable}`);
   }
+
+  console.error('\n📋 isDaemonGoneMessage()');
+  assert(isDaemonGoneMessage('Daemon startup timed out after 15s'), 'startup timeout is a daemon-gone message');
+  assert(isDaemonGoneMessage('Storage is closing'), '"Storage is closing" is a daemon-gone message');
+  assert(!isDaemonGoneMessage('Chunk not found: 3ef4b7d0'), '"Chunk not found" is NOT a daemon-gone message');
 
   console.error('\n📋 wrapSuccess / wrapError shape');
   const su = wrapSuccess(undefined);
@@ -185,9 +238,34 @@ function main(): void {
   const we = wrapError(new Error('Issue not found: z'));
   assert(we.ok === false && we.error.code === 'not_found' && we.error.retryable === false && we.error.message === 'Issue not found: z', 'wrapError() → {ok:false, error{code,message,retryable,hint}}');
 
+  console.error('\n📋 callWithRevive: a failed revive stays daemon_unreachable');
+  // The 2026-10-27 failure: revive → ensureDaemon() → "Daemon startup timed out"
+  // escaped as a plain Error and was classified internal (no-retry).
+  let caught: unknown = null;
+  try {
+    await callWithRevive(
+      async () => { throw new DaemonUnreachableError(new Error('fetch failed')); },
+      async () => { throw new Error('Daemon startup timed out after 15s'); },
+    );
+  } catch (e) {
+    caught = e;
+  }
+  assert(caught instanceof DaemonUnreachableError, 'revive failure is rethrown as DaemonUnreachableError');
+  const rc = classifyError(caught);
+  assert(rc.code === 'daemon_unreachable' && rc.retryable === true, 'revive failure → daemon_unreachable/retryable', `got ${rc.code}`);
+  let calls = 0;
+  const v = await callWithRevive(
+    async () => { if (++calls === 1) throw new DaemonUnreachableError(new Error(DAEMON_SHUTTING_DOWN_MESSAGE)); return 'ok'; },
+    async () => {},
+  );
+  assert(v === 'ok' && calls === 2, 'shutting-down error → revive + exactly one retry', `calls=${calls}`);
+
   console.error('═'.repeat(58));
   console.error(`\n📊 Results: ${passed} passed, ${failed} failed\n`);
   if (failed > 0) process.exit(1);
 }
 
-main();
+main().catch((e) => {
+  console.error('Fatal error:', e);
+  process.exit(1);
+});

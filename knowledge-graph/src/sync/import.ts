@@ -118,7 +118,9 @@ export async function importAll(
   const chunksToRelink: Array<{ id: string; embedding: number[]; domain: string; layer: string | null }> = [];
 
   // 3. Process each remote sync chunk
-  for (const [, remoteChunk] of remoteSyncChunks) {
+  for (const [fileKey, rawChunk] of remoteSyncChunks) {
+    const remoteChunk = normalizeSyncChunk(fileKey, rawChunk);
+    if (!remoteChunk) continue;
     remoteSyncIds.add(remoteChunk.sync_id);
 
     // 3a. Look up by sync_id in local DB
@@ -256,7 +258,8 @@ export async function importAll(
     log('importAll: attachment import failed (non-fatal):', e);
   }
 
-  // 7. Update manifest with import timestamp
+  // 7. Update manifest with import timestamp. `self_writes` is deliberately dropped:
+  // after an import every file on disk has been seen (see sync/self-writes.ts).
   const updatedManifest: SyncManifest = {
     format_version: manifest?.format_version ?? 1,
     last_export_at: manifest?.last_export_at ?? '',
@@ -361,6 +364,43 @@ export function removeConflict(syncDir: string, syncId: string): number {
 // ============================================================
 // Import helpers
 // ============================================================
+
+/**
+ * Validate a parsed sync chunk file and fill what can be derived. Returns null (skip,
+ * logged) when the file cannot be imported safely.
+ *
+ * sync_id: the file is named `<sync_id>.json` by every exporter, so a file WITHOUT a
+ * `sync_id` field (hand-written or hand-edited) takes its filename. Before this, such a
+ * file was looked up as sync_id `undefined`, never matched, and was created as a brand-new
+ * chunk with no sync_id on EVERY import — which deletion detection then skipped forever.
+ * One such file in upcoz-mobile produced 2783 copies of the same chunk (2026-04..10).
+ *
+ * content_hash: always recomputed from `content`. The same hand-written file carried a
+ * hash that did not match its content, so the chunk was re-embedded and "updated" on
+ * every import; exporters always write the true hash, so this changes nothing for them.
+ */
+function normalizeSyncChunk(fileKey: string, raw: SyncChunkFile): SyncChunkFile | null {
+  if (!raw || typeof raw !== 'object' || typeof raw.content !== 'string' || !raw.content.trim()) {
+    log(`importAll: skipping sync file chunks/${fileKey}.json — no content`);
+    return null;
+  }
+  const fieldId = typeof raw.sync_id === 'string' ? raw.sync_id.trim() : '';
+  const syncId = fieldId || fileKey;
+  if (!syncId) {
+    log('importAll: skipping a sync chunk file with no sync_id and no usable filename');
+    return null;
+  }
+  if (!fieldId) {
+    log(`importAll: sync file chunks/${fileKey}.json has no sync_id field — using its filename`);
+  } else if (fieldId !== fileKey) {
+    log(`importAll: sync file chunks/${fileKey}.json carries sync_id ${fieldId} (filename mismatch) — using the field`);
+  }
+  const contentHash = computeContentHash(raw.content);
+  if (raw.content_hash && raw.content_hash !== contentHash) {
+    log(`importAll: sync file chunks/${fileKey}.json has a content_hash that does not match its content — using the computed one`);
+  }
+  return { ...raw, sync_id: syncId, content_hash: contentHash };
+}
 
 /**
  * Import a new chunk that does not exist in the local DB.

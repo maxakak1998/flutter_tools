@@ -26,6 +26,9 @@ export interface IStorage {
   // Sync
   findChunkBySyncId(syncId: string): Promise<StoredChunk | null>;
 
+  // Id lookup: ids of chunks whose id starts with `prefix` (exact id included), max `limit`.
+  findChunkIdsByPrefix(prefix: string, limit: number): Promise<string[]>;
+
   // Dashboard / Stats
   getAllEdges(): Promise<GraphEdge[]>;
   getStats(): Promise<{ total_chunks: number; total_edges: number; by_domain: Record<string, number>; by_category: Record<string, number>; by_importance: Record<string, number> }>;

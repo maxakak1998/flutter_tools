@@ -40,7 +40,7 @@ Zod schemas in `client.ts` validate input before forwarding. The daemon dispatch
 
 31 tools are registered: 11 domain-knowledge (`knowledge_*`), 3 operational-learning (`life_*`), `decision_record`, 12 session-state (`state_*`), and 4 attachment (`attachment_*`). See `docs/tools.md` for the full list.
 
-**Session identity**: `proxyTool()` threads a client-minted `session_id` (a per-process UUID, see [Session Registry](#session-registry)) into every RPC. A caller-supplied `session_id` in the tool params wins over the minted id (e.g. `state_get_context`/`state_get_plan` reading another session, or `''` to span all project sessions).
+**Session identity**: `proxyTool()` threads the **root session id** into every RPC as `session_id` (the client uses `CLAUDE_CODE_SESSION_ID`, falling back to a minted UUID, and resolves it to its root through the machine-wide session dictionary — see CLAUDE.md "Session Dictionary"); the real process id travels as `client_session_id`, which the daemon REQUIRES on every tool RPC (missing/blank => `client_session_id is required` error, classified `validation`); it also feeds the registry below. A caller-supplied `session_id` in the tool params wins over the minted id (e.g. `state_get_context`/`state_get_plan` reading another session, or `''` to span all project sessions).
 
 ---
 
@@ -57,6 +57,8 @@ Zod schemas in `client.ts` validate input before forwarding. The daemon dispatch
 | `reset-db` | Delete the database (all chunks, edges, embeddings) |
 | `uninstall [--keep-data]` | Remove installed files, config, and MCP registration |
 | `import-memory-bank <path>` | Import a flat-file memory-bank (`decisionLog.md`) into the KG as `decision` chunks |
+| `session <sub>` | Machine-wide session dictionary: `list [--all]`, `show <id>`, `set <id> key=value...` (manual) and `audit` (PostToolUse hook on `mcp__knowledge-graph__.*`; always exits 0). `kg prime` also registers the session and chains `continues_id` on `source=clear|resume` |
+| `goal <sub>` | Per-session goal north star: `set`/`get`/`clear`/`list` (manual) and `bind`/`pre-edit` (hook subcommands, driven by PostToolUse(goal_set) and PreToolUse(Edit/Write)) |
 
 Note: Running `knowledge-graph` with no command prints help text. `import-memory-bank` accepts either a directory (looks for `decisionLog.md` inside) or a file path directly; it parses `##`-heading decision sections via `parseDecisionLog()` in `src/tools/import-memory-bank.ts`.
 
@@ -96,15 +98,16 @@ Priority: CLI flags > env vars > `knowledge.json` > hard defaults.
    └─ If not found: log error, exit with "run kg init first"
 3. ensureDaemon(project, config):
    ├─ Check daemon.port file → health check existing daemon (verifies `status === 'ok'` AND `project_id` matches current project)
+   │   └─ `status === 'shutting_down'` → never adopted: wait (≤15s) for that pid to exit, then spawn
    ├─ Check daemon.pid file → detect zombie processes
-   └─ If no valid daemon → fork() new daemon, poll for daemon.port file (15s timeout)
+   └─ If no valid daemon → fork() new daemon, poll for daemon.port file (15s timeout → "Daemon startup timed out", classified daemon_unreachable)
 4. clientMain(daemonUrl, projectId):
-   ├─ Mint a per-process session_id (UUID)
-   ├─ POST /rpc/connect { session_id } to register with daemon
+   ├─ session_id = CLAUDE_CODE_SESSION_ID (no fallback: missing => every tool call returns a validation error); register in session dictionary (fill-empty-only, teammate parent detection)
+   ├─ POST /rpc/connect { session_id, pid } to register with daemon (pid lets the daemon reap it if it dies silently)
    ├─ Create McpServer instance
-   ├─ Register all 31 tools via proxyTool() (with Zod schemas; each threads session_id)
+   ├─ Register all 44 tools via proxyTool() (+ client-side session_list/session_update) (with Zod schemas; each threads session_id)
    ├─ Connect StdioServerTransport
-   └─ Register SIGINT/SIGTERM handlers (SIGTERM POSTs /rpc/disconnect { session_id })
+   └─ Register SIGINT + leave handlers (SIGTERM, SIGHUP, stdin end/close → POST /rpc/disconnect { session_id })
 ```
 
 ### Daemon startup (spawned by `daemon-manager.ts`)
@@ -120,17 +123,18 @@ Priority: CLI flags > env vars > `knowledge.json` > hard defaults.
 3. Create DashboardServer (hosts API routes + SSE)
 4. Register dashboard triggers for query, store, evolve, validate, promote
 5. Create HTTP server on `127.0.0.1` (port 0 = OS auto-assign, or set `daemon.port_range_start` in `.knowledge-graph/config.json`)
-   Endpoints: POST /rpc (tool dispatch), POST /rpc/connect, POST /rpc/disconnect, POST /rpc/shutdown, GET /health (returns { status, project_id, clients, sessions[], uptime_ms, rpc_queue_depth, rpc_locked }), all other routes → dashboard
+   Endpoints: POST /rpc (tool dispatch), POST /rpc/connect, POST /rpc/disconnect, POST /rpc/shutdown, GET /health (returns { status ('ok' | 'shutting_down'), project_id, clients, sessions[], uptime_ms, rpc_queue_depth, rpc_locked, startup_import ('pending' | 'running' | 'done') }), all other routes → dashboard
    All HTTP routes apply localhost-only origin checks (`127.0.0.1`, `localhost`, `::1`). POST routes use the shared request body reader in `src/http-utils.ts` with a 1 MB limit.
-6. Write daemon.port and daemon.pid files
-7. Start idle timer (auto-shutdown after configurable timeout, default 300s)
+6. Write daemon.port and daemon.pid files (listen callback)
+7. Startup sync delta import (only if sync/ has changes newer than manifest.last_import_at that are not this daemon's own exports — see the self-write ledger in `src/sync/self-writes.ts`) — runs AFTER listen, inside the RPC mutex. Before 2026-10-27 it ran before listen and took 48-127s on ~3000 sync files, so clients hit the 15s spawn timeout. RPCs arriving meanwhile queue FIFO behind it (KuzuDB cannot overlap queries on one connection, so letting them run concurrently would race the import); /health answers immediately and reports `startup_import`.
+8. Start idle timer (auto-shutdown after configurable timeout, default 300s) and the session reaper (every 60s, `KG_SESSION_REAP_MS`)
 ```
 
 ---
 
 ## Verification Scripts
 
-- `scripts/daemon-integration-test.ts` runs against built `dist/` files and verifies daemon startup on a localhost URL, health responses, connect/disconnect refcounting, shutdown cleanup, and stale PID recovery.
+- `scripts/daemon-integration-test.ts` runs against built `dist/` files and verifies daemon startup on a localhost URL, health responses, connect/disconnect refcounting, shutdown cleanup, stale PID recovery, non-blocking startup import (via the test-only `KG_TEST_STARTUP_IMPORT_DELAY_MS`), dead-pid session reaping, and shutdown with RPCs in flight (fast refusal + fresh daemon from `ensureDaemon`).
 - `scripts/build-artifact-test.ts` verifies `dist/` contains the expected compiled outputs for `src/` plus copied assets, including `http-utils.js`, `version.js`, and `dashboard/index.html`.
 
 ---
@@ -140,9 +144,9 @@ Priority: CLI flags > env vars > `knowledge.json` > hard defaults.
 The client resolves the daemon URL once at startup, but keeps it **mutable**. `rpcCall` distinguishes two failure kinds:
 
 - **Transport failure** — `fetch` rejects (`ECONNREFUSED` / "fetch failed") because the daemon is gone (idle-timeout, `kg stop`, crash). `rpcCall` wraps this as a `DaemonUnreachableError`.
-- **JSON-RPC error** — the daemon responded with a well-formed `error` (validation, unknown method). This is a real caller failure.
+- **JSON-RPC error** — the daemon responded with a well-formed `error` (validation, unknown method). This is a real caller failure. Exception: "Daemon is shutting down" and "Storage is closing" mean the daemon process is going away, so `rpcCall` raises them as `DaemonUnreachableError` too (`isDaemonGoneMessage`).
 
-`callWithRevive(call, revive)` retries only on `DaemonUnreachableError`: it runs `revive()` (→ `ensureDaemon()` respawns/rediscovers the daemon, updates `daemonUrl`, and re-POSTs `/rpc/connect` to re-register the session), then retries the RPC **once**. A JSON-RPC error propagates immediately with no revive.
+`callWithRevive(call, revive)` retries only on `DaemonUnreachableError`: it runs `revive()` (→ `ensureDaemon()` respawns/rediscovers the daemon, updates `daemonUrl`, and re-POSTs `/rpc/connect` to re-register the session), then retries the RPC **once**. A JSON-RPC error propagates immediately with no revive. If `revive()` itself fails (e.g. "Daemon startup timed out"), the failure is rethrown as `DaemonUnreachableError`, so the envelope reports `daemon_unreachable` (retryable), not `internal`.
 
 Re-registering the session on revive is required: a freshly respawned daemon starts its idle timer with `clients=0`, so without a re-`connect` it would idle-shut-down again in ~5min mid-session. `callWithRevive` and `rpcCall` are exported from `client.ts` so `scripts/self-heal-test.ts` can exercise them against a real daemon killed mid-run.
 
@@ -155,8 +159,8 @@ Re-registering the session on revive is required: a freshly respawned daemon sta
   2. Close MCP server
   3. `process.exit(0)`
 
-- **SIGTERM** (Claude Code exiting): Preserve daemon for other sessions
-  1. Send `POST /rpc/disconnect` to decrement client count
+- **SIGTERM / SIGHUP / stdin end or close** (Claude Code exiting — it usually just closes stdin, which is why the 2026-10-27 log held 374 connects vs 1 disconnect): Preserve daemon for other sessions
+  1. Send `POST /rpc/disconnect` to decrement client count (2s timeout)
   2. Close MCP server
   3. `process.exit(0)`
 
@@ -164,11 +168,14 @@ Re-registering the session on revive is required: a freshly respawned daemon sta
 
 Triggered by `/rpc/shutdown`, SIGTERM, SIGINT, or idle timeout:
 
-1. Close DashboardServer (stop SSE connections)
-2. Close KuzuStorage (connection + database)
-3. Close HTTP server
-4. Remove `daemon.port` and `daemon.pid` files
-5. `process.exit(0)`
+1. Set `shuttingDown`: `/health` reports `status: 'shutting_down'`; new and queued RPCs are refused with "Daemon is shutting down" (the client revives + retries)
+2. Flush the auto-exporter
+3. Wait (≤10s) for the in-flight RPC to release the RPC mutex, so a multi-query handler never dies half-way on "Storage is closing"
+4. Close DashboardServer (stop SSE connections)
+5. Close KuzuStorage (connection + database)
+6. Close HTTP server
+7. Remove `daemon.port` and `daemon.pid` files
+8. `process.exit(0)`
 
 ### Idle auto-shutdown
 
@@ -182,7 +189,8 @@ Idle auto-shutdown is now harmless to a live session: if the daemon dies while a
 
 The daemon keeps a lightweight **in-memory** registry of live sessions, keyed on the client-minted `session_id` (an object of `{ connectedAt, lastSeen }` per session). It is not persisted — a client restart is a new session, and a daemon restart clears the registry.
 
-- **`POST /rpc/connect`** reads `session_id` from the body and records the session (`connectedAt`/`lastSeen` = now). A client with no `session_id` (older clients) falls back to an anonymous counter. Resets the idle timer.
+- **`POST /rpc/connect`** reads `session_id` (+ optional `pid`) from the body and records the session (`connectedAt`/`lastSeen` = now). Keyed by session id, so a re-connect after a revive overwrites the same entry (no double count; `connectedAt` kept). A client with no `session_id` (older clients) falls back to an anonymous counter. Resets the idle timer.
+- **Reaper**: every 60s (`KG_SESSION_REAP_MS`) sessions whose `pid` no longer exists are dropped (clients killed without a disconnect inflated `clients` to 13 with ~3 live sessions and kept the daemon from idling out). Sessions without a pid are kept.
 - **`POST /rpc/disconnect`** reads `session_id` and removes that session (or decrements the anonymous counter). Restarts the idle timer when no clients remain.
 - Every RPC advances the calling session's `lastSeen`.
 - **`state_sessions`** returns the registry as `{ sessions: [{ session_id, connectedAt, last_seen }] }`; **`GET /health`** reports the same list under `sessions[]`.
@@ -249,4 +257,4 @@ Storage init (in createCore):
 - HTTP origin errors: `403 {"error":"Origin not allowed"}` for non-local browser origins
 - HTTP body-size errors: `413` when a POST body exceeds 1 MB
 - Fatal startup errors: `process.exit(1)`
-- Daemon spawn timeout: throws `Error("Daemon startup timed out after 15s")`
+- Daemon spawn timeout: throws `Error("Daemon startup timed out after 15s")` — classified `daemon_unreachable` (retryable)

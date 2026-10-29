@@ -184,6 +184,18 @@ Note: The "cannot promote refuted" guard checks confidence (< 0.2), not lifecycl
 
 ---
 
+## goal_set (`goal.ts`)
+
+**Purpose**: Record the current session's anti-drift north star (see CLAUDE.md "Goal Subsystem").
+
+**Parameters**: `goal` (required), optional `done_criteria`, optional `non_goals`
+
+**Flow**:
+1. `handleGoalSet()` calls `normalizeGoalInput()` (`goal-store.ts`) — trims and requires a non-empty goal (no hard length cap). Throws a `validation` error on an empty goal.
+2. Returns `{ ok: true, goal, note }` — a VALIDATE-AND-ECHO trigger only. It does NOT persist: an MCP tool handler cannot learn the Claude Code `session_id`, so the authoritative per-session write is done by the `kg goal bind` PostToolUse hook (`cli.ts` → `writeGoal()`), which keys the file by the CC `session_id` from stdin. Injection (every turn / pre-edit / post-compact) is done by `kg context`, `kg goal pre-edit`, and `kg prime` reading `<kgDir>/state/goals/<session_id>.json`.
+
+---
+
 ## Session-State Handlers (`state-*.ts`)
 
 All session-state handlers read/write the `SessionState` table (volatile, no embedding). The daemon threads the calling `session_id` into each; a caller-supplied `session_id` overrides it (empty string = all project sessions).

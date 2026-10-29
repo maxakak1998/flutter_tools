@@ -16,12 +16,12 @@ declare module 'kuzu' {
   export class Connection {
     constructor(database: Database, numThreads?: number);
     init(): Promise<void>;
-    query(statement: string): Promise<QueryResult>;
+    query(statement: string): Promise<QueryResult | QueryResult[]>;
     prepare(statement: string): Promise<PreparedStatement>;
     execute(
       preparedStatement: PreparedStatement,
       params?: Record<string, unknown>
-    ): Promise<QueryResult>;
+    ): Promise<QueryResult | QueryResult[]>;
     close(): Promise<void>;
     setMaxNumThreadForExec(numThreads: number): void;
     setQueryTimeout(timeoutInMs: number): void;

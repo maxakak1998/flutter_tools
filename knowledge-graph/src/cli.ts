@@ -5,7 +5,6 @@ import { homedir } from 'os';
 import {
   readFileSync,
   writeFileSync,
-  appendFileSync,
   mkdirSync,
   existsSync,
   accessSync,
@@ -18,6 +17,7 @@ import { execSync } from 'child_process';
 import { discoverProject, initProject, listProjects, updateLastAccessed, type ProjectInfo } from './project.js';
 import { ensureDaemon } from './daemon-manager.js';
 import { getRuntimeVersion } from './version.js';
+import { appendActivity } from './activity-log.js';
 import {
   loadConfig,
   applyOverrides,
@@ -27,6 +27,27 @@ import {
   KnowledgeConfig,
 } from './config.js';
 import { log } from './types.js';
+import {
+  readGoal,
+  writeGoal,
+  deleteGoal,
+  listGoalSessions,
+  formatGoalBlock,
+  type GoalRecord,
+} from './goal-store.js';
+import {
+  fillSession,
+  updateSession,
+  readSession,
+  listSessions,
+  resolveRoot,
+  resolveRootDetailed,
+  swapProcPointer,
+  procKey,
+  appendAudit,
+  sessionsDir,
+  cliSessionId,
+} from './session-store.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -52,6 +73,7 @@ interface ParsedArgs {
   domain?: string;
   category?: string;
   lifecycle?: string;
+  session?: string;
 }
 
 function parseArgs(): ParsedArgs {
@@ -70,6 +92,7 @@ function parseArgs(): ParsedArgs {
   let domain: string | undefined;
   let category: string | undefined;
   let lifecycle: string | undefined;
+  let session: string | undefined;
 
   for (let i = 0; i < rawArgs.length; i++) {
     const arg = rawArgs[i];
@@ -94,6 +117,9 @@ function parseArgs(): ParsedArgs {
         break;
       case '--lifecycle':
         lifecycle = rawArgs[++i];
+        break;
+      case '--session':
+        session = rawArgs[++i];
         break;
       case '--keep-data':
         keepData = true;
@@ -136,7 +162,7 @@ function parseArgs(): ParsedArgs {
     }
   }
 
-  return { command, port, storageBackend, dbPath, ollamaUrl, ollamaModel, keepData, force, dryRun, help, version, positionalArgs, domain, category, lifecycle };
+  return { command, port, storageBackend, dbPath, ollamaUrl, ollamaModel, keepData, force, dryRun, help, version, positionalArgs, domain, category, lifecycle, session };
 }
 
 // ============================================================
@@ -170,8 +196,10 @@ COMMANDS
   sync import        Delta import from sync/ files
   sync resolve <id> <action>  Resolve lifecycle conflict (keep-local|accept-remote)
   import-memory-bank <path>   Import a flat-file memory-bank (decisionLog.md) into KG decisions
-  prime              Output skill context for hook injection (SessionStart/PreCompact)
+  prime [--full]     Output skill context for hook injection (SessionStart); --full or KG_PRIME_FULL=1 = full guide
   context            Auto-query KG with user prompt (UserPromptSubmit hook)
+  goal <subcommand>  Per-session north star: set|get|clear|list (bind/pre-edit are hooks)
+  session <subcommand>  Machine-wide session dictionary: list|show|set (audit is a hook); --session <id> or CLAUDE_CODE_SESSION_ID names the caller
   logs               View recent daemon logs (last 100 entries)
   reset-db           Delete the database (all chunks, edges, embeddings)
   uninstall          Remove installed files, config, and MCP registration
@@ -430,13 +458,15 @@ async function runDoctor(parsed: ParsedArgs): Promise<void> {
     checks.push({ name: 'Life tools', status: 'warn', detail: 'settings.local.json not found — run: kg setup-hooks' });
   }
 
-  // 6c. CLI hook registrations (kg prime on SessionStart/PreCompact, kg context on UserPromptSubmit)
+  // 6c. CLI hook registrations (kg prime on SessionStart, kg context on UserPromptSubmit)
+  // NOTE: PreCompact is intentionally NOT wired — a PreCompact hook's output never
+  // reaches the model (the AI has stopped). Compaction recovery happens at
+  // SessionStart(source=compact) inside runPrime. Do NOT re-add a PreCompact entry.
   if (existsSync(settingsFile)) {
     try {
       const settings = JSON.parse(readFileSync(settingsFile, 'utf-8'));
       const expectedCliHooks: { event: string; command: string }[] = [
         { event: 'SessionStart', command: 'kg prime' },
-        { event: 'PreCompact', command: 'kg prime' },
         { event: 'UserPromptSubmit', command: 'kg context' },
       ];
       const registered = expectedCliHooks.filter(({ event, command }) => {
@@ -463,6 +493,11 @@ async function runDoctor(parsed: ParsedArgs): Promise<void> {
         { event: 'PreToolUse', matcher: 'Write', command: '.claude/hooks/kg-require-consult-before-edit.sh' },
         { event: 'PostToolUse', matcher: 'Edit', command: '.claude/hooks/kg-clear-consulted-after-edit.sh' },
         { event: 'PostToolUse', matcher: 'Write', command: '.claude/hooks/kg-clear-consulted-after-edit.sh' },
+        // Goal (per-session north star) hooks
+        { event: 'PreToolUse', matcher: 'Edit', command: 'kg goal pre-edit' },
+        { event: 'PreToolUse', matcher: 'Write', command: 'kg goal pre-edit' },
+        { event: 'PostToolUse', matcher: 'mcp__knowledge-graph__goal_set', command: 'kg goal bind' },
+        { event: 'PostToolUse', matcher: 'mcp__knowledge-graph__.*', command: 'kg session audit' },
       ];
       // Match by suffix so a command resolves whether it is bare
       // (".claude/hooks/x.sh") or CWD-anchored ("\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/x.sh").
@@ -1274,12 +1309,55 @@ For complete workflows, read the sub-skills in .claude/skills/knowledge-graph/:
   return sections.join('\n\n');
 }
 
+// Default prime injects only this short block instead of the full guide (~12K chars
+// per session start). The guide is installed as a project skill, so Claude opens it
+// on demand. `kg prime --full` / KG_PRIME_FULL=1 restores the full guide.
+function buildPrimeContentShort(): string {
+  if (!buildPrimeContent()) return ''; // no skills dir -> caller keeps its fallback
+  return `## KG rules (short)
+
+- Source rule (hook-enforced): insight/question MUST have a source (observed:*, code-review:*, user-confirmed:*, discussion-with-user:*). fact/rule/workflow CANNOT use observed:* or code-review:*.
+- Full guide: skill knowledge-graph-guide; workflows: .claude/skills/knowledge-graph/kg-*/SKILL.md`;
+}
+
 /**
  * Fetch a mini-briefing from the running daemon.
  * Returns formatted text or empty string if daemon unavailable.
  * Non-blocking: 2s timeout on health, 3s on RPC.
  */
-async function fetchDaemonBriefing(project: ProjectInfo): Promise<string> {
+// ------------------------------------------------------------
+// Strict session identity. Every daemon tool RPC must carry `client_session_id`;
+// a missing session id is an ERROR (stderr + exit 1), never a silent fallback.
+// exit 1 is a non-blocking hook error (only exit 2 blocks), so it is visible but
+// does not stop the tool/prompt.
+// ------------------------------------------------------------
+
+/** Hook entry points: the session id comes from the hook stdin payload. */
+function requireHookSession(sessionId: string, what: string): string {
+  if (!sessionId) {
+    console.error(`kg ${what}: hook payload has no session_id — every KG call must carry a session id`);
+    process.exit(1);
+  }
+  return sessionId;
+}
+
+/** `--session <id>` given on the command line (global flag), if any. */
+const cliExplicitSession: string | undefined = (() => {
+  const i = rawArgs.indexOf('--session');
+  return i >= 0 ? rawArgs[i + 1] : undefined;
+})();
+
+/** Manual CLI commands: --session <id> else CLAUDE_CODE_SESSION_ID, else error exit 1. */
+function requireCliSession(explicit?: string): string {
+  const id = cliSessionId(explicit);
+  if (!id) {
+    console.error('Error: no session id — pass --session <id> or run inside Claude Code (CLAUDE_CODE_SESSION_ID is not set)');
+    process.exit(1);
+  }
+  return id;
+}
+
+async function fetchDaemonBriefing(project: ProjectInfo, sessionId: string): Promise<string> {
   try {
     if (!existsSync(project.daemonPortFile)) return '';
 
@@ -1300,7 +1378,7 @@ async function fetchDaemonBriefing(project: ProjectInfo): Promise<string> {
       body: JSON.stringify({
         jsonrpc: '2.0',
         method: 'knowledge_briefing',
-        params: { top_domains: 10, recent_days: 7 },
+        params: { top_domains: 10, recent_days: 7, client_session_id: sessionId },
         id: 1,
       }),
       signal: AbortSignal.timeout(3000),
@@ -1321,7 +1399,7 @@ async function fetchDaemonBriefing(project: ProjectInfo): Promise<string> {
  * Non-blocking: 2s timeout on health, 3s on RPC. Silent on any failure.
  * Project-scoped (no session_id) so it works on a brand-new session.
  */
-async function fetchDaemonResume(project: ProjectInfo): Promise<string> {
+async function fetchDaemonResume(project: ProjectInfo, sessionId: string): Promise<string> {
   try {
     if (!existsSync(project.daemonPortFile)) return '';
 
@@ -1342,7 +1420,7 @@ async function fetchDaemonResume(project: ProjectInfo): Promise<string> {
       body: JSON.stringify({
         jsonrpc: '2.0',
         method: 'state_resume',
-        params: { project_id: project.projectId },
+        params: { project_id: project.projectId, client_session_id: sessionId },
         id: 1,
       }),
       signal: AbortSignal.timeout(3000),
@@ -1362,7 +1440,7 @@ async function fetchDaemonResume(project: ProjectInfo): Promise<string> {
  * so the resume/startup briefing can nudge the AI to anchor + re-link them. Reuses
  * the existing issue_orphans handler. Returns '' silently on any error.
  */
-async function fetchDaemonOrphanCount(project: ProjectInfo): Promise<string> {
+async function fetchDaemonOrphanCount(project: ProjectInfo, sessionId: string): Promise<string> {
   try {
     if (!existsSync(project.daemonPortFile)) return '';
     const port = parseInt(readFileSync(project.daemonPortFile, 'utf-8').trim(), 10);
@@ -1374,7 +1452,7 @@ async function fetchDaemonOrphanCount(project: ProjectInfo): Promise<string> {
       body: JSON.stringify({
         jsonrpc: '2.0',
         method: 'issue_orphans',
-        params: { limit: 50 },
+        params: { limit: 50, client_session_id: sessionId },
         id: 1,
       }),
       signal: AbortSignal.timeout(3000),
@@ -1564,8 +1642,9 @@ async function runPrime(): Promise<void> {
       sessionId = parsed.session_id || '';
     }
   } catch {
-    // No stdin or invalid JSON — default to startup
+    // No stdin or invalid JSON — falls through to the missing-session error below
   }
+  requireHookSession(sessionId, 'prime');
 
   // Handle clear: cleanup marker files
   if (source === 'clear') {
@@ -1588,6 +1667,40 @@ async function runPrime(): Promise<void> {
 
   // Discover project early — needed for briefing + activity log
   const project = discoverProject(process.cwd());
+
+  // Session dictionary: register this session (fill-empty-only) and chain /clear
+  // to the previous session of the SAME Claude Code process. The hook only
+  // sees the NEW id, so a per-process pointer file remembers the last one (see
+  // procKey). Fail-open: never block session start.
+  if (sessionId) {
+    try {
+      fillSession(sessionId, { started_at: new Date().toISOString(), status: 'active', project_dir: process.cwd() });
+      const prev = swapProcPointer(procKey(), sessionId);
+      // Chain ONLY on /clear (new id, same process). /resume REUSES the original id of
+      // an old session, so chaining it would make the throwaway session its root.
+      if (prev && source === 'clear') {
+        fillSession(prev, {}); // make sure the chain target exists (no dangling link)
+        fillSession(sessionId, { continues_id: prev });
+      }
+    } catch (e) {
+      log('session-dictionary: prime registration failed (non-fatal):', e);
+    }
+  }
+
+  // Per-session GOAL (anti-drift north star). Goals are keyed by the ROOT session and
+  // /clear chains the new id to the old one (continues_id), so the goal survives /clear
+  // and is re-injected here — the root's goal is shared by its teammates too, so a
+  // /clear by any member must NOT delete it. An unchained /clear resolves to a fresh
+  // root that simply has no goal yet. Use `kg goal clear` to drop a goal explicitly.
+  const goalRecord: GoalRecord | null =
+    project && sessionId ? readGoal(project.kgDir, rootOf(sessionId)) : null;
+  let goalText = '';
+  if (goalRecord) {
+    // Session handle appended so Claude can do an explicit read if ever needed.
+    goalText = `${formatGoalBlock(goalRecord)}\n\n(Session: ${sessionId})`;
+  } else if (sessionId && source !== 'clear') {
+    goalText = `(Session: ${sessionId} — no goal set; if this session has a clear objective, propose it and call goal_set after the user confirms)`;
+  }
 
   // Session-aware header — prescriptive checklists matching beads style
   let header: string;
@@ -1635,19 +1748,21 @@ If working on domain tasks:
   let orphanText = '';
   if (project && (source === 'startup' || source === 'compact' || source === 'resume')) {
     [resumeText, briefingText, orphanText] = await Promise.all([
-      fetchDaemonResume(project),
-      fetchDaemonBriefing(project),
-      fetchDaemonOrphanCount(project),
+      fetchDaemonResume(project, sessionId),
+      fetchDaemonBriefing(project, sessionId),
+      fetchDaemonOrphanCount(project, sessionId),
     ]);
   }
 
-  // Build skill content
-  const skillContent = buildPrimeContent();
+  // Build skill content (short by default; --full / KG_PRIME_FULL=1 = full guide)
+  const full = rawArgs.includes('--full') || process.env.KG_PRIME_FULL === '1';
+  const skillContent = full ? buildPrimeContent() : buildPrimeContentShort();
 
   let additionalContext: string;
   if (skillContent) {
-    // Assemble: header → resume (most actionable) → orphans → briefing → skill guide
+    // Assemble: header → GOAL (north star) → resume → orphans → briefing → skill guide
     const parts = [header];
+    if (goalText) parts.push(goalText);
     if (resumeText) parts.push(resumeText);
     if (orphanText) parts.push(orphanText);
     if (briefingText) parts.push(briefingText);
@@ -1656,6 +1771,7 @@ If working on domain tasks:
   } else {
     // Fallback: minimal context (same as old kg-session-start.sh)
     const parts = [header];
+    if (goalText) parts.push(goalText);
     if (resumeText) parts.push(resumeText);
     if (orphanText) parts.push(orphanText);
     if (briefingText) parts.push(briefingText);
@@ -1666,15 +1782,13 @@ If working on domain tasks:
   // Log session event to activity.log
   try {
     if (project) {
-      const activityLog = join(project.kgDir, 'activity.log');
-      const entry = JSON.stringify({
+      appendActivity(join(project.kgDir, 'activity.log'), {
         ts: new Date().toISOString(),
         session: sessionId || 'unknown',
         event: 'session_start',
         source,
         briefing_injected: briefingText.length > 0,
       });
-      appendFileSync(activityLog, entry + '\n');
     }
   } catch { /* non-fatal */ }
 
@@ -1756,8 +1870,9 @@ function formatContextResults(chunks: ContextChunkResult[], prompt: string): str
 }
 
 async function runContext(): Promise<void> {
-  // 1. Read stdin for hook input JSON
+  // 1. Read stdin for hook input JSON (prompt + session_id)
   let promptText = '';
+  let sessionId = '';
   try {
     const chunks: Buffer[] = [];
     for await (const chunk of process.stdin) {
@@ -1767,30 +1882,54 @@ async function runContext(): Promise<void> {
     if (input) {
       const parsed = JSON.parse(input);
       promptText = parsed.prompt || '';
+      sessionId = parsed.session_id || '';
     }
   } catch {
-    // No stdin or invalid JSON — exit silently
+    // No stdin or invalid JSON — falls through to the missing-session error below
   }
+  requireHookSession(sessionId, 'context');
 
-  // 2. Skip trivial prompts
-  if (shouldSkipPrompt(promptText)) {
-    process.exit(0);
-    return;
-  }
-
-  // 3. Discover project + daemon
+  // 2. Discover project (cheap fs walk). No project → nothing to inject.
   const project = discoverProject(process.cwd());
   if (!project) {
     process.exit(0);
     return;
   }
-  const daemonUrl = await getDaemonUrl(project);
-  if (!daemonUrl) {
-    process.exit(0);
+
+  // 3. Per-session GOAL (north star) — re-injected EVERY turn so it never scrolls
+  //    out of context (the mid-session anti-drift path). Local file read, no daemon.
+  const goalRecord = sessionId ? readGoal(project.kgDir, rootOf(sessionId)) : null;
+  const goalBlock = goalRecord ? formatGoalBlock(goalRecord) : '';
+
+  // Emit goal + optional KG context together. If both are empty, stay silent.
+  const emit = (ctx: string): void => {
+    const additionalContext = [goalBlock, ctx].filter(Boolean).join('\n\n');
+    if (!additionalContext) {
+      process.exit(0);
+      return;
+    }
+    console.log(JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: 'UserPromptSubmit',
+        additionalContext,
+      },
+    }));
+  };
+
+  // 4. On trivial prompts, skip the KG query but STILL inject the goal so it
+  //    stays present even on "ok"/"yes" turns.
+  if (shouldSkipPrompt(promptText)) {
+    emit('');
     return;
   }
 
-  // 4. Query KG via JSON-RPC
+  // 5. Query KG via JSON-RPC (best-effort). The goal is injected regardless of
+  //    daemon availability / query results.
+  const daemonUrl = await getDaemonUrl(project);
+  if (!daemonUrl) {
+    emit('');
+    return;
+  }
   try {
     const res = await fetch(`${daemonUrl}/rpc`, {
       method: 'POST',
@@ -1801,6 +1940,7 @@ async function runContext(): Promise<void> {
         params: {
           query: promptText.slice(0, 500),
           filters: { min_confidence: 0.3, limit: 8 },
+          client_session_id: sessionId,
         },
         id: 1,
       }),
@@ -1812,27 +1952,304 @@ async function runContext(): Promise<void> {
       error?: { message: string };
     };
 
-    if (!body.result || body.result.total === 0) {
-      process.exit(0);
-      return;
-    }
-
-    // 5. Format + output
-    const ctx = formatContextResults(body.result.chunks, promptText);
-    if (!ctx) {
-      process.exit(0);
-      return;
-    }
-
-    console.log(JSON.stringify({
-      hookSpecificOutput: {
-        hookEventName: 'UserPromptSubmit',
-        additionalContext: ctx,
-      },
-    }));
+    const ctx = (body.result && body.result.total > 0)
+      ? formatContextResults(body.result.chunks, promptText)
+      : '';
+    emit(ctx);
   } catch {
-    // Timeout, connection error — exit silently
+    // Timeout, connection error — still inject the goal, drop the KG context.
+    emit('');
+  }
+}
+
+/** Root session of `sessionId` via the dictionary. Fail-open: the id itself on any error. */
+function rootOf(sessionId: string): string {
+  try {
+    return resolveRoot(sessionId);
+  } catch {
+    return sessionId;
+  }
+}
+
+// ============================================================
+// Goal command (per-session anti-drift north star)
+//   kg goal bind      — PostToolUse(goal_set) hook: write goals/<session>.json
+//   kg goal pre-edit  — PreToolUse(Edit/Write) hook: inject goal + anti-drift
+//   kg goal set --session <s> [--done <d>] [--non-goals <n>] <goal text...>
+//   kg goal get --session <s>
+//   kg goal clear --session <s>
+//   kg goal list
+// ============================================================
+
+async function readHookStdin(): Promise<Record<string, any>> {
+  try {
+    const chunks: Buffer[] = [];
+    for await (const chunk of process.stdin) chunks.push(chunk);
+    const input = Buffer.concat(chunks).toString('utf-8').trim();
+    return input ? JSON.parse(input) : {};
+  } catch {
+    return {};
+  }
+}
+
+// Mirror kg-require-consult-before-edit.sh exempt patterns — noise/generated files
+// should not trigger a goal reminder before every trivial write.
+function isExemptEditPath(filePath: string): boolean {
+  if (!filePath) return false;
+  if (/\/\.knowledge-graph\//.test(filePath)) return true;
+  if (/\/(dist|build|out|target|node_modules)\//.test(filePath)) return true;
+  if (/\/(\.dart_tool|\.next|\.nuxt|\.turbo|coverage)\//.test(filePath)) return true;
+  if (/\.(log|lock|pid|port)$/.test(filePath)) return true;
+  if (/\.(g|freezed)\.dart$/.test(filePath)) return true;
+  if (/\.(gen|generated|pb)\./.test(filePath)) return true;
+  return false;
+}
+
+function parseGoalFlags(args: string[]): { session?: string; done?: string; nonGoals?: string; rest: string[] } {
+  let session: string | undefined;
+  let done: string | undefined;
+  let nonGoals: string | undefined;
+  const rest: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    switch (args[i]) {
+      case '--session': session = args[++i]; break;
+      case '--done': done = args[++i]; break;
+      case '--non-goals': nonGoals = args[++i]; break;
+      default: rest.push(args[i]); break;
+    }
+  }
+  return { session, done, nonGoals, rest };
+}
+
+async function runGoal(): Promise<void> {
+  const raw = process.argv.slice(2);
+  const gi = raw.indexOf('goal');
+  const after = gi >= 0 ? raw.slice(gi + 1) : [];
+  const sub = after[0] || '';
+
+  // --- Hook subcommands: must NEVER break the tool flow → always exit 0. ---
+  if (sub === 'bind') {
+    try {
+      const hook = await readHookStdin();
+      const sessionId: string = hook.session_id || '';
+      requireHookSession(sessionId, 'goal bind');
+      const ti = hook.tool_input || {};
+      if (sessionId && ti.goal) {
+        const project = discoverProject(process.cwd());
+        if (project) {
+          writeGoal(project.kgDir, rootOf(sessionId), {
+            goal: ti.goal,
+            done_criteria: ti.done_criteria,
+            non_goals: ti.non_goals,
+          });
+        }
+      }
+    } catch { /* never break the tool */ }
     process.exit(0);
+    return;
+  }
+
+  if (sub === 'pre-edit') {
+    try {
+      const hook = await readHookStdin();
+      const sessionId: string = hook.session_id || '';
+      requireHookSession(sessionId, 'goal pre-edit');
+      const filePath: string = (hook.tool_input && hook.tool_input.file_path) || '';
+      if (sessionId && !isExemptEditPath(filePath)) {
+        const project = discoverProject(process.cwd());
+        const goal = project ? readGoal(project.kgDir, rootOf(sessionId)) : null;
+        if (goal) {
+          console.log(JSON.stringify({
+            hookSpecificOutput: {
+              hookEventName: 'PreToolUse',
+              additionalContext: formatGoalBlock(goal, { antiDrift: true }),
+            },
+          }));
+        }
+      }
+    } catch { /* never break the edit */ }
+    process.exit(0);
+    return;
+  }
+
+  // --- Manual subcommands (set/get/clear/list). ---
+  const project = discoverProject(process.cwd());
+  if (!project) {
+    console.error('No .knowledge-graph/ found. Run `kg init` first.');
+    process.exit(1);
+    return;
+  }
+  const { session, done, nonGoals, rest } = parseGoalFlags(after.slice(1));
+
+  switch (sub) {
+    case 'set': {
+      const sid = requireCliSession(session);
+      const goalText = rest.join(' ').trim();
+      if (!goalText) { console.error('Error: goal text is required'); process.exit(1); return; }
+      const record = writeGoal(project.kgDir, rootOf(sid), { goal: goalText, done_criteria: done, non_goals: nonGoals });
+      console.log(`Goal set for session ${record.session_id}:`);
+      console.log(formatGoalBlock(record));
+      break;
+    }
+    case 'get': {
+      const sid = requireCliSession(session);
+      const record = readGoal(project.kgDir, rootOf(sid));
+      if (!record) { console.log(`No goal set for session ${sid}.`); break; }
+      console.log(JSON.stringify(record, null, 2));
+      break;
+    }
+    case 'clear': {
+      const sid = requireCliSession(session);
+      const removed = deleteGoal(project.kgDir, rootOf(sid));
+      console.log(removed ? `Cleared goal for session ${sid}.` : `No goal to clear for session ${sid}.`);
+      break;
+    }
+    case 'list': {
+      const sessions = listGoalSessions(project.kgDir);
+      if (sessions.length === 0) { console.log('No session goals set.'); break; }
+      for (const s of sessions) {
+        const record = readGoal(project.kgDir, s);
+        console.log(`- ${s}: ${record ? record.goal : '(unreadable)'}`);
+      }
+      break;
+    }
+    default:
+      console.error('Usage: kg goal <set|get|clear|list|bind|pre-edit> [options]');
+      process.exit(1);
+  }
+}
+
+// ============================================================
+// Session dictionary command (machine-wide, ~/.knowledge-graph/sessions/)
+//   kg session audit                    — PostToolUse(mcp__knowledge-graph__.*) hook
+//   kg session list [--all]             — sessions, newest first (--all incl. archived)
+//   kg session show <id>                — one record + root_id + chain
+//   kg session set <id> key=value ...   — edit fields (empty value or null deletes the field)
+// ============================================================
+
+function extractText(resp: unknown): string {
+  if (typeof resp === 'string') return resp;
+  if (Array.isArray(resp)) {
+    for (const b of resp) { const t = extractText(b); if (t) return t; }
+    return '';
+  }
+  if (resp && typeof resp === 'object') {
+    const o = resp as Record<string, unknown>;
+    if (typeof o.text === 'string') return o.text;
+    if (o.content !== undefined) return extractText(o.content);
+  }
+  return '';
+}
+
+const REF_KEYS = ['id', 'issue_ref', 'ref', 'chunk_id', 'source_id', 'target_id', 'supersedes_id', 'current_issue', 'duplicate_of'];
+
+function collectRefs(...sources: unknown[]): string[] {
+  const out = new Set<string>();
+  for (const src of sources) {
+    if (!src || typeof src !== 'object') continue;
+    for (const k of REF_KEYS) {
+      const v = (src as Record<string, unknown>)[k];
+      if (typeof v === 'string' && v.trim()) out.add(v.trim());
+    }
+  }
+  return [...out].slice(0, 50);
+}
+
+function formatSessionRow(r: Record<string, unknown> & { id: string }): string {
+  const root = rootOf(r.id);
+  const bits = [
+    r.id,
+    r.name ? `"${r.name}"` : '',
+    root !== r.id ? `-> root ${root}` : '(root)',
+    r.status && r.status !== 'active' ? `[${r.status}]` : '',
+    r.last_seen ? `seen ${r.last_seen}` : '',
+  ].filter(Boolean);
+  return `- ${bits.join('  ')}`;
+}
+
+async function runSession(): Promise<void> {
+  const raw = process.argv.slice(2);
+  const si = raw.indexOf('session');
+  let after = si >= 0 ? raw.slice(si + 1) : [];
+  // `--session <id>` names the target session for show/set (else CLAUDE_CODE_SESSION_ID).
+  let sessionFlag: string | undefined;
+  const sf = after.indexOf('--session');
+  if (sf >= 0) { sessionFlag = after[sf + 1]; after = [...after.slice(0, sf), ...after.slice(sf + 2)]; }
+  const sub = after[0] || '';
+
+  // --- Hook: exit 0 on internal errors (never break the tool flow); a MISSING session_id exits 1. ---
+  if (sub === 'audit') {
+    try {
+      const hook = await readHookStdin();
+      const sid: string = hook.session_id || '';
+      requireHookSession(sid, 'session audit');
+      const toolName: string = hook.tool_name || '';
+      const prefix = 'mcp__knowledge-graph__';
+      if (sid && toolName.startsWith(prefix)) {
+        let ok = true;
+        let data: unknown = null;
+        try {
+          const env = JSON.parse(extractText(hook.tool_response));
+          if (env && typeof env === 'object' && 'ok' in env) { ok = env.ok === true; data = env.data; }
+        } catch { /* non-envelope response (e.g. SDK validation error) */
+          if (hook.tool_response?.is_error || hook.tool_response?.isError) ok = false;
+        }
+        appendAudit({
+          ts: new Date().toISOString(),
+          session_id: sid,
+          root_id: rootOf(sid),
+          agent_id: hook.agent_id ?? null,
+          agent_type: hook.agent_type ?? null,
+          tool: toolName.slice(prefix.length),
+          ok,
+          refs: collectRefs(hook.tool_input, data),
+        });
+      }
+    } catch (e) {
+      log('session audit hook failed (non-fatal):', e);
+    }
+    process.exit(0);
+    return;
+  }
+
+  switch (sub) {
+    case 'list': {
+      const all = after.includes('--all');
+      const rows = listSessions().filter((r) => all || r.status !== 'archived');
+      if (rows.length === 0) { console.log('No sessions in the dictionary.'); break; }
+      console.log(`Sessions in ${sessionsDir()}:`);
+      for (const r of rows) console.log(formatSessionRow(r));
+      break;
+    }
+    case 'show': {
+      const id = after[1] || requireCliSession(sessionFlag);
+      const rec = readSession(id);
+      if (!rec) { console.error(`No session ${id} in the dictionary.`); process.exit(1); return; }
+      const { root, chain, cycle, dangling } = resolveRootDetailed(id);
+      console.log(JSON.stringify({ ...rec, root_id: root, chain, ...(cycle ? { cycle: true } : {}), ...(dangling ? { dangling: true } : {}) }, null, 2));
+      break;
+    }
+    case 'set': {
+      // `kg session set <id> k=v ...`, or `kg session set k=v ...` for the current/--session one.
+      const idGiven = !!after[1] && !after[1].includes('=');
+      const id = idGiven ? after[1] : requireCliSession(sessionFlag);
+      const pairs = after.slice(idGiven ? 2 : 1);
+      if (pairs.length === 0) { console.error('Usage: kg session set [<id>] key=value ...   (empty value or null deletes the field)'); process.exit(1); return; }
+      const fields: Record<string, unknown> = {};
+      for (const kv of pairs) {
+        const eq = kv.indexOf('=');
+        if (eq <= 0) { console.error(`Bad argument "${kv}" — expected key=value`); process.exit(1); return; }
+        const v = kv.slice(eq + 1);
+        fields[kv.slice(0, eq)] = v === 'null' || v === '' ? null : v; // empty or null clears the field
+      }
+      const { record, warning } = updateSession(id, fields);
+      if (warning) console.error(`Warning: ${warning}`);
+      console.log(JSON.stringify({ ...record, root_id: resolveRoot(record.id) }, null, 2));
+      break;
+    }
+    default:
+      console.error('Usage: kg session <list|show|set|audit> [options]');
+      process.exit(1);
   }
 }
 
@@ -1981,6 +2398,7 @@ function writeMarker(name: string): void {
 // ============================================================
 
 async function runList(parsed: ParsedArgs): Promise<void> {
+  const clientSession = requireCliSession(cliExplicitSession);
   const project = discoverProject(process.cwd());
   if (!project) {
     console.error('No .knowledge-graph/ found. Run `kg init` first.');
@@ -2008,7 +2426,7 @@ async function runList(parsed: ParsedArgs): Promise<void> {
       body: JSON.stringify({
         jsonrpc: '2.0',
         method: 'knowledge_list',
-        params: { filters, limit: 50 },
+        params: { filters, limit: 50, client_session_id: clientSession },
         id: 1,
       }),
       signal: AbortSignal.timeout(5000),
@@ -2059,6 +2477,7 @@ async function runList(parsed: ParsedArgs): Promise<void> {
 // ============================================================
 
 async function runQuery(parsed: ParsedArgs): Promise<void> {
+  const clientSession = requireCliSession(cliExplicitSession);
   const project = discoverProject(process.cwd());
   if (!project) {
     console.error('No .knowledge-graph/ found. Run `kg init` first.');
@@ -2088,7 +2507,7 @@ async function runQuery(parsed: ParsedArgs): Promise<void> {
       body: JSON.stringify({
         jsonrpc: '2.0',
         method: 'knowledge_query',
-        params: { query: queryText, filters },
+        params: { query: queryText, filters, client_session_id: clientSession },
         id: 1,
       }),
       signal: AbortSignal.timeout(10000),
@@ -2193,6 +2612,7 @@ async function runSyncStatus(): Promise<void> {
 }
 
 async function runSyncExport(parsed: ParsedArgs): Promise<void> {
+  const clientSession = requireCliSession(cliExplicitSession);
   const project = discoverProject(process.cwd());
   if (!project) {
     console.error('No .knowledge-graph/ found. Run `kg init` first.');
@@ -2216,7 +2636,7 @@ async function runSyncExport(parsed: ParsedArgs): Promise<void> {
       body: JSON.stringify({
         jsonrpc: '2.0',
         method: 'sync_export',
-        params: { dry_run: parsed.dryRun },
+        params: { dry_run: parsed.dryRun, client_session_id: clientSession },
         id: 1,
       }),
       signal: AbortSignal.timeout(30000),
@@ -2248,6 +2668,7 @@ async function runSyncExport(parsed: ParsedArgs): Promise<void> {
 }
 
 async function runSyncImport(): Promise<void> {
+  const clientSession = requireCliSession(cliExplicitSession);
   const project = discoverProject(process.cwd());
   if (!project) {
     console.error('No .knowledge-graph/ found. Run `kg init` first.');
@@ -2272,7 +2693,7 @@ async function runSyncImport(): Promise<void> {
       body: JSON.stringify({
         jsonrpc: '2.0',
         method: 'sync_import',
-        params: {},
+        params: { client_session_id: clientSession },
         id: 1,
       }),
       signal: AbortSignal.timeout(120000), // Imports can be slow (embedding)
@@ -2328,6 +2749,7 @@ async function runSyncImport(): Promise<void> {
 }
 
 async function runSyncResolve(parsed: ParsedArgs): Promise<void> {
+  const clientSession = requireCliSession(cliExplicitSession);
   const project = discoverProject(process.cwd());
   if (!project) {
     console.error('No .knowledge-graph/ found. Run `kg init` first.');
@@ -2367,7 +2789,7 @@ async function runSyncResolve(parsed: ParsedArgs): Promise<void> {
       body: JSON.stringify({
         jsonrpc: '2.0',
         method: 'sync_resolve',
-        params: { sync_id: syncId, action },
+        params: { sync_id: syncId, action, client_session_id: clientSession },
         id: 1,
       }),
       signal: AbortSignal.timeout(15000),
@@ -2408,6 +2830,7 @@ async function runSyncResolve(parsed: ParsedArgs): Promise<void> {
  * spawned via ensureDaemon() so the import can proceed unattended.
  */
 async function runImportMemoryBank(parsed: ParsedArgs): Promise<void> {
+  const clientSession = requireCliSession(cliExplicitSession);
   const project = discoverProject(process.cwd());
   if (!project) {
     console.error('No .knowledge-graph/ found. Run `kg init` first.');
@@ -2489,6 +2912,7 @@ async function runImportMemoryBank(parsed: ParsedArgs): Promise<void> {
             domain: 'imported-decisions',
             keywords: d.keywords,
             importance: 'medium',
+            client_session_id: clientSession,
           },
           id: imported + skipped + 1,
         }),
@@ -2654,6 +3078,16 @@ switch (parsed.command) {
 
   case 'context':
     runContext().catch(() => process.exit(0));
+    break;
+
+  case 'goal':
+    // Hook subcommands (bind/pre-edit) self-exit 0; manual subcommands exit 1 on error.
+    runGoal().catch(() => process.exit(1));
+    break;
+
+  case 'session':
+    // audit hook self-exits 0; manual subcommands exit 1 on error.
+    runSession().catch(() => process.exit(1));
     break;
 
   case 'import-memory-bank':

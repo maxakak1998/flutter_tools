@@ -406,6 +406,15 @@ export class SurrealStorage implements IStorage {
   // Sync
   // ============================================================
 
+  async findChunkIdsByPrefix(prefix: string, limit: number): Promise<string[]> {
+    const db = this.getDb();
+    const [rows] = await db.query<[unknown[]]>(
+      `SELECT id FROM chunk WHERE string::starts_with(meta::id(id), $prefix) LIMIT ${Math.max(1, Math.floor(limit))}`,
+      { prefix },
+    );
+    return (rows ?? []).map((r) => extractId((r as Record<string, unknown>).id)).sort();
+  }
+
   async findChunkBySyncId(syncId: string): Promise<StoredChunk | null> {
     const db = this.getDb();
     const [rows] = await db.query<[unknown[]]>(

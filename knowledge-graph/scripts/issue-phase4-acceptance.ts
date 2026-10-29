@@ -55,7 +55,7 @@ async function main() {
   const rpc = async (method: string, params: any) => {
     const res = await fetch(`${daemonUrl}/rpc`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(makeRpcRequest(method, { ...params, session_id: SESSION })),
+      body: JSON.stringify(makeRpcRequest(method, { ...params, session_id: SESSION, client_session_id: SESSION })),
     });
     const json = await res.json() as { result?: any; error?: { message: string } };
     if (json.error) throw new Error(json.error.message);
