@@ -91,7 +91,7 @@ npx tsx scripts/goal-test.ts
 | `reset-db` | Delete the database (all chunks, edges, embeddings) |
 | `uninstall` | Remove installed files, config, and MCP registration |
 | `prime [--full]` | Output skill context for hook injection (SessionStart; recovers after compaction via source=compact). Default injects a short rules block (~1K chars total); `--full` or `KG_PRIME_FULL=1` injects the full knowledge-graph-guide (~14K) |
-| `context` | Auto-query KG with user prompt (UserPromptSubmit hook); also injects the session goal every turn |
+| `context` | Auto-query KG with user prompt (UserPromptSubmit hook); also re-injects the session goal when needed (first prompt, goal changed, context shrank or grew >= `KG_GOAL_REFRESH_TOKENS`=100k; `KG_GOAL_EVERY_TURN=1` = every prompt) |
 | `session` | Machine-wide session dictionary: `list [--all]`/`show <id>`/`set <id> key=value...` (manual) + `audit` (PostToolUse hook) |
 | `goal` | Per-session north star: `set`/`get`/`clear`/`list` (manual) + `bind`/`pre-edit` (hooks) |
 | `setup-hooks` | Install KG enforcement hooks into current project (requires `jq`) |
@@ -265,10 +265,10 @@ Alongside the durable knowledge graph and the volatile session-state subsystem, 
 
 Alongside the durable graph, session-state, and attachments, the daemon+CLI support a **per-session GOAL** — a short anti-drift "north star" that is auto-injected into context so Claude does not drift from what the session set out to do. It is a **sixth content boundary**, distinct from all the above: transient, per-session, file-backed, never embedded, never synced.
 
-- **Storage** — a flat JSON file at `<kgDir>/state/goals/<session_id>.json` (`goal-store.ts`). Under the already-gitignored `state/` dir, so it is volatile and per-machine (like session-state). Chosen over a DB row because the every-turn injection path (`kg context`) must be a fast local read with no daemon dependency.
+- **Storage** — a flat JSON file at `<kgDir>/state/goals/<session_id>.json` (`goal-store.ts`). Under the already-gitignored `state/` dir, so it is volatile and per-machine (like session-state). Chosen over a DB row because the per-prompt injection path (`kg context`) must be a fast local read with no daemon dependency.
 - **Keyed by the ROOT session id** (see [Session Dictionary](#session-dictionary)). The hook `session_id` and the MCP process agree because the MCP process inherits `CLAUDE_CODE_SESSION_ID` (verified, CC 2.1.311 — an earlier revision of this doc wrongly said no env var exists). Hooks resolve their `session_id` to its root via the dictionary (`rootOf`), so a subagent/teammate/`/clear` successor shares the root's goal. Two unrelated sessions keep isolated goals. `/clear` does NOT drop the goal: the successor chains to the same root, and the root's goal is shared with teammates, so `kg prime source=clear` re-injects it. Drop a goal explicitly with `kg goal clear`.
-- **Set = tool + hook bridge** — Claude calls `goal_set` (validate-and-echo only); the `kg goal bind` **PostToolUse** hook, which receives `session_id` + `tool_input` on stdin, does the authoritative write keyed by the CC session id. This bridges the "a tool can't know its session" gap. Set only after the user confirms a proposed goal (a wrong goal injected every turn amplifies drift).
-- **Get = PUSH, not PULL** — there is deliberately NO `goal_get` MCP tool (it would hit the same session-id gap). The goal is injected: **every turn** by `kg context` (mid-session drift), **before every file edit** by the `kg goal pre-edit` PreToolUse hook with an anti-drift reminder (a sibling of the consult gate), and **after compaction** by `kg prime` (`source=compact`). For a rare explicit read, `kg prime` also emits a `Session: <id>` handle so Claude can `kg goal get --session <id>`.
+- **Set = tool + hook bridge** — Claude calls `goal_set` (validate-and-echo only); the `kg goal bind` **PostToolUse** hook, which receives `session_id` + `tool_input` on stdin, does the authoritative write keyed by the CC session id. This bridges the "a tool can't know its session" gap. Set only after the user confirms a proposed goal (a wrong goal kept in context amplifies drift).
+- **Get = PUSH, not PULL** — there is deliberately NO `goal_get` MCP tool (it would hit the same session-id gap). The goal is injected: **at session start** by `kg prime`, **mid-session** by `kg context` only when its injection ledger says so (`<kgDir>/state/goals/.injected/<session_id>.json`, keyed by the session's own id: first prompt, goal hash changed, context shrank, or context grew >= `KG_GOAL_REFRESH_TOKENS` (default 100k) since the last injection; fail-open when the transcript size is unreadable; `KG_GOAL_EVERY_TURN=1` restores every prompt — re-injecting an unchanged goal every prompt once put 130 identical copies into one session), **before every file edit** by the `kg goal pre-edit` PreToolUse hook with an anti-drift reminder (a sibling of the consult gate), and **after compaction** by `kg prime` (`source=compact`). For a rare explicit read, `kg prime` also emits a `Session: <id>` handle so Claude can `kg goal get --session <id>`.
 - **Refresh after planning** — the existing `ExitPlanMode` PostToolUse nudge (`kg-nudge-plan-capture.sh`) also reminds you to refresh `done_criteria`/`non_goals` via `goal_set` once a plan crystallizes them (done-criteria change the most after a plan is finalized). This is one line in an existing nudge — no dedicated hook.
 - **Optional** — a session may have no goal; every injector is silent when no goal file exists. The AI decides whether to set one.
 
@@ -518,7 +518,7 @@ When a duplicate is detected (similarity >= 0.88), the store returns the existin
 
 | Tool | Purpose |
 |------|---------|
-| `goal_set` | Record the current session's short goal (+ optional `done_criteria`/`non_goals`); auto-injected every turn, before edits, and after compaction. Set only after the user confirms; latest call wins. |
+| `goal_set` | Record the current session's short goal (+ optional `done_criteria`/`non_goals`); auto-injected at session start, periodically by `kg context`, before edits, and after compaction. Set only after the user confirms; latest call wins. |
 
 ### Decision & Session-State Tools
 
@@ -758,7 +758,7 @@ File: `~/.knowledge-graph/knowledge.json` (created by `knowledge-graph setup`)
 | Daemon idle timeout | 300s (5 min) | `project.ts` default |
 | Daemon startup timeout | 15s | `daemon-manager.ts` |
 | MCP tools exposed | 44 | `client.ts` |
-| Goal size | no hard cap (only `goal` required/non-empty; keep short — injected every turn) | `goal-store.ts` |
+| Goal size | no hard cap (only `goal` required/non-empty; keep short — re-injected at start, before edits and periodically) | `goal-store.ts` |
 | Chunk categories | 7 (`fact` `rule` `insight` `question` `workflow` `decision` `issue`) | `types.ts` |
 | Issue tools (kg beads) | 9 (`issue_create` `issue_update` `issue_close` `issue_list` `issue_ready` `issue_show` `issue_link` `issue_orphans` `issue_stale`) | `tools/issue.ts` |
 | Session-state artifact types | 4 (`active_context` `task` `event` `plan`) | `types.ts` |

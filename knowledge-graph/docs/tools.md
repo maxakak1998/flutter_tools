@@ -59,7 +59,7 @@
 |---|------|---------|-------------|
 | 30 | `session_list` | List the session dictionary | Machine-wide sessions (newest first) with computed `root_id`; client-side tool |
 | 31 | `session_update` | Edit a dictionary entry | `{id, fields}` merge arbitrary fields (null deletes); cycle links warn |
-| 29 | `goal_set` | Set the session's north star | Record a short anti-drift goal (+ optional `done_criteria`/`non_goals`); auto-injected every turn, before edits, and after compaction. Set only after the user confirms; latest call wins. |
+| 29 | `goal_set` | Set the session's north star | Record a short anti-drift goal (+ optional `done_criteria`/`non_goals`); auto-injected at session start, periodically by `kg context`, before edits, and after compaction. Set only after the user confirms; latest call wins. |
 
 Tools 1-8 are documented in full below; 9-14 predate this reference. The decision & session-state tools (15-28) and the goal tool (29) are documented in the [Decision & Session-State Tools](#decision--session-state-tools-detail) section.
 
@@ -458,7 +458,7 @@ Fold old active-context events into a summary snapshot to keep the working-memor
 
 ## Goal Tool (detail)
 
-`goal_set` records the current session's anti-drift **north star**. It is a validate-and-echo trigger only — the authoritative per-session write is done by the `kg goal bind` PostToolUse hook (which receives the Claude Code `session_id` on stdin), because an MCP tool handler cannot learn its own session id. The goal is stored file-backed at `<kgDir>/state/goals/<root_session_id>.json` (volatile, not synced) and is PUSH-injected: every turn by `kg context`, before file edits by the `kg goal pre-edit` PreToolUse hook (with an anti-drift reminder), and after compaction by `kg prime`. There is deliberately no `goal_get` tool (it would hit the same session-id gap); Claude reads the goal from its injected context. See CLAUDE.md "Goal Subsystem".
+`goal_set` records the current session's anti-drift **north star**. It is a validate-and-echo trigger only — the authoritative per-session write is done by the `kg goal bind` PostToolUse hook (which receives the Claude Code `session_id` on stdin), because an MCP tool handler cannot learn its own session id. The goal is stored file-backed at `<kgDir>/state/goals/<root_session_id>.json` (volatile, not synced) and is PUSH-injected: at session start by `kg prime`, periodically by `kg context` (only when the goal changed or the context shrank or grew >= 100k since the last injection), before file edits by the `kg goal pre-edit` PreToolUse hook (with an anti-drift reminder), and after compaction by `kg prime`. There is deliberately no `goal_get` tool (it would hit the same session-id gap); Claude reads the goal from its injected context. See CLAUDE.md "Goal Subsystem".
 
 ### session_list / session_update
 
@@ -472,7 +472,7 @@ Handled **client-side** in `client.ts` (machine-wide data at `~/.knowledge-graph
 
 | Param | Type | Required | Description |
 |-------|------|----------|-------------|
-| `goal` | string | yes | The session objective — one short, outcome-focused sentence (required/non-empty; no hard length cap, but keep it short — injected every turn) |
+| `goal` | string | yes | The session objective — one short, outcome-focused sentence (required/non-empty; no hard length cap, but keep it short — it is re-injected periodically) |
 | `done_criteria` | string | no | How you will know the goal is achieved |
 | `non_goals` | string | no | Explicitly out-of-scope, to fight scope drift |
 

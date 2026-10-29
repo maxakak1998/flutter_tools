@@ -33,6 +33,12 @@ import {
   deleteGoal,
   listGoalSessions,
   formatGoalBlock,
+  goalHash,
+  readInjection,
+  writeInjection,
+  lastContextTokens,
+  shouldInjectGoal,
+  goalRefreshTokens,
   type GoalRecord,
 } from './goal-store.js';
 import {
@@ -1629,6 +1635,7 @@ async function runPrime(): Promise<void> {
   // Read stdin for hook input JSON
   let source = 'startup';
   let sessionId = '';
+  let transcriptPath = '';
 
   try {
     const chunks: Buffer[] = [];
@@ -1640,6 +1647,7 @@ async function runPrime(): Promise<void> {
       const parsed = JSON.parse(input);
       source = parsed.source || 'startup';
       sessionId = parsed.session_id || '';
+      transcriptPath = parsed.transcript_path || '';
     }
   } catch {
     // No stdin or invalid JSON — falls through to the missing-session error below
@@ -1697,7 +1705,10 @@ async function runPrime(): Promise<void> {
   let goalText = '';
   if (goalRecord) {
     // Session handle appended so Claude can do an explicit read if ever needed.
-    goalText = `${formatGoalBlock(goalRecord)}\n\n(Session: ${sessionId})`;
+    const block = formatGoalBlock(goalRecord);
+    goalText = `${block}\n\n(Session: ${sessionId})`;
+    // Ledger: the next `kg context` prompt need not repeat what was just injected.
+    if (project) writeInjection(project.kgDir, sessionId, goalHash(block), lastContextTokens(transcriptPath));
   } else if (sessionId && source !== 'clear') {
     goalText = `(Session: ${sessionId} — no goal set; if this session has a clear objective, propose it and call goal_set after the user confirms)`;
   }
@@ -1873,6 +1884,7 @@ async function runContext(): Promise<void> {
   // 1. Read stdin for hook input JSON (prompt + session_id)
   let promptText = '';
   let sessionId = '';
+  let transcriptPath = '';
   try {
     const chunks: Buffer[] = [];
     for await (const chunk of process.stdin) {
@@ -1883,6 +1895,7 @@ async function runContext(): Promise<void> {
       const parsed = JSON.parse(input);
       promptText = parsed.prompt || '';
       sessionId = parsed.session_id || '';
+      transcriptPath = parsed.transcript_path || '';
     }
   } catch {
     // No stdin or invalid JSON — falls through to the missing-session error below
@@ -1896,10 +1909,20 @@ async function runContext(): Promise<void> {
     return;
   }
 
-  // 3. Per-session GOAL (north star) — re-injected EVERY turn so it never scrolls
-  //    out of context (the mid-session anti-drift path). Local file read, no daemon.
+  // 3. Per-session GOAL (north star) — the mid-session anti-drift path. Re-injected
+  //    only when the injection ledger says so (goal changed, context shrank or grew
+  //    by KG_GOAL_REFRESH_TOKENS, or size unknown); KG_GOAL_EVERY_TURN=1 = every prompt.
+  //    Local file reads, no daemon.
   const goalRecord = sessionId ? readGoal(project.kgDir, rootOf(sessionId)) : null;
-  const goalBlock = goalRecord ? formatGoalBlock(goalRecord) : '';
+  let goalBlock = goalRecord ? formatGoalBlock(goalRecord) : '';
+  if (goalBlock) {
+    const hash = goalHash(goalBlock);
+    const ctxTokens = lastContextTokens(transcriptPath);
+    const inject = process.env.KG_GOAL_EVERY_TURN === '1'
+      || shouldInjectGoal(readInjection(project.kgDir, sessionId), hash, ctxTokens, goalRefreshTokens());
+    if (inject) writeInjection(project.kgDir, sessionId, hash, ctxTokens);
+    else goalBlock = '';
+  }
 
   // Emit goal + optional KG context together. If both are empty, stay silent.
   const emit = (ctx: string): void => {
@@ -1916,15 +1939,15 @@ async function runContext(): Promise<void> {
     }));
   };
 
-  // 4. On trivial prompts, skip the KG query but STILL inject the goal so it
-  //    stays present even on "ok"/"yes" turns.
+  // 4. On trivial prompts, skip the KG query; the goal follows the same ledger rule
+  //    as any other prompt.
   if (shouldSkipPrompt(promptText)) {
     emit('');
     return;
   }
 
-  // 5. Query KG via JSON-RPC (best-effort). The goal is injected regardless of
-  //    daemon availability / query results.
+  // 5. Query KG via JSON-RPC (best-effort). The goal decision above does not
+  //    depend on daemon availability / query results.
   const daemonUrl = await getDaemonUrl(project);
   if (!daemonUrl) {
     emit('');

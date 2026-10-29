@@ -4,7 +4,7 @@
 // A goal is a short, protected objective for a single Claude Code SESSION,
 // keyed by the Claude Code hook `session_id` (NOT the MCP-minted id — see
 // CLAUDE.md "Goal Subsystem"). It is stored as a flat JSON file under
-// `<kgDir>/state/goals/<session_id>.json` so the every-turn injection path
+// `<kgDir>/state/goals/<session_id>.json` so the per-prompt injection path
 // (`kg context`) can read it with a cheap local file read, no daemon RPC,
 // and it survives compaction/resume (the hook session_id is stable).
 //
@@ -15,6 +15,7 @@
 // ============================================================
 
 import { join } from 'path';
+import { createHash } from 'crypto';
 import {
   readFileSync,
   writeFileSync,
@@ -22,11 +23,16 @@ import {
   existsSync,
   unlinkSync,
   readdirSync,
+  openSync,
+  readSync,
+  closeSync,
+  fstatSync,
 } from 'fs';
 
 // No hard length cap on goal fields (by user decision). The block is injected
-// EVERY turn, so keeping the goal short is still a good convention — but it is
-// not enforced. Only a non-empty `goal` is required.
+// at session start, before edits and periodically by `kg context` (see the
+// injection ledger below), so keeping the goal short is still a good convention
+// — but it is not enforced. Only a non-empty `goal` is required.
 
 export interface GoalRecord {
   goal: string;
@@ -151,4 +157,118 @@ export function formatGoalBlock(rec: GoalRecord, opts?: { antiDrift?: boolean })
     );
   }
   return lines.join('\n');
+}
+
+// ============================================================
+// Goal injection ledger — when `kg context` re-injects the goal.
+//
+// Re-injecting an unchanged goal on every prompt only re-adds the same block to
+// a context that already holds it (measured 2026-10-29: one session carried 130
+// identical copies). The goal stays in context after SessionStart, so `kg context`
+// re-injects it only when one of these holds:
+//   - this session has no ledger entry yet
+//   - the goal text changed (hash differs)
+//   - the context shrank since the last injection (compact / clear / rewind)
+//   - the context grew by >= KG_GOAL_REFRESH_TOKENS (default 100k) since then,
+//     so the goal sits near the end of the context again (anti-drift)
+//   - the context size cannot be measured (fail-open: old behavior)
+// KG_GOAL_EVERY_TURN=1 restores injection on every prompt. The ledger is keyed
+// by the session's OWN id (not the root): teammates share the root's goal but
+// each has its own context.
+// ============================================================
+
+export const DEFAULT_GOAL_REFRESH_TOKENS = 100_000;
+
+export interface GoalInjection {
+  hash: string;
+  ctx_tokens: number;
+  ts: string;
+}
+
+export function goalHash(block: string): string {
+  return createHash('sha256').update(block).digest('hex').slice(0, 16);
+}
+
+function injectionPath(kgDir: string, sessionId: string): string {
+  return join(goalsDir(kgDir), '.injected', `${sanitizeSessionId(sessionId)}.json`);
+}
+
+/** Last recorded goal injection for a session, or null. Never throws. */
+export function readInjection(kgDir: string, sessionId: string): GoalInjection | null {
+  if (!sanitizeSessionId(sessionId)) return null;
+  try {
+    const p = injectionPath(kgDir, sessionId);
+    if (!existsSync(p)) return null;
+    const rec = JSON.parse(readFileSync(p, 'utf-8')) as GoalInjection;
+    return typeof rec?.hash === 'string' && typeof rec?.ctx_tokens === 'number' ? rec : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Record a goal injection. Never throws (a lost record only means one extra injection). */
+export function writeInjection(kgDir: string, sessionId: string, hash: string, ctxTokens: number | null): void {
+  if (!sanitizeSessionId(sessionId)) return;
+  try {
+    mkdirSync(join(goalsDir(kgDir), '.injected'), { recursive: true });
+    const rec: GoalInjection = { hash, ctx_tokens: ctxTokens ?? 0, ts: new Date().toISOString() };
+    writeFileSync(injectionPath(kgDir, sessionId), JSON.stringify(rec), 'utf-8');
+  } catch {
+    /* ignore */
+  }
+}
+
+/**
+ * Context size of the session's latest request (input + cache read + cache write
+ * of the last assistant usage in the transcript). 0 when the transcript does not
+ * exist yet or has no request; null when it cannot be read (or no path given).
+ */
+export function lastContextTokens(transcriptPath: string | undefined): number | null {
+  if (!transcriptPath) return null;
+  if (!existsSync(transcriptPath)) return 0;
+  let fd: number | null = null;
+  try {
+    fd = openSync(transcriptPath, 'r');
+    const size = fstatSync(fd).size;
+    const len = Math.min(size, 2_000_000);
+    const buf = Buffer.alloc(len);
+    readSync(fd, buf, 0, len, size - len);
+    const lines = buf.toString('utf-8').split('\n');
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i];
+      if (!line.includes('"usage"')) continue;
+      try {
+        const row = JSON.parse(line);
+        const u = row?.type === 'assistant' ? row.message?.usage : null;
+        if (u) {
+          return (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0);
+        }
+      } catch {
+        /* partial first line of the tail window */
+      }
+    }
+    return 0;
+  } catch {
+    return null;
+  } finally {
+    if (fd !== null) closeSync(fd);
+  }
+}
+
+/** Pure decision: should `kg context` inject the goal this prompt? */
+export function shouldInjectGoal(
+  prev: GoalInjection | null,
+  hash: string,
+  ctxTokens: number | null,
+  refreshTokens: number = DEFAULT_GOAL_REFRESH_TOKENS,
+): boolean {
+  if (!prev || prev.hash !== hash || ctxTokens === null) return true;
+  if (ctxTokens < prev.ctx_tokens) return true;
+  return ctxTokens - prev.ctx_tokens >= refreshTokens;
+}
+
+/** Refresh threshold from KG_GOAL_REFRESH_TOKENS (positive integer), else the default. */
+export function goalRefreshTokens(): number {
+  const v = Number.parseInt(process.env.KG_GOAL_REFRESH_TOKENS ?? '', 10);
+  return Number.isFinite(v) && v > 0 ? v : DEFAULT_GOAL_REFRESH_TOKENS;
 }

@@ -25,7 +25,7 @@ export function handleGoalSet(input: GoalInput): GoalSetResult {
     ok: true,
     goal: normalized,
     note:
-      'Session goal recorded. It will be injected as a north star every turn, ' +
+      'Session goal recorded. It will be injected as a north star at session start, periodically, ' +
       'before file edits, and after compaction (via the kg goal hooks). ' +
       'Only propose+confirm a goal with the user before calling this.',
   };

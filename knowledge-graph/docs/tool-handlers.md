@@ -192,7 +192,7 @@ Note: The "cannot promote refuted" guard checks confidence (< 0.2), not lifecycl
 
 **Flow**:
 1. `handleGoalSet()` calls `normalizeGoalInput()` (`goal-store.ts`) — trims and requires a non-empty goal (no hard length cap). Throws a `validation` error on an empty goal.
-2. Returns `{ ok: true, goal, note }` — a VALIDATE-AND-ECHO trigger only. It does NOT persist: an MCP tool handler cannot learn the Claude Code `session_id`, so the authoritative per-session write is done by the `kg goal bind` PostToolUse hook (`cli.ts` → `writeGoal()`), which keys the file by the CC `session_id` from stdin. Injection (every turn / pre-edit / post-compact) is done by `kg context`, `kg goal pre-edit`, and `kg prime` reading `<kgDir>/state/goals/<session_id>.json`.
+2. Returns `{ ok: true, goal, note }` — a VALIDATE-AND-ECHO trigger only. It does NOT persist: an MCP tool handler cannot learn the Claude Code `session_id`, so the authoritative per-session write is done by the `kg goal bind` PostToolUse hook (`cli.ts` → `writeGoal()`), which keys the file by the CC `session_id` from stdin. Injection (session start + periodic per-prompt ledger / pre-edit / post-compact) is done by `kg context`, `kg goal pre-edit`, and `kg prime` reading `<kgDir>/state/goals/<session_id>.json`.
 
 ---
 

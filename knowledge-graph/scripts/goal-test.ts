@@ -10,7 +10,9 @@
  *   behavior — the exact plumbing Claude Code drives:
  *     - `kg goal bind`      (PostToolUse) writes goals/<session>.json
  *     - `kg goal pre-edit`  (PreToolUse Edit/Write) injects goal + anti-drift
- *     - `kg context`        (UserPromptSubmit) injects the goal every turn
+ *     - `kg context`        (UserPromptSubmit) injects the goal when the injection
+ *                           ledger says so (first time, goal changed, context
+ *                           shrank / grew >= refresh, size unknown)
  *     - `kg prime` clear    keeps the root's goal (goals follow the /clear chain)
  *   Run `npm run build` first (Part B runs against dist/).
  */
@@ -34,6 +36,8 @@ import {
   listGoalSessions,
   formatGoalBlock,
   goalFilePath,
+  shouldInjectGoal,
+  lastContextTokens,
 } from '../src/goal-store.js';
 
 let passed = 0;
@@ -72,14 +76,24 @@ function makeTempProject(): string {
 }
 
 /** Run a cli.js hook command with JSON on stdin; return stdout. Never throws on exit 0. */
-function runCli(args: string[], stdin: string, cwd: string): string {
+function runCli(args: string[], stdin: string, cwd: string, env: Record<string, string> = {}): string {
   return execFileSync(process.execPath, [cliJs, ...args], {
     input: stdin,
     cwd,
     encoding: 'utf-8',
     // Never touch the real ~/.knowledge-graph/sessions/ (prime/clear registers sessions).
-    env: { ...process.env, KG_SESSIONS_DIR: join(cwd, '.sessions') },
+    env: { ...process.env, KG_SESSIONS_DIR: join(cwd, '.sessions'), ...env },
   });
+}
+
+/** Write a one-request transcript whose last request carried the given token counts. */
+function writeTranscript(path: string, input: number, cacheRead: number, cacheWrite: number): void {
+  const usage = { input_tokens: input, cache_read_input_tokens: cacheRead, cache_creation_input_tokens: cacheWrite, output_tokens: 10 };
+  const rows = [
+    { type: 'user', message: { role: 'user', content: 'hi' } },
+    { type: 'assistant', message: { role: 'assistant', content: [], usage } },
+  ];
+  writeFileSync(path, rows.map((r) => JSON.stringify(r)).join('\n') + '\n', 'utf-8');
 }
 
 // ============================================================
@@ -138,6 +152,23 @@ function partA(): void {
   const blockAD = formatGoalBlock({ goal: 'do X', session_id: 'S', set_at: 't' }, { antiDrift: true });
   assert(blockAD.includes('CHECK BEFORE PROCEEDING'), 'formatGoalBlock antiDrift adds the reminder');
 
+  // injection decision (pure)
+  const prev = { hash: 'h1', ctx_tokens: 50_000, ts: 't' };
+  assert(shouldInjectGoal(null, 'h1', 50_000) === true, 'shouldInjectGoal: no ledger entry → inject');
+  assert(shouldInjectGoal(prev, 'h2', 50_000) === true, 'shouldInjectGoal: goal changed → inject');
+  assert(shouldInjectGoal(prev, 'h1', null) === true, 'shouldInjectGoal: size unknown → inject (fail-open)');
+  assert(shouldInjectGoal(prev, 'h1', 40_000) === true, 'shouldInjectGoal: context shrank → inject');
+  assert(shouldInjectGoal(prev, 'h1', 149_999) === false, 'shouldInjectGoal: grew < 100k → skip');
+  assert(shouldInjectGoal(prev, 'h1', 150_000) === true, 'shouldInjectGoal: grew >= 100k → inject');
+  assert(shouldInjectGoal(prev, 'h1', 60_000, 10_000) === true, 'shouldInjectGoal: custom refresh threshold');
+
+  // context size from a transcript
+  const tr = join(kgDir, '..', 't.jsonl');
+  assert(lastContextTokens(undefined) === null, 'lastContextTokens: no path → null');
+  assert(lastContextTokens(tr) === 0, 'lastContextTokens: missing file → 0 (fresh session)');
+  writeTranscript(tr, 1000, 20_000, 300);
+  assert(lastContextTokens(tr) === 21_300, 'lastContextTokens: sums input + cache read + cache write of the last request');
+
   rmSync(join(kgDir, '..'), { recursive: true, force: true });
 }
 
@@ -193,6 +224,48 @@ function partB(): void {
   runCli(['prime'], JSON.stringify({ source: 'clear', session_id: 'S1' }), proj);
   assert(goalBeforeClear !== undefined && readGoal(kgDir, 'S1')?.goal === goalBeforeClear, 'kg prime source=clear keeps the goal');
   assert(readGoal(kgDir, 'S2')?.goal === 'other work', 'prime clear leaves other sessions untouched');
+
+  // 10. injection ledger: kg context re-injects only when needed
+  const tr = join(proj, 's3.jsonl');
+  const ctx3 = (env: Record<string, string> = {}) =>
+    runCli(['context'], JSON.stringify({ prompt: 'ok', session_id: 'S3', transcript_path: tr }), proj, env);
+  runCli(['goal', 'bind'], JSON.stringify({ session_id: 'S3', tool_input: { goal: 'ledger goal' } }), proj);
+  writeTranscript(tr, 0, 40_000, 0);
+  assert(ctx3().includes('ledger goal'), 'context: first prompt injects the goal');
+  assert(ctx3().trim() === '', 'context: same context, unchanged goal → no re-injection');
+  writeTranscript(tr, 0, 120_000, 0);
+  assert(ctx3().trim() === '', 'context: grew 80k (< 100k) → no re-injection');
+  writeTranscript(tr, 0, 140_000, 0);
+  assert(ctx3().includes('ledger goal'), 'context: grew 100k → re-injects');
+  assert(ctx3({ KG_GOAL_EVERY_TURN: '1' }).includes('ledger goal'), 'context: KG_GOAL_EVERY_TURN=1 → injects every prompt');
+  runCli(['goal', 'bind'], JSON.stringify({ session_id: 'S3', tool_input: { goal: 'ledger goal v2' } }), proj);
+  assert(ctx3().includes('ledger goal v2'), 'context: goal changed → re-injects');
+  writeTranscript(tr, 0, 30_000, 0);
+  assert(ctx3().includes('ledger goal v2'), 'context: context shrank (compact/clear) → re-injects');
+  assert(ctx3({ KG_GOAL_REFRESH_TOKENS: '1' }).trim() === '', 'context: KG_GOAL_REFRESH_TOKENS respected (0 growth < 1)');
+  writeTranscript(tr, 0, 30_001, 0);
+  assert(ctx3({ KG_GOAL_REFRESH_TOKENS: '1' }).includes('ledger goal v2'), 'context: KG_GOAL_REFRESH_TOKENS respected (1 growth >= 1)');
+
+  // 11. no transcript_path → fail-open: injects on every prompt (old behavior)
+  const ctxNoTr = () => runCli(['context'], JSON.stringify({ prompt: 'ok', session_id: 'S3' }), proj);
+  assert(ctxNoTr().includes('ledger goal v2') && ctxNoTr().includes('ledger goal v2'), 'context: no transcript_path → injects every prompt');
+
+  // 12. prime injects the goal and records it, so the first prompt does not repeat it
+  const tr4 = join(proj, 's4-not-yet-written.jsonl');
+  runCli(['goal', 'bind'], JSON.stringify({ session_id: 'S4', tool_input: { goal: 'prime goal' } }), proj);
+  const primeOut = runCli(['prime'], JSON.stringify({ source: 'clear', session_id: 'S4', transcript_path: tr4 }), proj,
+    { TMUX_PANE: '', CLAUDE_CODE_MESSAGING_SOCKET: '' }); // no /clear chaining: S4 keeps its own root
+  assert(primeOut.includes('prime goal'), 'prime: injects the goal');
+  const afterPrime = runCli(['context'], JSON.stringify({ prompt: 'ok', session_id: 'S4', transcript_path: tr4 }), proj);
+  assert(afterPrime.trim() === '', 'context: first prompt after prime does not repeat the goal');
+
+  // 13. the ledger is per session id: a second session with the same goal still gets it
+  const tr5 = join(proj, 's5.jsonl');
+  writeTranscript(tr5, 0, 40_000, 0);
+  runCli(['goal', 'bind'], JSON.stringify({ session_id: 'S5', tool_input: { goal: 'ledger goal v2' } }), proj);
+  assert(runCli(['context'], JSON.stringify({ prompt: 'ok', session_id: 'S5', transcript_path: tr5 }), proj).includes('ledger goal v2'),
+    'context: ledger is per session (another session with the same goal still gets it)');
+  assert(listGoalSessions(kgDir).every((s) => !s.startsWith('.')), 'listGoalSessions ignores the .injected ledger dir');
 
   rmSync(proj, { recursive: true, force: true });
 }

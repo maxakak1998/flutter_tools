@@ -623,9 +623,9 @@ export async function clientMain(
 
   proxyTool(
     'goal_set',
-    "Record THIS session's goal — a short north star that is auto-injected into context every turn, before file edits, and after compaction, so you do not drift. Set it ONLY after proposing the goal to the user and getting their confirmation (a wrong goal injected every turn amplifies drift). Latest call wins (overwrite). Keep it short and outcome-focused. Do NOT call speculatively; a session may legitimately have no goal.",
+    "Record THIS session's goal — a short north star that is auto-injected into context at session start, periodically, before file edits, and after compaction, so you do not drift. Set it ONLY after proposing the goal to the user and getting their confirmation (a wrong goal kept in context amplifies drift). Latest call wins (overwrite). Keep it short and outcome-focused. Do NOT call speculatively; a session may legitimately have no goal.",
     {
-      goal: z.string().min(1).describe('The session objective — one short, outcome-focused sentence (the north star). No hard length cap, but keep it short — it is injected every turn.'),
+      goal: z.string().min(1).describe('The session objective — one short, outcome-focused sentence (the north star). No hard length cap, but keep it short — it is re-injected periodically.'),
       done_criteria: z.string().optional().describe('How you will know the goal is achieved (optional)'),
       non_goals: z.string().optional().describe('Explicitly out-of-scope, to fight scope drift (optional)'),
     },
